@@ -205,4 +205,91 @@ describe('appStore.moveCategoryToParent — V1 hierarchy two-phase commit', () =
     // categoriesVersion unchanged — no Stage 1 either
     expect(useAppStore.getState().categoriesVersion).toBe(versionBefore);
   });
+
+  // ============================================================
+  // Frontend pre-validation (P0-4 fix): refuse optimistic mutation
+  // when the move would violate hierarchy invariants. Mirrors backend
+  // `validate_hierarchy` so the user never sees a transient illegal
+  // tree (e.g. depth=2 nesting rendered until backend rejects).
+  // ============================================================
+  describe('frontend pre-validation (P0-4 — refuse invalid moves before IPC)', () => {
+    it('rejects depth-2 demotion (new parent is itself a child)', async () => {
+      // Setup: A root, B child of A, C root. Try to make C a child of B.
+      // B is itself a child → would land C at depth 2 → must reject.
+      useAppStore.setState({
+        categories: [cat('A'), cat('B', 'A'), cat('C')],
+      });
+      const versionBefore = useAppStore.getState().categoriesVersion;
+
+      await expect(useAppStore.getState().moveCategoryToParent('C', 'B')).rejects.toThrow(
+        /depth limit/i,
+      );
+
+      // No optimistic mutation, no IPC dispatched.
+      expect(mockSafeInvoke).not.toHaveBeenCalled();
+      expect(useAppStore.getState().categoriesVersion).toBe(versionBefore);
+      expect(useAppStore.getState().categories.find((c) => c.id === 'C')?.parentId).toBeUndefined();
+    });
+
+    it('rejects demote-with-children (target itself has children)', async () => {
+      // Setup: A root with child B, C root. Try to move A under C.
+      // A has children → demoting A would push B to depth 2 → reject.
+      useAppStore.setState({
+        categories: [cat('A'), cat('B', 'A'), cat('C')],
+      });
+      const versionBefore = useAppStore.getState().categoriesVersion;
+
+      await expect(useAppStore.getState().moveCategoryToParent('A', 'C')).rejects.toThrow(
+        /demote a category that has children/i,
+      );
+
+      expect(mockSafeInvoke).not.toHaveBeenCalled();
+      expect(useAppStore.getState().categoriesVersion).toBe(versionBefore);
+      expect(useAppStore.getState().categories.find((c) => c.id === 'A')?.parentId).toBeUndefined();
+    });
+
+    it('rejects self-as-parent', async () => {
+      const versionBefore = useAppStore.getState().categoriesVersion;
+      await expect(useAppStore.getState().moveCategoryToParent('A', 'A')).rejects.toThrow(
+        /own parent/i,
+      );
+      expect(mockSafeInvoke).not.toHaveBeenCalled();
+      expect(useAppStore.getState().categoriesVersion).toBe(versionBefore);
+    });
+
+    it('rejects orphan parent (id not in categories)', async () => {
+      const versionBefore = useAppStore.getState().categoriesVersion;
+      await expect(
+        useAppStore.getState().moveCategoryToParent('A', 'does-not-exist'),
+      ).rejects.toThrow(/not found/i);
+      expect(mockSafeInvoke).not.toHaveBeenCalled();
+      expect(useAppStore.getState().categoriesVersion).toBe(versionBefore);
+    });
+
+    it('accepts valid root-to-child demote', async () => {
+      // A and C are both childless roots → moving C under A is legal.
+      mockSafeInvoke.mockResolvedValueOnce([cat('A'), cat('C', 'A'), cat('B')]);
+
+      await useAppStore.getState().moveCategoryToParent('C', 'A');
+      await flushPromises();
+
+      const ipcNames = mockSafeInvoke.mock.calls.map(([n]) => n);
+      expect(ipcNames).toContain('set_category_parent');
+      expect(useAppStore.getState().categories.find((c) => c.id === 'C')?.parentId).toBe('A');
+    });
+
+    it('accepts promote-to-root regardless of source state', async () => {
+      // null parentId is always valid (Rule 1).
+      useAppStore.setState({
+        categories: [cat('A'), cat('B', 'A'), cat('C')],
+      });
+      mockSafeInvoke.mockResolvedValueOnce([cat('A'), cat('B'), cat('C')]);
+
+      await useAppStore.getState().moveCategoryToParent('B', null);
+      await flushPromises();
+
+      const ipcNames = mockSafeInvoke.mock.calls.map(([n]) => n);
+      expect(ipcNames).toContain('set_category_parent');
+    });
+  });
 });

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { AppData, Category, MigrationReport, Tag } from '@/types';
 import { isTauri, safeInvoke } from '@/utils/tauri';
+import { isAncestorOf } from '@/utils/categoryTree';
 
 // ====================================================================
 // Reorder serial queue
@@ -410,20 +411,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       categoriesVersion: state.categoriesVersion + 1,
     }));
 
-    console.warn('[reorderCategories] Stage 1 optimistic applied', {
-      orderedIds,
-      reorderedActive: reordered.find((c) => orderedIds.includes(c.id)),
-    });
-
     // Stage 2: queued IPC
     return enqueueReorder(async () => {
       try {
-        console.warn('[reorderCategories] Stage 2 IPC dispatch', { orderedIds });
         const updated = await safeInvoke<Category[]>('reorder_categories', { orderedIds });
-        console.warn('[reorderCategories] Stage 2 IPC returned', {
-          updatedLen: updated?.length,
-          updatedFirst: updated?.[0],
-        });
         if (updated) {
           // V3 P1-2: only set when backend differs from current local state.
           // Stage 1 already produced an optimistic equal Vec; the canonical
@@ -543,8 +534,56 @@ export const useAppStore = create<AppState>((set, get) => ({
   moveCategoryToParent: (id: string, newParentId: string | null) => {
     if (!isTauri()) return Promise.resolve();
 
-    // Stage 1: optimistic, synchronous
     const snapshotForFallback = get().categories;
+
+    // ============================================================
+    // Frontend pre-validation (P0-4 — defensive depth/cycle clamp)
+    // ============================================================
+    // The backend validator (`validate_hierarchy`) is the source of truth,
+    // but if we wait for IPC to reject, the optimistic Stage 1 has already
+    // mutated the store and the user sees a transiently illegal tree
+    // (e.g. a 3-level nesting until the rollback round-trips). Mirror the
+    // backend's invariants here so the optimistic update is *only* applied
+    // when the move would actually succeed.
+    //
+    // Mirrors `src-tauri/src/commands/data.rs::validate_hierarchy`:
+    //   Rule 1: promote-to-root is always valid.
+    //   Rule 2: self-as-parent → reject.
+    //   Rule 3: new parent must itself be a root (depth ≤ 1).
+    //   Rule 4: new parent must exist.
+    //   Rule 5: cycle — checked via `isAncestorOf`.
+    //   Rule 6: target must not have children (demote-with-children).
+    if (newParentId !== null) {
+      if (newParentId === id) {
+        const message = 'Cannot set category as its own parent';
+        set({ error: message });
+        return Promise.reject(new Error(message));
+      }
+      const newParent = snapshotForFallback.find((c) => c.id === newParentId);
+      if (!newParent) {
+        const message = 'Parent category not found';
+        set({ error: message });
+        return Promise.reject(new Error(message));
+      }
+      if (newParent.parentId !== undefined) {
+        const message = 'Hierarchy depth limit exceeded (max 2)';
+        set({ error: message });
+        return Promise.reject(new Error(message));
+      }
+      if (isAncestorOf(id, newParentId, snapshotForFallback)) {
+        const message = 'Setting parent would create a cycle';
+        set({ error: message });
+        return Promise.reject(new Error(message));
+      }
+      const targetHasChildren = snapshotForFallback.some((c) => c.parentId === id);
+      if (targetHasChildren) {
+        const message = 'Cannot demote a category that has children';
+        set({ error: message });
+        return Promise.reject(new Error(message));
+      }
+    }
+
+    // Stage 1: optimistic, synchronous (only after pre-validation passes).
     const optimistic = snapshotForFallback.map((c) =>
       c.id === id ? { ...c, parentId: newParentId ?? undefined } : c,
     );
@@ -554,25 +593,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       categoriesVersion: state.categoriesVersion + 1,
     }));
 
-    console.warn('[moveCategoryToParent] Stage 1 optimistic applied', {
-      id,
-      newParentId,
-    });
-
     // Stage 2: queued IPC
     return enqueueReorder(async () => {
       try {
-        console.warn('[moveCategoryToParent] Stage 2 IPC dispatch', {
-          id,
-          newParentId,
-        });
         const updated = await safeInvoke<Category[]>('set_category_parent', {
           id,
           newParentId,
-        });
-        console.warn('[moveCategoryToParent] Stage 2 IPC returned', {
-          updatedLen: updated?.length,
-          updatedActive: updated?.find((c) => c.id === id),
         });
         if (updated) {
           // V3 P1-2 pattern + V2 hierarchy upgrade: only set when backend

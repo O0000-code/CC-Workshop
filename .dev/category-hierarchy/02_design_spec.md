@@ -6,6 +6,28 @@
 
 ## Revision History
 
+**V2.1（2026-05-05；非对称 promote / demote 语义微订）**
+
+V2 落地 12 px X 阈值 + 80 ms dwell 时，对 promote（child → root）与 demote（root → child）施加了对称的 gate。用户实测后反馈（2026-05-05）："磁吸力太强了，需要稍微调弱一点，让它移动到正上方时就能自然地移除子类别状态"；"无论移动到多远的位置都不行，必须同时向右移动才能解除子类别状态。但正常来说，只要移除出它原本子类别的位置（比如移动到父类别的正上方），就应该能够正常解除"。
+
+V2.1 据此把 promote / demote 拆为非对称语义：
+
+- **promote（child → root）**：active 一旦 visually 离开**原父类的子树区域**——即 over.id 不在 `{originalParent, sibling-of-active, active 自身}` 集合内——立即触发 promote（depth=0、parentId=null）。**无需 X 偏移、无需 80 ms dwell**。promote 在用户语义中是"撤销之前的 demote"，不应再要求重复一次确认手势。
+- **demote（root → child）**：保留 V2 全套约束（12 px X 偏移 + 80 ms dwell）。demote 是用户**新建立**的层级关系，必须有显式的横向 intent + 有意停顿。
+- **same-parent reorder（child 在原父类子树内调整顺序）**：over.id 仍在 `{originalParent, sibling, self}` 内 → 保持 child 状态，走标准 reorder 路径，不显示缩进 indicator。
+- **stay-as-root reorder（root 间排序）**：不满足 demote 条件的 root 间拖动 → 同级排序，不显示缩进 indicator。
+
+落地点：
+- §2.7 / §2.14 / §6.3 的状态机描述只对 root → child 路径生效。child → root 路径不进入 dwell 状态机，由 `getProjection` 第 8 参数 `originalActiveParentId` + "leave-original-subtree" 检查直接短路返回 `{depth: 0, parentId: null}`。
+- 实现位置：`src/components/sidebar/dnd/treeUtilities.ts` `getProjection` 顶部、`src/components/sidebar/SortableCategoriesList.tsx` `projected` useMemo 与 `handleDragEnd` recompute gate 中 `isChildActive` 分支。
+- 单元测试：`treeUtilities.test.ts` 新增 6 个用例覆盖（"child → 非原父位置即 promote 无需 X"、"child → 原 parent / sibling / self 仍 child"、"root → root 不达 12 px 不 demote"、"root → root 达 12 px + dwell 才 demote"）。
+
+Cascade footprint（V2 → V2.1）：
+- §2.7 indicator 显示条件不变（`parentRowIdForIndicator` 的 5 重 gate 中 `parentId === null` 那一条天然把 promote 排除掉了）→ 无需 patch §2.7。
+- §2.14 dwell 状态机继续描述 demote 路径；非对称语义仅在本 Revision History 章节声明，不重写状态机正文。
+- §6.3 阈值规则修订为只针对 demote；本 Revision History 章节是该改动的唯一规范源。
+- 03_tech_plan / 04_implementation_plan：仅文档级变更，03/04 任务卡内容不需 patch。
+
 **V2（V1 → V2 修订；2026-05-04）**
 
 V1 经 6 名 reviewer 评审后，由主 Agent 整合 17 项原始 P0 → 15 项 unique P0（参 `05_review/_v2_patch_plan.md`）。本 V2 严格按 `_v2_patch_plan §3` 主 Agent 锁定的修订决议落地，**不重新评估任何 14 决策、不偏离 §3 决议**。

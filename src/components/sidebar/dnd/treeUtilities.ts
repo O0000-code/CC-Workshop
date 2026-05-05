@@ -294,7 +294,7 @@ export function removeChildrenOf(
  * (`dragOffsetX`), and — when available — which side of `over` the active
  * item is being dragged towards (`pointerBelowOver`). Augments the dnd-kit
  * Sortable Tree example algorithm (`01_research/r2_dnd_tree_architecture.md`
- * §2.3) with four project-specific changes:
+ * §2.3) with five project-specific changes:
  *
  * 1. `MAX_DEPTH = 1` clamp — depth 2 forbidden by D2 (parent + child
  *    only; no grandchildren).
@@ -332,6 +332,30 @@ export function removeChildrenOf(
  *    `02_design_spec.md` V2 §2.7 for the position-aware drop indicator
  *    that consumes this projection.
  *
+ * 5. **Asymmetric promote / demote semantics** (V2.1 micro-revision
+ *    2026-05-05, user feedback):
+ *    - **promote (child → root)** is the user *undoing* a prior demote;
+ *      it must trigger as soon as the user moves the row *out of its
+ *      original parent's subtree region*, with NO X offset and NO dwell
+ *      requirement. Concretely: if the active row is currently a child
+ *      and `over` is anywhere outside `{originalParent, sibling-of-active,
+ *      active itself}`, promote immediately (depth=0, parentId=null).
+ *      User original phrasing: "拖动到下方的大类别 2 的位置，正常也应该
+ *      移除它作为大类别 1 子类别的身份"; "只要移除出它原本子类别的位置
+ *      （比如移动到父类别的正上方），就应该能够正常解除".
+ *    - **demote (root → child)** retains the full discipline: 12 px X
+ *      offset *and* 80 ms dwell. demote is a *new* hierarchy commitment
+ *      from the user — it deserves explicit horizontal intent + an
+ *      intentional pause; promote does not, because the user is reverting
+ *      a prior commitment.
+ *
+ *    The asymmetry is carried by the new `originalActiveParentId`
+ *    parameter (10th arg). When supplied AND non-null (i.e. active is a
+ *    pre-drag child), the algorithm short-circuits the standard X-offset
+ *    path with the "leave-original-subtree" rule above. When `null` or
+ *    omitted, the standard symmetric algorithm runs (legacy callers,
+ *    keyboard drags where active is root, unit tests).
+ *
  * Edge cases:
  * - `activeId` not found in `items` → `{ depth: 0, parentId: null,
  *   isInvalid: false }` (defensive no-op; should never happen in practice).
@@ -349,12 +373,81 @@ export function getProjection(
   dragOffsetX: number,
   indentationWidth: number = INDENT_STEP_PX,
   pointerBelowOver?: boolean,
+  /**
+   * Source list for the D5 `activeHasChildren` detection. Defaults to
+   * `items`, which is correct when callers pass the full flat tree. The
+   * real production caller (SortableCategoriesList) passes `displayFlat`
+   * — a tree where the active item's children have been
+   * `removeChildrenOf`-stripped — so without this dedicated parameter
+   * the children check would always read `false` and D5 never fires
+   * (a parent-with-children could be wrongly demoted, the backend then
+   * rejects with `Cannot demote a category that has children` and the
+   * UI snaps back). Pass `baseFlat` (the pre-strip list) here.
+   * Bug fix 2026-05-05.
+   */
+  originalItems?: FlattenedCategory[],
+  /**
+   * The active row's parent id *before* the drag started (snapshotted at
+   * onDragStart from the canonical `categories` list). When supplied and
+   * non-null, enables the asymmetric promote semantics described in the
+   * function doc point 5: any `over` row outside the original parent's
+   * subtree triggers an immediate promote, no X offset / dwell required.
+   *
+   * Why a separate parameter rather than reading from `originalItems`:
+   * the active row might already exist with a *new* projected parentId
+   * in `items` (the position-aware mode shifts neighbours under it
+   * mid-drag). Without an explicit pre-drag snapshot, the "still in
+   * original subtree" check would self-confirm whatever the projection
+   * just decided, defeating the asymmetry.
+   *
+   * V2.1 micro-revision 2026-05-05.
+   */
+  originalActiveParentId?: string | null,
 ): Projection {
   const overItemIndex = items.findIndex(({ id }) => id === overId);
   const activeItemIndex = items.findIndex(({ id }) => id === activeId);
   const activeItem = items[activeItemIndex];
   if (!activeItem || overItemIndex === -1) {
     return { depth: 0, parentId: null, isInvalid: false };
+  }
+
+  // -----------------------------------------------------------------------
+  // Asymmetric promote (V2.1 2026-05-05) — fires before any X-offset /
+  // depth-projection logic. Only applies when active was a pre-drag CHILD.
+  // -----------------------------------------------------------------------
+  // User feedback verbatim (2026-05-05):
+  //   "磁吸力太强了… 移动到正上方时就能自然地移除子类别状态。"
+  //   "无论移动到多远的位置都不行，必须同时向右移动才能解除子类别状态。
+  //    但正常来说，只要移除出它原本子类别的位置（比如移动到父类别的正
+  //    上方），就应该能够正常解除。"
+  //
+  // Implementation: the "original subtree region" is exactly:
+  //   {originalParent, sibling-of-active (= other children of originalParent),
+  //    active itself}
+  // — *not* a coordinate band, *not* a vertical range. Whenever `over` is
+  // any row outside this set, the user has visually moved out of the
+  // original parent's territory and promotion is the correct response.
+  //
+  // We deliberately keep the parent row itself *inside* the subtree set
+  // (over === originalParent) so that a child dragged "back into" its
+  // parent (e.g. visual hover over the parent header) reads as a same-
+  // parent reorder, not a redundant promote-then-demote oscillation.
+  if (originalActiveParentId != null && originalActiveParentId !== '') {
+    const overItem = items[overItemIndex];
+    const overInOriginalSubtree =
+      // over is the active row itself — drag hasn't moved out of own slot.
+      String(overItem.id) === String(activeId) ||
+      // over is the original parent row — still inside original subtree.
+      String(overItem.id) === originalActiveParentId ||
+      // over is a sibling (= another child of originalParent).
+      overItem.parentId === originalActiveParentId;
+
+    if (!overInOriginalSubtree) {
+      // Outside original subtree → immediate promote, no X / dwell needed.
+      return { depth: 0, parentId: null, isInvalid: false };
+    }
+    // Inside original subtree → fall through to the standard algorithm
+    // below, which handles same-parent reorder (depth=1, parentId=originalParent).
   }
 
   // Resolve previousItem / nextItem in one of two modes. The "position-aware"
@@ -427,9 +520,17 @@ export function getProjection(
 
   // D5 invalid: a root with children cannot become a child of another root.
   // Detected from the *original* items list — children carry a `parentId`
-  // pointing at the active id.
+  // pointing at the active id. NB: in production the caller passes
+  // `displayFlat` for `items` (which has had the active subtree's children
+  // stripped via `removeChildrenOf`), so we read the children-presence flag
+  // from `originalItems` (= `baseFlat`) when supplied. Falling back to
+  // `items` keeps backwards compatibility with unit tests that pass a
+  // single flat list.
   const activeIdStr = String(activeItem.id);
-  const activeHasChildren = items.some((it) => it.parentId != null && it.parentId === activeIdStr);
+  const childSource = originalItems ?? items;
+  const activeHasChildren = childSource.some(
+    (it) => it.parentId != null && it.parentId === activeIdStr,
+  );
   const isParentBecomingChild = activeItem.depth === 0 && depth > 0 && activeHasChildren;
   if (isParentBecomingChild) {
     depth = 0;

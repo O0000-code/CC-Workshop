@@ -533,6 +533,239 @@ describe('getProjection', () => {
       expect(result.parentId).toBe('C');
     });
   });
+
+  // -----------------------------------------------------------------------
+  // originalItems parameter — Bug fix 2026-05-05 (P0-2)
+  //
+  // Production caller passes `displayFlat` (which has had the active
+  // subtree's children stripped via removeChildrenOf) as `items`. The
+  // D5 `activeHasChildren` check would then read `false` because the
+  // children are no longer in the list, and `isInvalid` would stay
+  // `false` even when dragging a parent-with-children. The 7th
+  // parameter `originalItems` (= `baseFlat`, pre-strip) restores
+  // children-presence detection.
+  // -----------------------------------------------------------------------
+  describe('originalItems parameter — children-presence detection (P0-2)', () => {
+    it('when items has had children stripped, originalItems restores D5 detection', () => {
+      // Simulate the production state at drop time: P is a parent with
+      // child `c`. `displayFlat` is what gets rendered (children stripped
+      // for the active subtree); `baseFlat` still contains `c`.
+      const baseFlat: FlattenedCategory[] = [
+        flat('P', 0, null, 0, true),
+        flat('c', 1, 'P', 1),
+        flat('Q', 0, null, 2),
+      ];
+      // displayFlat = removeChildrenOf(baseFlat, ['P']) — c is gone.
+      const displayFlat: FlattenedCategory[] = [flat('P', 0, null, 0, true), flat('Q', 0, null, 1)];
+
+      // Without originalItems: items=displayFlat → activeHasChildren=false
+      // → isInvalid=false (the bug).
+      const buggy = getProjection(displayFlat, 'P', 'Q', 16, INDENT_STEP_PX, true);
+      expect(buggy.isInvalid).toBe(false); // documenting the bug shape
+
+      // With originalItems=baseFlat: D5 fires correctly.
+      const fixed = getProjection(displayFlat, 'P', 'Q', 16, INDENT_STEP_PX, true, baseFlat);
+      expect(fixed.isInvalid).toBe(true);
+      expect(fixed.depth).toBe(0);
+    });
+
+    it('originalItems defaults to items when omitted (back-compat)', () => {
+      // Existing callers (tests, possibly future helpers) that pass a
+      // single complete tree as `items` should still get correct D5.
+      const items: FlattenedCategory[] = [
+        flat('P', 0, null, 0, true),
+        flat('c', 1, 'P', 1),
+        flat('Q', 0, null, 2),
+      ];
+      const result = getProjection(items, 'P', 'Q', 16, INDENT_STEP_PX, true);
+      expect(result.isInvalid).toBe(true);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Asymmetric promote / demote semantics — V2.1 micro-revision 2026-05-05
+  //
+  // Background: V2 applied symmetric 12 px X offset + 80 ms dwell gates to
+  // both promote (child → root) and demote (root → child). User feedback
+  // (verbatim 2026-05-05) found promote too sticky:
+  //   "磁吸力太强了，需要稍微调弱一点，让它移动到正上方时就能自然地移除
+  //    子类别状态。"
+  //   "无论移动到多远的位置都不行，必须同时向右移动才能解除子类别状态。
+  //    但正常来说，只要移除出它原本子类别的位置（比如移动到父类别的正
+  //    上方），就应该能够正常解除。"
+  //
+  // V2.1 splits the rule:
+  //   - promote: triggered by `over` leaving the original parent's subtree
+  //     region ({originalParent, sibling, self}); no X offset / dwell.
+  //   - demote: retains full V2 discipline (12 px + 80 ms) — handled by the
+  //     SortableCategoriesList dwell gate around getProjection, not inside
+  //     getProjection itself, so the demote tests below verify the
+  //     algorithm's standard X-offset path stays untouched.
+  // -----------------------------------------------------------------------
+  describe('asymmetric promote semantics (V2.1 2026-05-05)', () => {
+    /** Fixture: parent P with two children c1, c2; siblings root Q and R. */
+    const fixtureWithChildAndSiblingRoots: FlattenedCategory[] = [
+      flat('P', 0, null, 0, true),
+      flat('c1', 1, 'P', 1),
+      flat('c2', 1, 'P', 2),
+      flat('Q', 0, null, 3),
+      flat('R', 0, null, 4),
+    ];
+
+    it('child dragged to a non-parent root row → immediate promote (no X offset)', () => {
+      // Active = c1 (originally child of P). Over = Q (a different root).
+      // No X offset (offset = 0), no dwell (the algorithm itself does not
+      // know about dwell). The "leave original subtree" rule should fire
+      // and produce a root-level projection.
+      const result = getProjection(
+        fixtureWithChildAndSiblingRoots,
+        'c1',
+        'Q',
+        0, // dragOffsetX = 0 — explicitly no horizontal intent
+        INDENT_STEP_PX,
+        true, // pointerBelowOver
+        fixtureWithChildAndSiblingRoots, // originalItems
+        'P', // originalActiveParentId
+      );
+      expect(result.depth).toBe(0);
+      expect(result.parentId).toBeNull();
+      expect(result.isInvalid).toBe(false);
+    });
+
+    it('child dragged to ANOTHER root that is not its parent → immediate promote even with no X', () => {
+      // User example verbatim: "大类别 1 下面有一个子类别 1。如果我把
+      // 子类别 1 拖动到它下方的大类别 2 的位置，正常也应该移除它作为
+      // 大类别 1 子类别的身份，让它变成一个独立的大类别。"
+      const result = getProjection(
+        fixtureWithChildAndSiblingRoots,
+        'c1',
+        'R', // an even further root
+        0,
+        INDENT_STEP_PX,
+        false, // pointerBelowOver doesn't matter — promote short-circuits
+        fixtureWithChildAndSiblingRoots,
+        'P',
+      );
+      expect(result.depth).toBe(0);
+      expect(result.parentId).toBeNull();
+    });
+
+    it('child dragged to its ORIGINAL parent → stays child (no spurious promote)', () => {
+      // over = P (the original parent itself). Inside the original subtree
+      // → keep child status, run standard algorithm.
+      const result = getProjection(
+        fixtureWithChildAndSiblingRoots,
+        'c1',
+        'P',
+        0,
+        INDENT_STEP_PX,
+        true,
+        fixtureWithChildAndSiblingRoots,
+        'P',
+      );
+      expect(result.depth).toBe(1);
+      expect(result.parentId).toBe('P');
+    });
+
+    it('child dragged to a SIBLING (= another child of original parent) → stays child', () => {
+      // over = c2 (sibling of c1, both under P). Inside original subtree.
+      const result = getProjection(
+        fixtureWithChildAndSiblingRoots,
+        'c1',
+        'c2',
+        0,
+        INDENT_STEP_PX,
+        true,
+        fixtureWithChildAndSiblingRoots,
+        'P',
+      );
+      expect(result.depth).toBe(1);
+      expect(result.parentId).toBe('P');
+    });
+
+    it('child dragged with NO X offset to a non-parent root → still promotes (no X required)', () => {
+      // Symmetric V2 algorithm would have required X >= 12 to register any
+      // depth change. V2.1 rejects that — dragOffsetX = 0 is fine.
+      const result = getProjection(
+        fixtureWithChildAndSiblingRoots,
+        'c1',
+        'Q',
+        0,
+        INDENT_STEP_PX,
+        true,
+        fixtureWithChildAndSiblingRoots,
+        'P',
+      );
+      expect(result.depth).toBe(0);
+      expect(result.parentId).toBeNull();
+    });
+
+    it('root dragged to another root WITHOUT X >= 12 → does NOT demote (V2 demote discipline preserved)', () => {
+      // Active = Q (root, originalActiveParentId = null). Over = R.
+      // Offset = 0 (no horizontal intent). The asymmetric branch must NOT
+      // fire (originalActiveParentId is null), and the standard algorithm
+      // should keep Q at depth 0.
+      const result = getProjection(
+        fixtureWithChildAndSiblingRoots,
+        'Q',
+        'R',
+        0,
+        INDENT_STEP_PX,
+        true,
+        fixtureWithChildAndSiblingRoots,
+        null, // originalActiveParentId = null → root active
+      );
+      expect(result.depth).toBe(0);
+      expect(result.parentId).toBeNull();
+    });
+
+    it('root dragged to another root WITH X >= 12 → demotes normally (V2 demote path intact)', () => {
+      // Use a fixture where R has a leading row to provide a valid demote
+      // anchor: previousItem.depth + 1 = 1 caps maxDepth correctly.
+      const items: FlattenedCategory[] = [
+        flat('P', 0, null, 0, true),
+        flat('c', 1, 'P', 1),
+        flat('Q', 0, null, 2),
+        flat('R', 0, null, 3),
+      ];
+      // Drag R below Q with offset +16, pointerBelowOver = true.
+      // previousItem = Q (depth 0) → maxDepth = 1. dragDepth = 1 → depth = 1
+      // → parentId = Q.
+      const result = getProjection(
+        items,
+        'R',
+        'Q',
+        16,
+        INDENT_STEP_PX,
+        true,
+        items,
+        null, // root active
+      );
+      expect(result.depth).toBe(1);
+      expect(result.parentId).toBe('Q');
+    });
+
+    it('originalActiveParentId omitted → standard symmetric algorithm runs (back-compat)', () => {
+      // No 8th argument → pre-V2.1 callers (legacy unit tests, keyboard
+      // drags where the host hasn't wired this through yet) get the
+      // standard projection.
+      const result = getProjection(
+        fixtureWithChildAndSiblingRoots,
+        'c1',
+        'Q',
+        0,
+        INDENT_STEP_PX,
+        true,
+        fixtureWithChildAndSiblingRoots,
+        // originalActiveParentId omitted
+      );
+      // Standard algorithm: previousItem=Q (depth 0), nextItem=R (depth 0),
+      // maxDepth=1, minDepth=0, dragDepth=0 (offset 0 < threshold) →
+      // projectedDepth = 1 + 0 = 1, depth = clamp(1, 0, 1) = 1, parent = Q.
+      expect(result.depth).toBe(1);
+      expect(result.parentId).toBe('Q');
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

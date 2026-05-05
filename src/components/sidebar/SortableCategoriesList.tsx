@@ -241,6 +241,20 @@ export function SortableCategoriesList({
   const dwellTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dwellOverIdRef = useRef<UniqueIdentifier | null>(null);
   const [dwellState, setDwellState] = useState<'OUT' | 'HOVER_NEAR' | 'DROP_INTO_READY'>('OUT');
+  // Bug fix 2026-05-05 (P0-1 — Maximum update depth): handleDragMove reads
+  // the dwell state via a ref rather than the React-state closure, so the
+  // closure is no longer recreated by every render. This eliminates a class
+  // of feedback loops where:
+  //   1. dnd-kit fires onDragMove → setOffsetLeft + conditional setDwellState
+  //   2. React re-renders → new handleDragMove closure → new
+  //      `dwellState === 'HOVER_NEAR'` branch reads the previous render's
+  //      stale value
+  //   3. The branch sets state again (HOVER_NEAR ↔ OUT flap) → infinite render
+  // Also lets us bail out cheaply when state would not change.
+  const dwellStateRef = useRef<'OUT' | 'HOVER_NEAR' | 'DROP_INTO_READY'>('OUT');
+  useEffect(() => {
+    dwellStateRef.current = dwellState;
+  }, [dwellState]);
 
   // V2 [P1-4 final-audit fix]: cursor onto the latest projected drop target
   // for the active row. Read by `makeAnnouncements` at drop time so the
@@ -306,18 +320,77 @@ export function SortableCategoriesList({
     baseFlatRef.current = baseFlat;
   }, [baseFlat]);
 
-  // Projection: only compute once dwell has armed (HOVER_NEAR or
-  // DROP_INTO_READY). In OUT state we want zero projection (drop indicator
-  // stays at baseline depth), avoiding the visual jitter of projecting a
-  // depth change before the user has held still long enough.
+  // Active row's *original* parent (pre-drag). Used for two things:
+  //
+  //   1. Indicator gating: the user-facing contract is "indicator visible ⇔
+  //      drop will commit a setCategoryParent IPC ⇔ row becomes a child".
+  //      When the projection's parentId equals the active row's existing
+  //      parentId (same-level reorder, no hierarchy intent), the indicator
+  //      must NOT render.
+  //
+  //   2. Asymmetric promote (V2.1 2026-05-05): passed as the 8th argument
+  //      `originalActiveParentId` to `getProjection`. When non-null, the
+  //      algorithm short-circuits to "promote on leaving the original
+  //      subtree" — fires immediately when `over` is outside
+  //      {originalParent, sibling, self}, with no X offset / dwell.
+  //
+  // Read from the canonical `categories` (NOT displayFlat, which strips
+  // the active subtree's children) so the value is stable across the full
+  // drag and survives any in-flight reflow of `displayFlat`.
+  //
+  // Declaration ordering: this useMemo and `isChildActive` below MUST be
+  // declared *before* the `projected` useMemo because `projected` reads
+  // both. JavaScript `let`/`const` block-scoped TDZ would otherwise throw.
+  const activeOriginalParentId = useMemo<string | null>(() => {
+    if (activeId === null) return null;
+    const cat = categories.find((c) => c.id === String(activeId));
+    return cat?.parentId ?? null;
+  }, [activeId, categories]);
+
+  // Whether the currently-active row was a CHILD before the drag started.
+  // Drives two asymmetric-semantics gates:
+  //   (a) `projected` useMemo skips the `dwellState === 'OUT'` early-return,
+  //       so the "leave original subtree → promote" projection materialises
+  //       the moment over.id changes (no dwell delay).
+  //   (b) `handleDragEnd` recomputes `finalProjection` regardless of dwell
+  //       state, so an immediate-promote drop commits even if the user
+  //       released before the 80 ms HOVER_NEAR / DROP_INTO_READY window.
+  const isChildActive = activeOriginalParentId !== null;
+
+  // Projection rules (V2 + V2.1 2026-05-05):
+  //
+  // - For ROOT active (demote candidate): only compute once dwell has armed
+  //   (HOVER_NEAR or DROP_INTO_READY). In OUT state we want zero projection
+  //   so the drop indicator stays at baseline depth, avoiding visual jitter
+  //   from projecting a depth change before the user has held still long
+  //   enough. Demote is a *new* hierarchy commitment — explicit X intent
+  //   (12 px) + dwell pause (80 ms) gate it.
+  //
+  // - For CHILD active (promote candidate): skip the dwell gate entirely.
+  //   Promote is the user *undoing* a prior demote and must respond at the
+  //   moment over.id leaves the original parent's subtree (no X / dwell).
+  //   The asymmetry is enforced inside `getProjection` via the 8th argument
+  //   `originalActiveParentId`; here we just stop the dwell-state gate from
+  //   suppressing the projection on its way out.
   //
   // The 6th arg `pointerBelowOver ?? undefined` lets `getProjection` choose
   // between position-aware (mouse drag with known pointer side) and legacy
   // (over === active, or null for keyboard drags) neighbour resolution.
   // See the bug-fix block in `dnd/treeUtilities.ts:getProjection` docs.
+  //
+  // Bug fix 2026-05-05 (P0-2): pass `baseFlat` as the 7th `originalItems`
+  // argument so getProjection's D5 `activeHasChildren` detection sees the
+  // pre-`removeChildrenOf` list. Without this, a parent-with-children
+  // dragged toward a child slot reads `activeHasChildren = false`
+  // (children already stripped from `displayFlat`), `isInvalid` stays
+  // false, the indicator wrongly renders, and the IPC fires only to be
+  // rejected by the backend with `Cannot demote a category that has
+  // children` — manifesting as a snap-back the user reads as "the app
+  // accepted my drop and then rolled it back".
   const projected = useMemo(() => {
     if (activeId === null || overId === null) return null;
-    if (dwellState === 'OUT') return null;
+    // Asymmetric gate: only ROOT-active demote requires dwell.
+    if (!isChildActive && dwellState === 'OUT') return null;
     return getProjection(
       displayFlat,
       activeId,
@@ -325,8 +398,20 @@ export function SortableCategoriesList({
       offsetLeft,
       INDENT_STEP_PX,
       pointerBelowOver ?? undefined,
+      baseFlat,
+      activeOriginalParentId,
     );
-  }, [displayFlat, activeId, overId, offsetLeft, dwellState, pointerBelowOver]);
+  }, [
+    displayFlat,
+    baseFlat,
+    activeId,
+    overId,
+    offsetLeft,
+    dwellState,
+    pointerBelowOver,
+    isChildActive,
+    activeOriginalParentId,
+  ]);
 
   // Items list for SortableContext — comes from displayFlat (the rendered
   // rows). UniqueIdentifier is `string | number`; FlattenedCategory.id is
@@ -335,6 +420,41 @@ export function SortableCategoriesList({
     () => displayFlat.map((it) => it.id),
     [displayFlat],
   );
+
+  // V2 §2.14 [P0-VIZ-4] / user spec 2026-05-05:
+  //   "蓝色下划线指示条有且仅仅出现在一个类别元素的下方，同时出现了，这个时候
+  //    松手类别就一定能变成其子类。没有任何例外。"
+  // Translated to code: indicator visible IFF the drop, if released now,
+  // will fire `onSetCategoryParent` with a non-null parentId AND the
+  // hierarchy projection is committed (DROP_INTO_READY, not HOVER_NEAR).
+  //
+  // Concretely we require *all four*:
+  //   1. `projected !== null` (dwell is at least HOVER_NEAR — a stronger
+  //      condition is layered on by point 2)
+  //   2. `dwellState === 'DROP_INTO_READY'` (commit visible only after
+  //      the 80 ms dwell has fired — HOVER_NEAR shows nothing)
+  //   3. `!projected.isInvalid` (D5 parent-becoming-child rejected — the
+  //      cancel snap-back visual handles that case, not the indicator)
+  //   4. `projected.parentId !== activeOriginalParentId` (genuine parent
+  //      change — same-parent reorder shows no indicator at all,
+  //      cascade let-pass already communicates the visual)
+  // Plus implicitly:
+  //   5. `projected.parentId !== null` (when promoting child→root, the
+  //      visual is "row floats back to the leftmost edge" — no indicator
+  //      needed, and there is no "below which row?" anchor at the root
+  //      gap). NB this also rules out the depth-0 case where parentId
+  //      walks back to null due to a malformed drop position.
+  // The `parentRowIdForIndicator` is the row id whose row the indicator
+  // renders directly under (with 16 px paddingLeft to match the child
+  // depth). When null, no indicator renders.
+  const parentRowIdForIndicator = useMemo<string | null>(() => {
+    if (!projected) return null;
+    if (dwellState !== 'DROP_INTO_READY') return null;
+    if (projected.isInvalid) return null;
+    if (projected.parentId === null) return null;
+    if (projected.parentId === activeOriginalParentId) return null;
+    return projected.parentId;
+  }, [projected, dwellState, activeOriginalParentId]);
 
   // V2 [P0-ARCH-1]: live state ref for the keyboard coordinate getter.
   // The closure created by makeTreeKeyboardCoordinates captures THIS ref
@@ -451,15 +571,22 @@ export function SortableCategoriesList({
     setOverId(event.active.id); // start "over" = self for cleaner getProjection
     setOffsetLeft(0);
     setPointerBelowOver(null);
+    // Bug fix 2026-05-05 (P0-1): keep ref + state in lockstep at start.
+    dwellStateRef.current = 'OUT';
     // V2 [P1-4]: clear projection ref so the announcer doesn't read a stale
     // value from the previous drag.
     dropProjectionRef.current = null;
     onDragStart();
   };
 
-  const handleDragMove = (event: DragMoveEvent) => {
+  const handleDragMove = useCallback((event: DragMoveEvent) => {
     const newOffset = event.delta.x;
-    setOffsetLeft(newOffset);
+    // Bail out cheaply if value is unchanged. `setState` on identical values
+    // already short-circuits in React, but skipping the function call keeps
+    // the dispatcher off the trace stack and removes one source of the
+    // "Maximum update depth exceeded" warning under StrictMode + Always
+    // measuring (P0-1).
+    setOffsetLeft((prev) => (prev === newOffset ? prev : newOffset));
 
     // Bug fix 2026-05-04: compute which side of `over` the active row's
     // visible center is on, so getProjection can use position-aware
@@ -474,24 +601,25 @@ export function SortableCategoriesList({
     // is the over droppable's rect (`store/types.d.ts:35-40`). Both are
     // measured in the same coordinate space, so center.y comparison is
     // direct.
+    let nextPointerBelowOver: boolean | null = null;
     if (event.over) {
       const activeRect = event.active.rect.current.translated;
       const overRect = event.over.rect;
       if (activeRect && event.over.id !== event.active.id) {
         const activeCenterY = activeRect.top + activeRect.height / 2;
         const overCenterY = overRect.top + overRect.height / 2;
-        setPointerBelowOver(activeCenterY > overCenterY);
-      } else {
-        // over === active (no insertion gap defined). Use null so
-        // getProjection falls back to the legacy arrayMove path.
-        setPointerBelowOver(null);
+        nextPointerBelowOver = activeCenterY > overCenterY;
       }
-    } else {
-      setPointerBelowOver(null);
     }
+    setPointerBelowOver((prev) => (prev === nextPointerBelowOver ? prev : nextPointerBelowOver));
 
     // V2 [P0-VIZ-4 / 02 V2 §2.14] dwell state machine —
     //   OUT / HOVER_NEAR / DROP_INTO_READY transitions.
+    //
+    // Bug fix 2026-05-05 (P0-1): read current state from the ref, not from
+    // the React-state closure. Closure-based reads in this repeatedly-fired
+    // callback can see a stale `dwellState` and re-set the same transition
+    // twice, fueling render loops under StrictMode + MeasuringStrategy.Always.
     const newOverId = event.over?.id ?? null;
     const overChanged = newOverId !== dwellOverIdRef.current;
     const xPassesThreshold = Math.abs(newOffset) >= ABS_X_THRESHOLD_PX;
@@ -513,11 +641,20 @@ export function SortableCategoriesList({
       dwellTimerRef.current = setTimeout(() => {
         // Only commit if we are still over the same row when the timer
         // fires. If overChanged in the interim, the new arm replaces this one.
-        if (dwellOverIdRef.current === id) {
+        if (dwellOverIdRef.current === id && dwellStateRef.current !== 'DROP_INTO_READY') {
+          dwellStateRef.current = 'DROP_INTO_READY';
           setDwellState('DROP_INTO_READY');
         }
         dwellTimerRef.current = null;
       }, DWELL_MS);
+    };
+
+    // Bail-on-unchanged: only call setState when the target state differs
+    // from the current state, eliminating render churn on stable hover.
+    const setDwellIfChanged = (next: 'OUT' | 'HOVER_NEAR' | 'DROP_INTO_READY') => {
+      if (dwellStateRef.current === next) return;
+      dwellStateRef.current = next;
+      setDwellState(next);
     };
 
     if (overChanged) {
@@ -526,10 +663,10 @@ export function SortableCategoriesList({
       clearTimer();
       dwellOverIdRef.current = newOverId;
       if (newOverId !== null && xPassesThreshold) {
-        setDwellState('HOVER_NEAR');
+        setDwellIfChanged('HOVER_NEAR');
         armTimer(newOverId);
       } else {
-        setDwellState('OUT');
+        setDwellIfChanged('OUT');
       }
       return;
     }
@@ -538,62 +675,60 @@ export function SortableCategoriesList({
     if (xPassesThreshold) {
       // Re-enter HOVER_NEAR if previously OUT; stay if already HOVER_NEAR
       // / DROP_INTO_READY.
-      if (dwellState === 'OUT' && newOverId !== null) {
-        setDwellState('HOVER_NEAR');
+      if (dwellStateRef.current === 'OUT' && newOverId !== null) {
+        setDwellIfChanged('HOVER_NEAR');
         armTimer(newOverId);
       }
       return;
     }
 
     // |X| < 12 — depending on current state, retreat one level.
-    if (dwellState === 'DROP_INTO_READY') {
+    if (dwellStateRef.current === 'DROP_INTO_READY') {
       // 02 V2 §2.14 "DROP_INTO_READY → HOVER_NEAR: X 重新 < 12" —
       // visual reverts (drop indicator wrapper paddingLeft 16 → 0 over
       // 150 ms), dwell timer stays idle (no rearm until X ≥ 12 again).
-      setDwellState('HOVER_NEAR');
-    } else if (dwellState === 'HOVER_NEAR') {
+      setDwellIfChanged('HOVER_NEAR');
+    } else if (dwellStateRef.current === 'HOVER_NEAR') {
       clearTimer();
-      setDwellState('OUT');
+      setDwellIfChanged('OUT');
     }
-  };
+  }, []);
 
-  const handleDragOver = (event: DragOverEvent) => {
-    setOverId(event.over?.id ?? null);
-  };
+  const handleDragOver = useCallback((event: DragOverEvent) => {
+    const next = event.over?.id ?? null;
+    setOverId((prev) => (prev === next ? prev : next));
+  }, []);
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
 
-    // ============================================================
-    // DEBUG (2026-05-04): hierarchy drop "弹回" diagnostic
-    // ============================================================
-    // Surfaced via console.warn (visible in `npm run tauri dev` console)
-    // and alert() so the user can read state without DevTools attached.
-    // Remove this block once the root cause is confirmed.
-    const __dbg_dwellState = dwellState;
-    const __dbg_pointerBelowOver = pointerBelowOver;
-    const __dbg_offsetLeft = offsetLeft;
-    console.warn('[DragEnd] enter', {
-      activeId: String(active.id),
-      overId: over ? String(over.id) : null,
-      deltaX: event.delta.x,
-      deltaY: event.delta.y,
-      dwellState: __dbg_dwellState,
-      pointerBelowOver: __dbg_pointerBelowOver,
-      offsetLeft: __dbg_offsetLeft,
-      reactStateProjected: projected,
-    });
-
-    // Bug fix 2026-05-04: recompute the final projection from the drop-end
-    // event itself, rather than relying on the React-state `projected`
-    // useMemo. The state-based `projected` is one frame behind the last
-    // setPointerBelowOver/setOffsetLeft (React batches setState until the
-    // next render; useMemo only re-runs after that render). At drop time
-    // we need the projection that reflects the user's exact final pointer
-    // position, so we re-derive it here using the event's active/over
-    // rects and the current `dwellState` snapshot for armed/unarmed gating.
+    // Recompute the final projection from the drop-end event itself —
+    // the React-state `projected` useMemo is one frame behind the last
+    // setOffsetLeft / setPointerBelowOver because React batches setState
+    // until the next render; useMemo only re-runs after that render.
+    //
+    // Gating (V2 + V2.1 2026-05-05):
+    //   - ROOT active: only recompute when dwell has fully armed
+    //     (`DROP_INTO_READY`). HOVER_NEAR is "user crossed 12 px but didn't
+    //     hold for 80 ms" — at that point we treat the drop as a same-level
+    //     reorder. Demote needs explicit X intent + intentional pause.
+    //   - CHILD active: always recompute. Promote (child → root) responds
+    //     to over.id leaving the original subtree, with no X / dwell. If we
+    //     gated on dwell here, a quick drag-and-release that crosses out of
+    //     the original parent would silently fall back to "stay child" —
+    //     contradicting the user contract that promote does not require
+    //     dwell. The `getProjection` algorithm itself enforces the
+    //     "still-in-subtree → keep child / left subtree → promote" decision
+    //     from `originalActiveParentId`.
+    //
+    // Bug fix 2026-05-05 (P0-2): pass `baseFlat` as the 7th argument
+    // (`originalItems`) so D5 `activeHasChildren` reads the pre-strip
+    // tree. Without this the indicator and IPC would let a
+    // parent-with-children become another root's child — backend rejects,
+    // UI snaps back.
     let finalProjection = projected;
-    if (over && dwellState !== 'OUT') {
+    const allowProjectionRecompute = dwellStateRef.current === 'DROP_INTO_READY' || isChildActive;
+    if (over && allowProjectionRecompute) {
       const activeRect = active.rect.current.translated;
       let endPointerBelowOver: boolean | undefined;
       if (activeRect && over.id !== active.id) {
@@ -608,17 +743,11 @@ export function SortableCategoriesList({
         event.delta.x,
         INDENT_STEP_PX,
         endPointerBelowOver,
+        baseFlatRef.current,
+        activeOriginalParentId,
       );
-      console.warn('[DragEnd] recomputed projection', {
-        endPointerBelowOver,
-        finalProjection,
-      });
     } else {
-      console.warn('[DragEnd] skipped re-projection (no over or dwell=OUT)', {
-        hasOver: Boolean(over),
-        dwellState: __dbg_dwellState,
-        keptProjected: projected,
-      });
+      finalProjection = null;
     }
 
     // V2 [P1-4]: write the projected drop target to dropProjectionRef BEFORE
@@ -633,11 +762,9 @@ export function SortableCategoriesList({
       let newParentId: string | null;
       if (finalProjection) {
         newParentId = finalProjection.parentId;
-      } else if (over) {
+      } else {
         // No projection (dwell never armed) — same-level reorder; parent
         // stays unchanged.
-        newParentId = oldParentId;
-      } else {
         newParentId = oldParentId;
       }
       dropProjectionRef.current = {
@@ -653,6 +780,7 @@ export function SortableCategoriesList({
       dwellTimerRef.current = null;
     }
     dwellOverIdRef.current = null;
+    dwellStateRef.current = 'OUT';
     setDwellState('OUT');
 
     // V3 §2.6 distance-aware dropAnimation — same logic as V3.
@@ -687,16 +815,6 @@ export function SortableCategoriesList({
     setDragOverrideExpand(false);
     onDragEnd();
 
-    // V2 hierarchy fix (2026-05-05): V3 used `if (over && active.id !== over.id)`
-    // — but with hierarchy, dnd-kit's `closestCenter` after let-pass animation
-    // may report `over === active` (active settled back into its own slot
-    // visually) while the user has expressed a hierarchy intent (X >= 12 px +
-    // dwell DROP_INTO_READY → projection.parentId resolved to a real parent).
-    // The user's screenshot showed exactly this: `activeId === overId === Writing`
-    // but `projection.parentId = Analysis`. The old guard skipped the IPC, and
-    // Writing snapped back to root. Now we proceed whenever there is an `over`
-    // AND either (a) active != over (V3 reorder path) OR (b) the projection
-    // proposes a parent change.
     if (over) {
       // V2 [P0-ARCH-2]: read baseFlat (NOT displayFlat which has the active
       // subtree's children removed). Reading via ref to avoid closure-stale
@@ -722,7 +840,8 @@ export function SortableCategoriesList({
       const finalParentId = localProjected
         ? localProjected.parentId
         : (activeItem.parentId ?? null);
-      const parentChanged = finalParentId !== (activeItem.parentId ?? null);
+      const oldParentId = activeItem.parentId ?? null;
+      const parentChanged = finalParentId !== oldParentId;
 
       // Same-id same-parent → genuine no-op. Skip both IPCs.
       if (String(active.id) === String(over.id) && !parentChanged) {
@@ -731,108 +850,96 @@ export function SortableCategoriesList({
         return;
       }
 
-      console.warn('[DragEnd] decision', {
-        activeId: String(active.id),
-        overId: localOverId ? String(localOverId) : null,
-        localProjected,
-        oldParentId: activeItem.parentId ?? null,
-        finalParentId,
-        parentChanged,
-        hasOnSetCategoryParent: Boolean(onSetCategoryParent),
-      });
-
       try {
-        // V2 [P0-ARCH-3]: await setCategoryParent FIRST, then compute
-        // reorder ordered_ids based on the FRESH categories (which now
-        // reflect the new parent_id). This is the critical fix for the
-        // double-IPC stale-payload bug — reorder must see post-setParent
-        // hierarchy or it'll dispatch ordered_ids that put children at
-        // the end of the Vec.
-        if (parentChanged && onSetCategoryParent) {
-          console.warn('[DragEnd] -> onSetCategoryParent BEFORE await');
-          await onSetCategoryParent(String(active.id), finalParentId);
-          console.warn('[DragEnd] -> onSetCategoryParent AFTER await', {
-            postCallStateForActive: useAppStore
-              .getState()
-              .categories.find((c) => c.id === String(active.id)),
-          });
-        }
+        // ============================================================
+        // P0-3 dispatch policy (Bug fix 2026-05-05):
+        // ============================================================
+        // The user-facing drop has exactly two outcomes: "make this
+        // category a child of X" (hierarchy change) OR "rearrange the
+        // sibling order" (same-level reorder). Running BOTH IPCs back to
+        // back was the V2 [P0-ARCH-3] design, but in practice it
+        // produced two failure modes:
+        //
+        //   1. Backend rejects setCategoryParent (e.g. D5 / depth
+        //      violation, race with another mutation), but reorder
+        //      still fires with a payload built against post-rejection
+        //      stale state — categories drift visually.
+        //   2. setCategoryParent succeeds, then reorder dispatches
+        //      ordered_ids that re-position the child away from its
+        //      new parent. The backend Vec ends up hierarchically
+        //      adjacent (parent immediately followed by its children
+        //      via the natural flatten order), so the explicit reorder
+        //      is at best a no-op and at worst undoes the parent move.
+        //
+        // The fix: pick exactly one IPC.
+        //   parentChanged === true  → only setCategoryParent
+        //   parentChanged === false → only reorderCategories
+        //
+        // The frontend `flattenTree` already renders children directly
+        // beneath their parent, so visual ordering is preserved without
+        // an explicit reorder after a parent move.
+        if (parentChanged) {
+          if (onSetCategoryParent) {
+            await onSetCategoryParent(String(active.id), finalParentId);
+          }
+        } else if (String(active.id) !== String(over.id)) {
+          // Same-level reorder: build the new ordered_ids from a
+          // subtree-aware splice over the FRESH baseFlat (read from
+          // store).
+          const freshCategories = useAppStore.getState().categories;
+          const freshExpanded = computeDefaultExpanded(freshCategories);
+          for (const id of expandedSet) freshExpanded.add(id);
+          const freshBaseFlat = flattenTree(freshCategories, freshExpanded);
 
-        // V2 [P0-ARCH-2 / P0-ARCH-3]: rebuild ordered_ids by subtree
-        // splice over the FRESH baseFlat (read from store, not from the
-        // pre-drag baseFlatRef). The subtree (active + active's children)
-        // moves as a unit to the over.id position, preserving children
-        // adjacent to their parent so the backend Vec stays
-        // hierarchically sorted.
-        const freshCategories = useAppStore.getState().categories;
-        const freshExpanded = computeDefaultExpanded(freshCategories);
-        // ∪ persisted user prefs — collapsed parents would otherwise drop
-        // children from freshBaseFlat, breaking the splice indexing.
-        for (const id of expandedSet) freshExpanded.add(id);
-        const freshBaseFlat = flattenTree(freshCategories, freshExpanded);
+          const freshActiveIdx = freshBaseFlat.findIndex(
+            (it) => String(it.id) === String(active.id),
+          );
+          const freshOverIdx = freshBaseFlat.findIndex(
+            (it) => String(it.id) === String(localOverId),
+          );
+          if (freshActiveIdx === -1 || freshOverIdx === -1) {
+            setJustDroppedId(localActiveId);
+            setTimeout(() => setJustDroppedId(null), 50);
+            return;
+          }
 
-        const freshActiveIdx = freshBaseFlat.findIndex((it) => String(it.id) === String(active.id));
-        const freshOverIdx = freshBaseFlat.findIndex((it) => String(it.id) === String(localOverId));
-        if (freshActiveIdx === -1 || freshOverIdx === -1) {
-          // No-op — over no longer in flat list (shouldn't happen).
-          setJustDroppedId(localActiveId);
-          setTimeout(() => setJustDroppedId(null), 50);
-          return;
-        }
+          // Active subtree (active + its immediate children, MAX_DEPTH=1).
+          const activeIdStr = String(active.id);
+          const childIds = freshBaseFlat
+            .filter((it) => it.parentId === activeIdStr)
+            .map((it) => String(it.id));
+          const subtreeIds = new Set<string>([activeIdStr, ...childIds]);
 
-        // The active item's children in their canonical Vec order. With
-        // MAX_DEPTH = 1 the only "subtree" possibility is the dragged row
-        // + its immediate children; grandchildren are forbidden.
-        const activeIdStr = String(active.id);
-        const childIds = freshBaseFlat
-          .filter((it) => it.parentId === activeIdStr)
-          .map((it) => String(it.id));
-        const subtreeIds = new Set<string>([activeIdStr, ...childIds]);
+          const withoutSubtree = freshBaseFlat.filter((it) => !subtreeIds.has(String(it.id)));
+          const overIdxAfterRemove = withoutSubtree.findIndex(
+            (it) => String(it.id) === String(localOverId),
+          );
+          if (overIdxAfterRemove === -1) {
+            setJustDroppedId(localActiveId);
+            setTimeout(() => setJustDroppedId(null), 50);
+            return;
+          }
 
-        const withoutSubtree = freshBaseFlat.filter((it) => !subtreeIds.has(String(it.id)));
-        const overIdxAfterRemove = withoutSubtree.findIndex(
-          (it) => String(it.id) === String(localOverId),
-        );
-        if (overIdxAfterRemove === -1) {
-          setJustDroppedId(localActiveId);
-          setTimeout(() => setJustDroppedId(null), 50);
-          return;
-        }
+          const insertIdx =
+            freshActiveIdx < freshOverIdx ? overIdxAfterRemove + 1 : overIdxAfterRemove;
 
-        // Insert position: if active was *before* over in fresh order,
-        // splice in *after* over (the user dragged it down past over);
-        // if active was *after* over, splice in *before* over (dragged up).
-        const insertIdx =
-          freshActiveIdx < freshOverIdx ? overIdxAfterRemove + 1 : overIdxAfterRemove;
+          const subtreeInOrder = freshBaseFlat.filter((it) => subtreeIds.has(String(it.id)));
+          const newFlat = [
+            ...withoutSubtree.slice(0, insertIdx),
+            ...subtreeInOrder,
+            ...withoutSubtree.slice(insertIdx),
+          ];
+          const newOrderedIds = newFlat.map((it) => String(it.id));
 
-        // The subtree itself in its canonical (fresh) order.
-        const subtreeInOrder = freshBaseFlat.filter((it) => subtreeIds.has(String(it.id)));
-        const newFlat = [
-          ...withoutSubtree.slice(0, insertIdx),
-          ...subtreeInOrder,
-          ...withoutSubtree.slice(insertIdx),
-        ];
-        const newOrderedIds = newFlat.map((it) => String(it.id));
+          // No-op guard: skip the reorder IPC if order is unchanged.
+          const preDragOrder = freshBaseFlat.map((it) => String(it.id));
+          const orderChanged =
+            preDragOrder.length !== newOrderedIds.length ||
+            preDragOrder.some((id, i) => id !== newOrderedIds[i]);
 
-        // No-op guard: skip the reorder IPC if order is unchanged.
-        const preDragOrder = freshBaseFlat.map((it) => String(it.id));
-        const orderChanged =
-          preDragOrder.length !== newOrderedIds.length ||
-          preDragOrder.some((id, i) => id !== newOrderedIds[i]);
-
-        console.warn('[DragEnd] reorder plan', {
-          newOrderedIds,
-          preDragOrder,
-          orderChanged,
-        });
-
-        if (orderChanged) {
-          await onReorder(newOrderedIds);
-          console.warn('[DragEnd] -> onReorder AFTER await', {
-            postReorderStateForActive: useAppStore
-              .getState()
-              .categories.find((c) => c.id === String(active.id)),
-          });
+          if (orderChanged) {
+            await onReorder(newOrderedIds);
+          }
         }
       } catch (err) {
         // setCategoryParent or reorder failed — appStore handles the
@@ -857,6 +964,7 @@ export function SortableCategoriesList({
       dwellTimerRef.current = null;
     }
     dwellOverIdRef.current = null;
+    dwellStateRef.current = 'OUT';
     setDwellState('OUT');
     setActiveId(null);
     setOverId(null);
@@ -967,34 +1075,22 @@ export function SortableCategoriesList({
                 ? (Math.max(0, Math.min(1, projected.depth)) as 0 | 1)
                 : (item.depth as 0 | 1);
 
-            // V2 §2.7 (P1-3): drop-indicator wrapper expresses projected
-            // depth above the active row during drag. Wrapper paddingLeft
-            // transitions over 150ms (CSS — `--duration-drag-indicator-move`)
-            // when the user crosses the +/- 12 px X threshold + 80 ms dwell.
-            // The `.drop-indicator-h` class is unchanged — geometry stays
-            // block + margin-only + transform-driven (per V3).
-            //
-            // Only render at the active row's slot when dwell has armed
-            // (HOVER_NEAR / DROP_INTO_READY) — i.e. when `projected` is
-            // non-null. The active row's own paddingLeft (renderDepth above)
-            // also tracks projection; both channels work in concert so the
-            // user perceives one cohesive depth indication.
-            const showDropIndicatorHere = localStringEq(item.id, activeId) && projected !== null;
-            const indicatorDepth = projected
-              ? (Math.max(0, Math.min(1, projected.depth)) as 0 | 1)
-              : 0;
+            // User spec 2026-05-05: indicator must render directly under
+            // the row that will become the new parent (so the user reads
+            // "this row is the parent" from spatial proximity) — NOT under
+            // the active row's slot, which is invisible (opacity 0) and
+            // can be anywhere in the list (e.g. the very top, leading to
+            // the "indicator under CATEGORIES header" bug from screenshot 1).
+            // The indicator is anchored on `parentRowIdForIndicator`
+            // (computed above with strict gating: DROP_INTO_READY +
+            // !isInvalid + parentId !== originalParentId + parentId !== null).
+            // depth is always 1 here (child indent) since we only render
+            // the indicator when the drop will create a child.
+            const showDropIndicatorAfterThisRow =
+              parentRowIdForIndicator !== null && item.id === parentRowIdForIndicator;
 
             return (
               <div key={item.id}>
-                {showDropIndicatorHere && (
-                  <div
-                    className="drop-indicator-wrapper"
-                    style={{ paddingLeft: indicatorDepth * INDENT_STEP_PX }}
-                    aria-hidden="true"
-                  >
-                    <div className="drop-indicator-h" />
-                  </div>
-                )}
                 <SortableCategoryRow
                   category={itemCategory}
                   depth={renderDepth}
@@ -1009,6 +1105,15 @@ export function SortableCategoriesList({
                   onContextMenu={(e) => onCategoryContextMenu(itemCategory, e)}
                   onColorChange={(color) => onCategoryColorChange(item.id, color)}
                 />
+                {showDropIndicatorAfterThisRow && (
+                  <div
+                    className="drop-indicator-wrapper"
+                    style={{ paddingLeft: INDENT_STEP_PX }}
+                    aria-hidden="true"
+                  >
+                    <div className="drop-indicator-h" />
+                  </div>
+                )}
               </div>
             );
           })}

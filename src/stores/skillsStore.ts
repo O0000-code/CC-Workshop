@@ -127,9 +127,7 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
     if (skill.pluginId) {
       const pluginsStore = usePluginsStore.getState();
       const importKey = `${skill.pluginId}|${skill.name}`;
-      const newImported = pluginsStore.importedPluginSkills.filter(
-        (s) => s !== importKey
-      );
+      const newImported = pluginsStore.importedPluginSkills.filter((s) => s !== importKey);
       pluginsStore.setImportedPluginSkills(newImported);
     }
 
@@ -166,25 +164,40 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
     if (!skill) return;
 
     const oldCategory = skill.category;
+    const oldCategoryId = skill.categoryId;
 
-    // Optimistic update
+    // Resolve name → id from current categories (V2 §4.6 dual-write).
+    // `category === ''` means "Uncategorized" → newCategoryId stays undefined.
+    const cats = useAppStore.getState().categories;
+    const newCategoryId = category ? cats.find((c) => c.name === category)?.id : undefined;
+
+    // Optimistic update — write both fields locally (UI sees fresh state
+    // immediately; backend confirms via the IPC below).
     set((state) => ({
       skills: state.skills.map((s) =>
-        s.id === id ? { ...s, category } : s
+        s.id === id ? { ...s, category, categoryId: newCategoryId } : s,
       ),
     }));
 
     try {
+      // V2 [P1-6] Option<Option<T>> mapping: `null` = clear, omit = no-op,
+      // string = set. Frontend always sends an outer `Some(_)` here so the
+      // backend mirrors the optimistic state exactly (no "leave it alone"
+      // ambiguity). When category lookup fails (e.g. a stale cache or a
+      // freshly-renamed root), `null` clears the id and the user sees the
+      // dropdown's selected name as the cached display fallback until the
+      // next scan resolves it.
       await safeInvoke('update_skill_metadata', {
         skillId: id,
         category,
+        categoryId: newCategoryId === undefined ? null : newCategoryId,
       });
     } catch (error) {
       // Rollback on error
       const message = typeof error === 'string' ? error : String(error);
       set((state) => ({
         skills: state.skills.map((s) =>
-          s.id === id ? { ...s, category: oldCategory } : s
+          s.id === id ? { ...s, category: oldCategory, categoryId: oldCategoryId } : s,
         ),
         error: message,
       }));
@@ -205,9 +218,7 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
 
     // Optimistic update
     set((state) => ({
-      skills: state.skills.map((s) =>
-        s.id === id ? { ...s, tags } : s
-      ),
+      skills: state.skills.map((s) => (s.id === id ? { ...s, tags } : s)),
     }));
 
     try {
@@ -219,9 +230,7 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
       // Rollback on error
       const message = typeof error === 'string' ? error : String(error);
       set((state) => ({
-        skills: state.skills.map((s) =>
-          s.id === id ? { ...s, tags: oldTags } : s
-        ),
+        skills: state.skills.map((s) => (s.id === id ? { ...s, tags: oldTags } : s)),
         error: message,
       }));
     }
@@ -241,9 +250,7 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
 
     // Optimistic update
     set((state) => ({
-      skills: state.skills.map((s) =>
-        s.id === id ? { ...s, icon } : s
-      ),
+      skills: state.skills.map((s) => (s.id === id ? { ...s, icon } : s)),
     }));
 
     try {
@@ -255,9 +262,7 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
       // Rollback on error
       const message = typeof error === 'string' ? error : String(error);
       set((state) => ({
-        skills: state.skills.map((s) =>
-          s.id === id ? { ...s, icon: oldIcon } : s
-        ),
+        skills: state.skills.map((s) => (s.id === id ? { ...s, icon: oldIcon } : s)),
         error: message,
       }));
     }
@@ -276,9 +281,7 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
 
     // Optimistic update
     set((state) => ({
-      skills: state.skills.map((s) =>
-        s.id === id ? { ...s, scope } : s
-      ),
+      skills: state.skills.map((s) => (s.id === id ? { ...s, scope } : s)),
     }));
 
     const { skillSourceDir, claudeConfigDir } = useSettingsStore.getState();
@@ -294,9 +297,7 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
       // Rollback on error
       const message = typeof error === 'string' ? error : String(error);
       set((state) => ({
-        skills: state.skills.map((s) =>
-          s.id === id ? { ...s, scope: oldScope } : s
-        ),
+        skills: state.skills.map((s) => (s.id === id ? { ...s, scope: oldScope } : s)),
         error: message,
       }));
     }
@@ -357,8 +358,8 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
 
       // Collect new categories and tags that need to be created
       const { addCategory, addTag, loadCategories, loadTags } = useAppStore.getState();
-      const existingCategoryNames = new Set(categories.map(c => c.name));
-      const existingTagNames = new Set(tags.map(t => t.name));
+      const existingCategoryNames = new Set(categories.map((c) => c.name));
+      const existingTagNames = new Set(tags.map((t) => t.name));
 
       const newCategories = new Set<string>();
       const newTags = new Set<string>();
@@ -375,10 +376,23 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
       }
 
       // Create new categories with predefined colors
-      const categoryColors = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#14B8A6', '#F97316'];
+      const categoryColors = [
+        '#3B82F6',
+        '#10B981',
+        '#F59E0B',
+        '#EF4444',
+        '#8B5CF6',
+        '#EC4899',
+        '#14B8A6',
+        '#F97316',
+      ];
       let colorIndex = categories.length;
       for (const categoryName of newCategories) {
-        await addCategory(categoryName, categoryColors[colorIndex % categoryColors.length]);
+        await addCategory(
+          categoryName,
+          categoryColors[colorIndex % categoryColors.length],
+          undefined, // D14=A: new categories from autoClassify always land at root
+        );
         colorIndex++;
       }
 
@@ -387,14 +401,30 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
         await addTag(tagName);
       }
 
+      // P1-2: dual-write `categoryId` alongside `category` so the entry is
+      // canonical post-migration. Snapshot the latest categories AFTER
+      // addCategory above so we can resolve the freshly-created category's
+      // id by name. Without this, autoClassify-created entries stay
+      // "orphaned" forever (category_id stays None even after the migration
+      // flag advances) — see final_audit P1-2.
+      const updatedCategories = useAppStore.getState().categories;
+      const categoryIdByName = new Map<string, string>(
+        updatedCategories.map((c) => [c.name, c.id]),
+      );
+
       // Apply classification results
       for (const result of results) {
         const skill = skills.find((s) => s.id === result.id);
         if (skill) {
-          // Update category, tags, and icon
+          const resolvedCategoryId = categoryIdByName.get(result.suggested_category) ?? null;
+          // Update category, tags, and icon. Pass categoryId as a wrapped
+          // option so the backend's three-state Option<Option<String>>
+          // mutator interprets it as "set this field" (outer Some, inner
+          // value), not "do not modify" (outer None).
           await safeInvoke('update_skill_metadata', {
             skillId: result.id,
             category: result.suggested_category,
+            categoryId: resolvedCategoryId,
             tags: result.suggested_tags,
             icon: result.suggested_icon,
           });
@@ -459,7 +489,7 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
       filtered = filtered.filter(
         (skill) =>
           skill.name.toLowerCase().includes(searchLower) ||
-          skill.description.toLowerCase().includes(searchLower)
+          skill.description.toLowerCase().includes(searchLower),
       );
     }
 
@@ -470,9 +500,7 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
 
     // Tags filter
     if (filter.tags.length > 0) {
-      filtered = filtered.filter((skill) =>
-        filter.tags.some((tag) => skill.tags.includes(tag))
-      );
+      filtered = filtered.filter((skill) => filter.tags.some((tag) => skill.tags.includes(tag)));
     }
 
     // Sort: plugin-imported skills at the bottom

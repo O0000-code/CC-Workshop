@@ -11,6 +11,14 @@ export interface DropdownOption {
   label: string;
   color?: string; // 用于分类的点颜色
   count?: number; // 用于显示计数
+  /**
+   * Visual indent depth (`0 = root`, `1 = child`). Each level adds
+   * `INDENT_STEP_PX = 16px` of left padding inside the option row,
+   * mirroring the sidebar hierarchy spec (D9 / D10, see
+   * `02_design_spec.md` V2 §6.5 + `03_tech_plan.md` V2 §5.9).
+   * Root options (depth 0 or undefined) render with no extra padding.
+   */
+  indent?: number;
 }
 
 export interface DropdownProps {
@@ -138,9 +146,7 @@ export function Dropdown({
   const filteredOptions = useMemo(() => {
     if (!searchQuery) return options;
     const query = searchQuery.toLowerCase();
-    return options.filter(option =>
-      option.label.toLowerCase().includes(query)
-    );
+    return options.filter((option) => option.label.toLowerCase().includes(query));
   }, [options, searchQuery]);
 
   // 获取显示文本
@@ -149,13 +155,13 @@ export function Dropdown({
       const selectedValues = value as string[];
       if (selectedValues.length === 0) return null;
       if (selectedValues.length === 1) {
-        const option = options.find(o => o.value === selectedValues[0]);
+        const option = options.find((o) => o.value === selectedValues[0]);
         return option?.label;
       }
       return `${selectedValues.length} selected`;
     } else {
       const selectedValue = value as string;
-      const option = options.find(o => o.value === selectedValue);
+      const option = options.find((o) => o.value === selectedValue);
       return option?.label;
     }
   };
@@ -173,7 +179,7 @@ export function Dropdown({
     if (multiple) {
       const currentValues = value as string[];
       const newValues = currentValues.includes(optionValue)
-        ? currentValues.filter(v => v !== optionValue)
+        ? currentValues.filter((v) => v !== optionValue)
         : [...currentValues, optionValue];
       onChange(newValues);
     } else {
@@ -184,7 +190,7 @@ export function Dropdown({
   };
 
   const displayText = getDisplayText();
-  const hasColorDot = options.some(o => o.color);
+  const hasColorDot = options.some((o) => o.color);
 
   // Trigger 按钮
   const triggerButton = (
@@ -206,10 +212,12 @@ export function Dropdown({
         ${triggerClassName}
       `}
     >
-      <span className={`
+      <span
+        className={`
         truncate flex-1
         ${displayText ? 'text-[13px] text-[#18181B]' : 'text-[12px] text-[#A1A1AA]'}
-      `}>
+      `}
+      >
         {displayText || placeholder}
       </span>
       <ChevronDown
@@ -223,55 +231,55 @@ export function Dropdown({
   );
 
   // 下拉列表内容
-  const dropdownContent = isOpen && createPortal(
-    <div
-      ref={dropdownRef}
-      style={{
-        position: 'fixed',
-        top: dropdownPosition.top,
-        left: dropdownPosition.left,
-        width: dropdownPosition.width,
-        zIndex: 9999,
-      }}
-      className="bg-white border border-[#E5E5E5] rounded-lg shadow-[0_4px_12px_rgba(0,0,0,0.0625)]"
-    >
-      {/* 搜索框 */}
-      {searchable && (
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-[#E5E5E5]">
-          <Search className="w-3.5 h-3.5 text-[#A1A1AA] flex-shrink-0" />
-          <input
-            ref={searchInputRef}
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search tags..."
-            className="flex-1 text-[13px] text-[#18181B] placeholder:text-[#A1A1AA] outline-none bg-transparent"
-          />
-        </div>
-      )}
-
-      {/* 选项列表 */}
-      <div className="p-1 max-h-[300px] overflow-y-auto">
-        {filteredOptions.length === 0 ? (
-          <div className="px-3 py-2 text-[13px] text-[#A1A1AA] text-center">
-            No options found
-          </div>
-        ) : (
-          filteredOptions.map((option) => (
-            <DropdownItem
-              key={option.value}
-              option={option}
-              selected={isSelected(option.value)}
-              multiple={multiple}
-              hasColorDot={hasColorDot}
-              onClick={() => handleOptionClick(option.value)}
+  const dropdownContent =
+    isOpen &&
+    createPortal(
+      <div
+        ref={dropdownRef}
+        style={{
+          position: 'fixed',
+          top: dropdownPosition.top,
+          left: dropdownPosition.left,
+          width: dropdownPosition.width,
+          zIndex: 9999,
+        }}
+        className="bg-white border border-[#E5E5E5] rounded-lg shadow-[0_4px_12px_rgba(0,0,0,0.0625)]"
+      >
+        {/* 搜索框 */}
+        {searchable && (
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-[#E5E5E5]">
+            <Search className="w-3.5 h-3.5 text-[#A1A1AA] flex-shrink-0" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search tags..."
+              className="flex-1 text-[13px] text-[#18181B] placeholder:text-[#A1A1AA] outline-none bg-transparent"
             />
-          ))
+          </div>
         )}
-      </div>
-    </div>,
-    document.body
-  );
+
+        {/* 选项列表 */}
+        <div className="p-1 max-h-[300px] overflow-y-auto">
+          {filteredOptions.length === 0 ? (
+            <div className="px-3 py-2 text-[13px] text-[#A1A1AA] text-center">No options found</div>
+          ) : (
+            filteredOptions.map((option) => (
+              <DropdownItem
+                key={option.value}
+                option={option}
+                selected={isSelected(option.value)}
+                multiple={multiple}
+                hasColorDot={hasColorDot}
+                onClick={() => handleOptionClick(option.value)}
+              />
+            ))
+          )}
+        </div>
+      </div>,
+      document.body,
+    );
 
   return (
     <div className={`relative ${className}`}>
@@ -295,14 +303,19 @@ interface DropdownItemProps {
 
 function DropdownItem({ option, selected, multiple, hasColorDot, onClick }: DropdownItemProps) {
   const isUncategorized = option.label.toLowerCase() === 'uncategorized';
+  // 16px per level (D9 / D10 — see DropdownOption.indent docstring).
+  // Inline padding-left so the indent applies *inside* the rounded hover/
+  // selected backplate, matching the sidebar's row indent visual.
+  const indentPx = (option.indent ?? 0) * 16;
 
   return (
     <button
       type="button"
       onClick={onClick}
+      style={indentPx > 0 ? { paddingLeft: 12 + indentPx } : undefined}
       className={`
         w-full flex items-center justify-between
-        px-3 py-2 rounded
+        ${indentPx > 0 ? 'pr-3 py-2' : 'px-3 py-2'} rounded
         text-left
         transition-colors
         ${selected ? 'bg-[#F4F4F5]' : 'hover:bg-[#F4F4F5]'}
@@ -316,15 +329,10 @@ function DropdownItem({ option, selected, multiple, hasColorDot, onClick }: Drop
               w-3.5 h-3.5 rounded-[3px] flex-shrink-0
               flex items-center justify-center
               transition-colors
-              ${selected
-                ? 'bg-[#18181B]'
-                : 'border border-[#D4D4D8] bg-transparent'
-              }
+              ${selected ? 'bg-[#18181B]' : 'border border-[#D4D4D8] bg-transparent'}
             `}
           >
-            {selected && (
-              <Check className="w-2.5 h-2.5 text-white" strokeWidth={3} />
-            )}
+            {selected && <Check className="w-2.5 h-2.5 text-white" strokeWidth={3} />}
           </div>
         )}
 
@@ -351,15 +359,11 @@ function DropdownItem({ option, selected, multiple, hasColorDot, onClick }: Drop
       <div className="flex items-center gap-2 flex-shrink-0 ml-2">
         {/* 计数 */}
         {option.count !== undefined && (
-          <span className="text-[11px] font-medium text-[#A1A1AA]">
-            {option.count}
-          </span>
+          <span className="text-[11px] font-medium text-[#A1A1AA]">{option.count}</span>
         )}
 
         {/* 单选 Checkmark */}
-        {!multiple && selected && (
-          <Check className="w-3.5 h-3.5 text-[#18181B]" />
-        )}
+        {!multiple && selected && <Check className="w-3.5 h-3.5 text-[#18181B]" />}
       </div>
     </button>
   );

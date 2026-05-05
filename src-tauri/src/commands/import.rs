@@ -1,6 +1,7 @@
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 
+use crate::commands::data::{read_app_data, write_app_data, DATA_MUTEX};
 use crate::types::{
     AppData, BackupInfo, ClaudeJson, ClaudeMcpConfig, ClaudeSettings, DetectedMcp, DetectedSkill,
     ExistingConfig, ImportItem, ImportResult, ImportedCounts, McpConfigFile, McpMetadata,
@@ -849,15 +850,14 @@ pub fn update_skill_scope(
 }
 
 /// Update skill scope in metadata file
+///
+/// **DATA_MUTEX**: Acquired at the outermost scope (T1f closure of the
+/// pre-existing gap surfaced by the `read_app_data|write_app_data` grep
+/// re-enumeration). Concurrent `update_skill_scope` + `update_skill_metadata`
+/// + `reorder_categories` are now serialised; lost-update window eliminated.
 fn update_skill_scope_in_metadata(skill_id: &str, scope: &str) -> Result<(), String> {
-    let data_path = get_data_file_path();
-
-    let mut app_data: AppData = if data_path.exists() {
-        let content = fs::read_to_string(&data_path).map_err(|e| e.to_string())?;
-        serde_json::from_str(&content).unwrap_or_default()
-    } else {
-        AppData::default()
-    };
+    let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
+    let mut app_data = read_app_data()?;
 
     let metadata = app_data
         .skill_metadata
@@ -866,9 +866,7 @@ fn update_skill_scope_in_metadata(skill_id: &str, scope: &str) -> Result<(), Str
 
     metadata.scope = scope.to_string();
 
-    let json = serde_json::to_string_pretty(&app_data).map_err(|e| e.to_string())?;
-    fs::write(&data_path, json).map_err(|e| e.to_string())?;
-
+    write_app_data(app_data)?;
     Ok(())
 }
 
@@ -941,15 +939,14 @@ pub fn update_mcp_scope(
 }
 
 /// Update MCP scope in metadata file
+///
+/// **DATA_MUTEX**: Acquired at the outermost scope (T1f closure of the
+/// pre-existing gap surfaced by the `read_app_data|write_app_data` grep
+/// re-enumeration). Concurrent `update_mcp_scope` + `update_mcp_metadata`
+/// + `reorder_categories` are now serialised; lost-update window eliminated.
 fn update_mcp_scope_in_metadata(mcp_id: &str, scope: &str) -> Result<(), String> {
-    let data_path = get_data_file_path();
-
-    let mut app_data: AppData = if data_path.exists() {
-        let content = fs::read_to_string(&data_path).map_err(|e| e.to_string())?;
-        serde_json::from_str(&content).unwrap_or_default()
-    } else {
-        AppData::default()
-    };
+    let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
+    let mut app_data = read_app_data()?;
 
     let metadata = app_data
         .mcp_metadata
@@ -958,9 +955,7 @@ fn update_mcp_scope_in_metadata(mcp_id: &str, scope: &str) -> Result<(), String>
 
     metadata.scope = scope.to_string();
 
-    let json = serde_json::to_string_pretty(&app_data).map_err(|e| e.to_string())?;
-    fs::write(&data_path, json).map_err(|e| e.to_string())?;
-
+    write_app_data(app_data)?;
     Ok(())
 }
 

@@ -17,7 +17,9 @@ import { SearchInput, Badge, Button, EmptyState, IconPicker, ICON_MAP } from '@/
 import { McpItemCompact } from '@/components/mcps/McpItem';
 import { useMcpsStore } from '@/stores/mcpsStore';
 import { useScenesStore } from '@/stores/scenesStore';
+import { useAppStore } from '@/stores/appStore';
 import { safeInvoke } from '@/utils/tauri';
+import { getCategoryDisplayName } from '@/utils/categoryTree';
 import { Tool } from '@/types';
 
 // Icon mapping for MCP servers
@@ -105,6 +107,7 @@ export const McpDetailPage: React.FC = () => {
   } = useMcpsStore();
 
   const { scenes } = useScenesStore();
+  const { categories } = useAppStore();
 
   // Decode the URL-encoded MCP ID
   const id = encodedId ? decodeURIComponent(encodedId) : null;
@@ -208,9 +211,7 @@ export const McpDetailPage: React.FC = () => {
         />
       ))}
       {filteredMcps.length === 0 && (
-        <div className="py-8 text-center text-sm text-[#A1A1AA]">
-          No servers found
-        </div>
+        <div className="py-8 text-center text-sm text-[#A1A1AA]">No servers found</div>
       )}
     </div>
   );
@@ -225,19 +226,17 @@ export const McpDetailPage: React.FC = () => {
         {/* Icon */}
         <div
           ref={detailIconRef}
-          onClick={() => handleIconClick(selectedMcp.id, detailIconRef as React.RefObject<HTMLDivElement>)}
+          onClick={() =>
+            handleIconClick(selectedMcp.id, detailIconRef as React.RefObject<HTMLDivElement>)
+          }
           className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#F4F4F5] cursor-pointer hover:ring-2 hover:ring-[#18181B]/10 transition-shadow"
         >
           <SelectedMcpIcon className="h-5 w-5 text-[#52525B]" />
         </div>
         {/* Title Info */}
         <div className="flex flex-col gap-0.5">
-          <h2 className="text-sm font-semibold text-[#18181B]">
-            {selectedMcp.name}
-          </h2>
-          <p className="text-xs font-normal text-[#71717A]">
-            {selectedMcp.description}
-          </p>
+          <h2 className="text-sm font-semibold text-[#18181B]">{selectedMcp.name}</h2>
+          <p className="text-xs font-normal text-[#71717A]">{selectedMcp.description}</p>
         </div>
       </div>
       <div className="flex items-center gap-2">
@@ -273,17 +272,18 @@ export const McpDetailPage: React.FC = () => {
             </span>
           </div>
           <div className="flex flex-1 flex-col gap-1">
-            <span className="text-[11px] font-medium text-[#71717A]">
-              Total Calls
-            </span>
+            <span className="text-[11px] font-medium text-[#71717A]">Total Calls</span>
             <span className="text-[13px] font-medium text-[#18181B]">
-              {(usageStats[selectedMcp?.id ?? '']?.total_calls ?? usageStats[selectedMcp?.name ?? '']?.total_calls ?? 0).toLocaleString()} calls
+              {(
+                usageStats[selectedMcp?.id ?? '']?.total_calls ??
+                usageStats[selectedMcp?.name ?? '']?.total_calls ??
+                0
+              ).toLocaleString()}{' '}
+              calls
             </span>
           </div>
           <div className="flex flex-1 flex-col gap-1">
-            <span className="text-[11px] font-medium text-[#71717A]">
-              Scenes
-            </span>
+            <span className="text-[11px] font-medium text-[#71717A]">Scenes</span>
             <span className="text-[13px] font-medium text-[#18181B]">
               {usedInScenes.length} {usedInScenes.length === 1 ? 'scene' : 'scenes'}
             </span>
@@ -292,9 +292,22 @@ export const McpDetailPage: React.FC = () => {
 
         {/* Category & Tags */}
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="category" color="#18181B">
-            {selectedMcp.category}
-          </Badge>
+          {/* V2 §5.9 dual-read: prefer categoryId resolution over cached
+              `category` name string so renames in the sidebar reflect here
+              immediately. Hide the badge entirely when both are empty
+              (uncategorized) to match the rest of the app's badge policy. */}
+          {(() => {
+            const displayName = getCategoryDisplayName(
+              selectedMcp.categoryId,
+              selectedMcp.category,
+              categories,
+            );
+            return displayName ? (
+              <Badge variant="category" color="#18181B">
+                {displayName}
+              </Badge>
+            ) : null;
+          })()}
           {selectedMcp?.tags?.map((tag) => (
             <Badge key={tag} variant="tag">
               {tag}
@@ -320,9 +333,7 @@ export const McpDetailPage: React.FC = () => {
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[#F4F4F5]">
                 <Info className="h-3.5 w-3.5 text-[#A1A1AA]" />
               </div>
-              <span className="text-[13px] text-[#71717A]">
-                No tools detected yet
-              </span>
+              <span className="text-[13px] text-[#71717A]">No tools detected yet</span>
             </div>
           )}
         </div>
@@ -330,9 +341,7 @@ export const McpDetailPage: React.FC = () => {
 
       {/* Source Configuration Section */}
       <section className="flex flex-col gap-4">
-        <h3 className="text-sm font-semibold text-[#18181B]">
-          Source Configuration
-        </h3>
+        <h3 className="text-sm font-semibold text-[#18181B]">Source Configuration</h3>
         <div className="overflow-hidden rounded-lg border border-[#E5E5E5]">
           {/* Config Path */}
           <div className="flex items-center gap-3 px-3.5 py-3 border-b border-[#E5E5E5]">
@@ -362,12 +371,7 @@ export const McpDetailPage: React.FC = () => {
           </div>
         </div>
         {/* Open in Finder Button */}
-        <Button
-          variant="secondary"
-          size="small"
-          icon={<FolderOpen />}
-          onClick={handleOpenInFinder}
-        >
+        <Button variant="secondary" size="small" icon={<FolderOpen />} onClick={handleOpenInFinder}>
           Open in Finder
         </Button>
       </section>
@@ -393,9 +397,7 @@ export const McpDetailPage: React.FC = () => {
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[#F4F4F5]">
               <Layers className="h-3.5 w-3.5 text-[#A1A1AA]" />
             </div>
-            <span className="text-[13px] text-[#71717A]">
-              Not used in any scenes yet
-            </span>
+            <span className="text-[13px] text-[#71717A]">Not used in any scenes yet</span>
           </div>
         )}
       </section>
@@ -461,12 +463,8 @@ const ToolItem: React.FC<ToolItemProps> = ({ tool, isLast }) => {
       </div>
       {/* Info */}
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="text-[13px] font-medium text-[#18181B]">
-          {tool.name}
-        </span>
-        <span className="text-[11px] font-normal text-[#71717A] truncate">
-          {tool.description}
-        </span>
+        <span className="text-[13px] font-medium text-[#18181B]">{tool.name}</span>
+        <span className="text-[11px] font-normal text-[#71717A] truncate">{tool.description}</span>
       </div>
     </div>
   );

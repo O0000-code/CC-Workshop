@@ -29,7 +29,7 @@ import { SlidePanel } from '@/components/layout';
 import { parseDescription } from '@/utils/parseDescription';
 import Badge from '@/components/common/Badge';
 import Button from '@/components/common/Button';
-import { IconPicker, ICON_MAP, Dropdown, ScopeSelector } from '@/components/common';
+import { IconPicker, ICON_MAP, CategoryTreeDropdown, ScopeSelector } from '@/components/common';
 import { useSkillsStore } from '@/stores/skillsStore';
 import { useAppStore } from '@/stores/appStore';
 import { useScenesStore } from '@/stores/scenesStore';
@@ -150,9 +150,7 @@ function ConfigItem({ label, value, isLast = false }: ConfigItemProps) {
         !isLast ? 'border-b border-[#E5E5E5]' : ''
       }`}
     >
-      <span className="w-24 flex-shrink-0 text-xs font-medium text-[#71717A]">
-        {label}
-      </span>
+      <span className="w-24 flex-shrink-0 text-xs font-medium text-[#71717A]">{label}</span>
       <div className="flex-1">{value}</div>
     </div>
   );
@@ -216,7 +214,7 @@ export function SkillDetailPanel({ skill, isOpen, onClose }: SkillDetailPanelPro
   // Get the latest skill data from store (in case it's updated)
   const selectedSkill = useMemo(
     () => (skill ? skills.find((s) => s.id === skill.id) || skill : null),
-    [skills, skill]
+    [skills, skill],
   );
 
   // Get scenes that use the selected skill
@@ -235,24 +233,21 @@ export function SkillDetailPanel({ skill, isOpen, onClose }: SkillDetailPanelPro
     return usageStats[selectedSkill.id] || usageStats[selectedSkill.name] || null;
   }, [selectedSkill, usageStats]);
 
-  // Category dropdown options - only use categories from appStore
-  const categoryOptions = useMemo(() => {
-    const options = categories.map(cat => ({
-      value: cat.name,
-      label: cat.name,
-      color: cat.color || '#71717A',
-    }));
-    // Add Uncategorized option at the beginning
-    return [{ value: '', label: 'Uncategorized', color: '#71717A' }, ...options];
-  }, [categories]);
+  // V2 dual-read: prefer categoryId (canonical), fall back to name lookup
+  // for legacy entries that have not yet completed the
+  // `migrate_category_id_for_skills_mcps` migration. See 03_tech_plan V2 §5.9.
+  const currentCategoryId = useMemo(() => {
+    if (!selectedSkill) return '';
+    if (selectedSkill.categoryId) return selectedSkill.categoryId;
+    return categories.find((c) => c.name === selectedSkill.category)?.id ?? '';
+  }, [selectedSkill, categories]);
 
   // Filtered tag suggestions based on input
   const tagSuggestions = useMemo(() => {
     if (!tagInputValue.trim()) return appTags;
     const query = tagInputValue.toLowerCase();
-    return appTags.filter(tag =>
-      tag.name.toLowerCase().includes(query) &&
-      !selectedSkill?.tags?.includes(tag.name)
+    return appTags.filter(
+      (tag) => tag.name.toLowerCase().includes(query) && !selectedSkill?.tags?.includes(tag.name),
     );
   }, [tagInputValue, appTags, selectedSkill?.tags]);
 
@@ -293,10 +288,13 @@ export function SkillDetailPanel({ skill, isOpen, onClose }: SkillDetailPanelPro
     setIconPickerState({ isOpen: false, triggerRef: null });
   };
 
-  const handleCategoryChange = (category: string | string[]) => {
-    if (selectedSkill && typeof category === 'string') {
-      updateSkillCategory(selectedSkill.id, category);
-    }
+  // V2 §5.9: dropdown emits categoryId; resolve id → name and let the store
+  // handle dual-write (name → metadata.category cached display +
+  // metadata.category_id canonical reference).
+  const handleCategoryChange = (categoryId: string) => {
+    if (!selectedSkill) return;
+    const targetName = categoryId ? (categories.find((c) => c.id === categoryId)?.name ?? '') : '';
+    updateSkillCategory(selectedSkill.id, targetName);
   };
 
   const handleAddTag = async (tagName: string) => {
@@ -304,7 +302,7 @@ export function SkillDetailPanel({ skill, isOpen, onClose }: SkillDetailPanelPro
       const trimmedName = tagName.trim();
 
       // Check if tag already exists in appStore
-      const existingTag = appTags.find(t => t.name.toLowerCase() === trimmedName.toLowerCase());
+      const existingTag = appTags.find((t) => t.name.toLowerCase() === trimmedName.toLowerCase());
 
       // If new tag, add to appStore first so it appears in sidebar
       if (!existingTag) {
@@ -324,7 +322,7 @@ export function SkillDetailPanel({ skill, isOpen, onClose }: SkillDetailPanelPro
 
   const handleRemoveTag = (tagName: string) => {
     if (selectedSkill) {
-      const newTags = selectedSkill.tags.filter(t => t !== tagName);
+      const newTags = selectedSkill.tags.filter((t) => t !== tagName);
       updateSkillTags(selectedSkill.id, newTags);
     }
   };
@@ -348,12 +346,7 @@ export function SkillDetailPanel({ skill, isOpen, onClose }: SkillDetailPanelPro
   // If no skill, render empty SlidePanel to maintain animation
   if (!selectedSkill) {
     return (
-      <SlidePanel
-        isOpen={isOpen}
-        onClose={onClose}
-        width={800}
-        header={null}
-      >
+      <SlidePanel isOpen={isOpen} onClose={onClose} width={800} header={null}>
         <div />
       </SlidePanel>
     );
@@ -375,9 +368,7 @@ export function SkillDetailPanel({ skill, isOpen, onClose }: SkillDetailPanelPro
 
       {/* Title & Description */}
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <h2 className="text-base font-semibold text-[#18181B]">
-          {selectedSkill.name}
-        </h2>
+        <h2 className="text-base font-semibold text-[#18181B]">{selectedSkill.name}</h2>
         {(() => {
           const { firstSentence } = parseDescription(selectedSkill.description);
           return (
@@ -398,10 +389,22 @@ export function SkillDetailPanel({ skill, isOpen, onClose }: SkillDetailPanelPro
     <div className="flex flex-col gap-7">
       {/* Info Section */}
       <div className="flex gap-8">
-        <InfoItem label="Installed" value={formatDate(selectedSkill.installedAt || selectedSkill.createdAt)} />
-        <InfoItem label="Usage" value={`${(selectedSkillUsage?.call_count ?? 0).toLocaleString()} calls`} />
-        <InfoItem label="Last Used" value={formatRelativeTime(selectedSkillUsage?.last_used ?? undefined)} />
-        <InfoItem label="Scenes" value={`${scenesCount} ${scenesCount === 1 ? 'scene' : 'scenes'}`} />
+        <InfoItem
+          label="Installed"
+          value={formatDate(selectedSkill.installedAt || selectedSkill.createdAt)}
+        />
+        <InfoItem
+          label="Usage"
+          value={`${(selectedSkillUsage?.call_count ?? 0).toLocaleString()} calls`}
+        />
+        <InfoItem
+          label="Last Used"
+          value={formatRelativeTime(selectedSkillUsage?.last_used ?? undefined)}
+        />
+        <InfoItem
+          label="Scenes"
+          value={`${scenesCount} ${scenesCount === 1 ? 'scene' : 'scenes'}`}
+        />
       </div>
 
       {/* Category & Tags Section */}
@@ -409,9 +412,9 @@ export function SkillDetailPanel({ skill, isOpen, onClose }: SkillDetailPanelPro
         {/* Category Selector */}
         <div className="flex flex-col gap-2">
           <span className="text-[11px] font-medium text-[#71717A]">Category</span>
-          <Dropdown
-            options={categoryOptions}
-            value={selectedSkill.category || ''}
+          <CategoryTreeDropdown
+            categories={categories}
+            value={currentCategoryId}
             onChange={handleCategoryChange}
             placeholder="Select category"
             compact
@@ -471,7 +474,9 @@ export function SkillDetailPanel({ skill, isOpen, onClose }: SkillDetailPanelPro
                       </button>
                     ))}
                     {/* Option to create new tag if not in suggestions */}
-                    {!tagSuggestions.some(t => t.name.toLowerCase() === tagInputValue.toLowerCase()) && (
+                    {!tagSuggestions.some(
+                      (t) => t.name.toLowerCase() === tagInputValue.toLowerCase(),
+                    ) && (
                       <button
                         onMouseDown={(e) => {
                           e.preventDefault();
@@ -602,9 +607,7 @@ export function SkillDetailPanel({ skill, isOpen, onClose }: SkillDetailPanelPro
         <div className="flex flex-col gap-3 rounded-lg border border-[#E5E5E5] p-4">
           <div className="flex items-center gap-2.5">
             <span className="text-xs font-medium text-[#71717A]">Path</span>
-            <span className="font-mono text-xs text-[#18181B]">
-              {selectedSkill.sourcePath}
-            </span>
+            <span className="font-mono text-xs text-[#18181B]">{selectedSkill.sourcePath}</span>
           </div>
           <Button
             variant="secondary"
@@ -631,9 +634,7 @@ export function SkillDetailPanel({ skill, isOpen, onClose }: SkillDetailPanelPro
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[#F4F4F5]">
               <Layers className="h-3.5 w-3.5 text-[#A1A1AA]" />
             </div>
-            <span className="text-[13px] text-[#71717A]">
-              Not used in any scenes yet
-            </span>
+            <span className="text-[13px] text-[#71717A]">Not used in any scenes yet</span>
           </div>
         )}
       </div>

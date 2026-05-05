@@ -76,7 +76,9 @@ interface ClaudeMdState {
   unsetGlobal: () => Promise<void>;
 
   // Distribution actions
-  distributeToProject: (options: ClaudeMdDistributionOptions) => Promise<ClaudeMdDistributionResult | null>;
+  distributeToProject: (
+    options: ClaudeMdDistributionOptions,
+  ) => Promise<ClaudeMdDistributionResult | null>;
 
   // Auto-classify actions
   autoClassify: () => Promise<void>;
@@ -143,7 +145,7 @@ export const useClaudeMdStore = create<ClaudeMdState>((set, get) => ({
 
     try {
       const files = await safeInvoke<ClaudeMdFile[]>('get_claude_md_files');
-      const globalFile = files?.find(f => f.isGlobal);
+      const globalFile = files?.find((f) => f.isGlobal);
 
       set({
         files: files || [],
@@ -158,7 +160,7 @@ export const useClaudeMdStore = create<ClaudeMdState>((set, get) => ({
   },
 
   setFiles: (files) => {
-    const globalFile = files.find(f => f.isGlobal);
+    const globalFile = files.find((f) => f.isGlobal);
     set({ files, globalFileId: globalFile?.id || null });
   },
 
@@ -244,9 +246,7 @@ export const useClaudeMdStore = create<ClaudeMdState>((set, get) => ({
 
     // Optimistic update
     set((state) => ({
-      files: state.files.map((f) =>
-        f.id === id ? { ...f, ...updates } : f
-      ),
+      files: state.files.map((f) => (f.id === id ? { ...f, ...updates } : f)),
     }));
 
     try {
@@ -263,9 +263,7 @@ export const useClaudeMdStore = create<ClaudeMdState>((set, get) => ({
       // Rollback on error
       const message = typeof error === 'string' ? error : String(error);
       set((state) => ({
-        files: state.files.map((f) =>
-          f.id === id ? file : f
-        ),
+        files: state.files.map((f) => (f.id === id ? file : f)),
         error: message,
       }));
     }
@@ -451,8 +449,8 @@ export const useClaudeMdStore = create<ClaudeMdState>((set, get) => ({
 
       // Collect new categories and tags that need to be created
       const { addCategory, addTag, loadCategories, loadTags } = useAppStore.getState();
-      const existingCategoryNames = new Set(categories.map(c => c.name));
-      const existingTagNames = new Set(tags.map(t => t.name));
+      const existingCategoryNames = new Set(categories.map((c) => c.name));
+      const existingTagNames = new Set(tags.map((t) => t.name));
 
       const newCategories = new Set<string>();
       const newTags = new Set<string>();
@@ -469,10 +467,23 @@ export const useClaudeMdStore = create<ClaudeMdState>((set, get) => ({
       }
 
       // Create new categories
-      const categoryColors = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#14B8A6', '#F97316'];
+      const categoryColors = [
+        '#3B82F6',
+        '#10B981',
+        '#F59E0B',
+        '#EF4444',
+        '#8B5CF6',
+        '#EC4899',
+        '#14B8A6',
+        '#F97316',
+      ];
       let colorIndex = categories.length;
       for (const categoryName of newCategories) {
-        await addCategory(categoryName, categoryColors[colorIndex % categoryColors.length]);
+        await addCategory(
+          categoryName,
+          categoryColors[colorIndex % categoryColors.length],
+          undefined, // D14=A: new categories from autoClassify always land at root
+        );
         colorIndex++;
       }
 
@@ -493,11 +504,13 @@ export const useClaudeMdStore = create<ClaudeMdState>((set, get) => ({
         const file = files.find((f) => f.id === result.id);
         if (file) {
           // Find category ID by name
-          const categoryId = updatedCategories.find(c => c.name === result.suggested_category)?.id;
+          const categoryId = updatedCategories.find(
+            (c) => c.name === result.suggested_category,
+          )?.id;
 
           // Find tag IDs by names
           const tagIds = result.suggested_tags
-            .map(tagName => updatedTags.find(t => t.name === tagName)?.id)
+            .map((tagName) => updatedTags.find((t) => t.name === tagName)?.id)
             .filter((id): id is string => id !== undefined);
 
           await safeInvoke('update_claude_md', {
@@ -555,7 +568,7 @@ export const useClaudeMdStore = create<ClaudeMdState>((set, get) => ({
         (file) =>
           file.name.toLowerCase().includes(searchLower) ||
           file.description.toLowerCase().includes(searchLower) ||
-          file.content.toLowerCase().includes(searchLower)
+          file.content.toLowerCase().includes(searchLower),
       );
     }
 
@@ -566,9 +579,7 @@ export const useClaudeMdStore = create<ClaudeMdState>((set, get) => ({
 
     // Tags filter
     if (filter.tagIds.length > 0) {
-      filtered = filtered.filter((file) =>
-        filter.tagIds.some((tag) => file.tagIds.includes(tag))
-      );
+      filtered = filtered.filter((file) => filter.tagIds.some((tag) => file.tagIds.includes(tag)));
     }
 
     // Global only filter

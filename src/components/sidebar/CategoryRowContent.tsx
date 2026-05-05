@@ -10,8 +10,18 @@ import { ColorPicker } from '@/components/common';
  * outer row container — each caller wraps this with its own container so
  * they can apply their own className / event handlers.
  *
- * @see `02_design_spec.md` V3 §2.2 (DragOverlay omits count)
- * @see `03_tech_plan.md` V3 §8 (component split)
+ * V2 hierarchy note: this component is **depth-agnostic**. Per
+ * `02_design_spec.md` V2 §2.3 + D11, child categories share the same dot
+ * size / text color / font weight as parents — hierarchy is expressed via
+ * padding-left at the row wrapper level (`SortableCategoryRow`), not by
+ * tweaking content visuals. The DragOverlay itself never carries any
+ * chevron-related visual (per V2 §2.5 / §2.22 anti-pattern — DragOverlay is
+ * a naked depth-agnostic clone), so this component does not reserve any
+ * chevron-gutter space.
+ *
+ * @see `02_design_spec.md` V2 §2.3 (child = parent visuals + indent only)
+ * @see `02_design_spec.md` V2 §2.5 (DragOverlay padding parity)
+ * @see `03_tech_plan.md` V2 §5.4 (component split)
  */
 interface CategoryRowContentProps {
   category: Category;
@@ -39,7 +49,11 @@ export function CategoryRowContent({
         inside the row and would otherwise start a drag).
         See `02_design_spec.md` V3 §2.9.
       */}
-      <span data-no-dnd="true" onMouseDown={(e) => e.stopPropagation()}>
+      <span
+        data-no-dnd="true"
+        onMouseDown={(e) => e.stopPropagation()}
+        className="inline-flex items-center"
+      >
         <ColorPicker value={category.color} onChange={(color) => onColorChange?.(color)} />
       </span>
 

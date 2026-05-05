@@ -14,6 +14,7 @@ import { useAppStore } from '../stores/appStore';
 import { useSkillsStore } from '../stores/skillsStore';
 import { useMcpsStore } from '../stores/mcpsStore';
 import { useClaudeMdStore } from '../stores/claudeMdStore';
+import { collectDescendantIds } from '@/utils/categoryTree';
 import type { Skill } from '../types';
 
 // ============================================================================
@@ -38,8 +39,26 @@ export function CategoryPage() {
 
   // Find current category
   const category = categories.find((c) => c.id === categoryId);
-  // Get category name for filtering (skill.category stores name, not id)
+  // Get category name for header display (skill.category stores name, not id)
   const categoryName = category?.name;
+
+  // D7=A aggregated view: parent categories show self + all descendants;
+  // child categories show only self (max depth=2 → typically just self).
+  // collectDescendantIds is depth-agnostic and includes the root id itself.
+  const visibleIds = useMemo(
+    () => (categoryId ? collectDescendantIds(categoryId, categories) : new Set<string>()),
+    [categoryId, categories],
+  );
+
+  // Backward-compat name set: pre-D1 migration, Skills/MCPs reference
+  // categories by name (`s.category`). After T1e migrates `category_id`
+  // metadata, the id path takes precedence; this name set is the fallback
+  // for entries the migration has not yet reached (or that arrived through
+  // legacy import paths).
+  const visibleNames = useMemo(
+    () => new Set(categories.filter((c) => visibleIds.has(c.id)).map((c) => c.name)),
+    [categories, visibleIds],
+  );
 
   // Get selected skill/mcp/claudeMd objects
   const selectedSkill = useMemo(
@@ -55,13 +74,20 @@ export function CategoryPage() {
     [claudeMdFiles, selectedClaudeMdId],
   );
 
-  // Filter skills, mcps, and claudeMd by category, then by search
+  // Filter skills, mcps, and claudeMd by category (dual-read), then by search
   const filteredData = useMemo(() => {
-    // First filter by category name (skill.category stores the category name, not id)
-    // For claudeMd, filter by categoryId (claudeMd uses ID, not name)
-    const categorySkills = skills.filter((s) => s.category === categoryName);
-    const categoryMcps = mcpServers.filter((m) => m.category === categoryName);
-    const categoryClaudeMd = claudeMdFiles.filter((f) => f.categoryId === categoryId);
+    // Dual-read: prefer canonical `categoryId` (post-T1e migration); fall back
+    // to legacy `category` name match for pre-migration entries. CLAUDE.md
+    // already uses id-only references (no legacy name field), so no fallback.
+    const categorySkills = skills.filter((s) =>
+      s.categoryId ? visibleIds.has(s.categoryId) : visibleNames.has(s.category),
+    );
+    const categoryMcps = mcpServers.filter((m) =>
+      m.categoryId ? visibleIds.has(m.categoryId) : visibleNames.has(m.category),
+    );
+    const categoryClaudeMd = claudeMdFiles.filter(
+      (f) => f.categoryId !== undefined && visibleIds.has(f.categoryId),
+    );
 
     // Then filter by search if search is active
     if (!search) {
@@ -90,7 +116,7 @@ export function CategoryPage() {
           file.description.toLowerCase().includes(searchLower),
       ),
     };
-  }, [skills, mcpServers, claudeMdFiles, categoryName, categoryId, search]);
+  }, [skills, mcpServers, claudeMdFiles, visibleIds, visibleNames, search]);
 
   const handleSearchChange = (value: string) => {
     setSearch(value);

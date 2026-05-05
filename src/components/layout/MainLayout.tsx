@@ -12,11 +12,12 @@ import { useScenesStore } from '@/stores/scenesStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useImportStore } from '@/stores/importStore';
 import { useLauncherStore } from '@/stores/launcherStore';
-import { Pencil, Trash2, Loader2 } from 'lucide-react';
+import { Pencil, Trash2, Loader2, ArrowUp } from 'lucide-react';
 import { isTauri, safeInvoke } from '@/utils/tauri';
 import { ErrorBoundary } from '../common/ErrorBoundary';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import type { Category, Tag } from '@/types';
+import { collectDescendantIds } from '@/utils/categoryTree';
 
 // Module-level flags to prevent duplicate launch processing
 // These persist across React component remounts (unlike refs which can be reset by StrictMode)
@@ -65,6 +66,10 @@ export default function MainLayout() {
     // Reorder actions
     reorderCategories,
     reorderTags,
+    // Hierarchy: move a Category to a new parent (or root via null).
+    // Used by SortableCategoriesList drop-into to commit parent_id changes
+    // before the follow-up reorder is computed (per 03 V2 §5.7 / P0-ARCH-3).
+    moveCategoryToParent,
   } = useAppStore();
 
   const { loadSettings, hasCompletedImport } = useSettingsStore();
@@ -92,15 +97,28 @@ export default function MainLayout() {
     [skills.length, mcpServers.length, claudeMdFiles.length, scenes.length, projects.length],
   );
 
-  // Dynamically calculate category counts from skills, mcps, and claudeMd files
+  // Dynamically calculate category counts from skills, mcps, and claudeMd files.
+  // D8=B (per `.dev/category-hierarchy/01_research/_synthesis_decisions.md` §2.1):
+  // a parent category's count = self-count + sum of every descendant's self-count.
+  // Leaf categories continue to count only their own items.
+  // dual-read aggregation: prefer `categoryId` (canonical SoT post-migration),
+  // fall back to `category` name during the V1 hierarchy migration window so
+  // unmigrated entries still show up under their cached category name.
   const categoriesWithCounts = useMemo(() => {
-    return categories.map((cat) => ({
-      ...cat,
-      count:
-        skills.filter((s) => s.category === cat.name).length +
-        mcpServers.filter((m) => m.category === cat.name).length +
-        claudeMdFiles.filter((f) => f.categoryId === cat.id).length,
-    }));
+    return categories.map((cat) => {
+      const idSet = collectDescendantIds(cat.id, categories);
+      const nameSet = new Set(categories.filter((c) => idSet.has(c.id)).map((c) => c.name));
+      return {
+        ...cat,
+        count:
+          skills.filter((s) => (s.categoryId ? idSet.has(s.categoryId) : nameSet.has(s.category)))
+            .length +
+          mcpServers.filter((m) =>
+            m.categoryId ? idSet.has(m.categoryId) : nameSet.has(m.category),
+          ).length +
+          claudeMdFiles.filter((f) => f.categoryId !== undefined && idSet.has(f.categoryId)).length,
+      };
+    });
   }, [categories, skills, mcpServers, claudeMdFiles]);
 
   // Dynamically calculate tag counts from skills, mcps, and claudeMd files
@@ -402,13 +420,52 @@ export default function MainLayout() {
     setContextMenu(null);
   };
 
-  const handleDeleteCategory = async () => {
-    if (contextMenu?.category) {
+  // P0-2 (per 02 V2 §2.20 + 03 V2 §6.3.4): Promote-to-root via ContextMenu.
+  // Equivalent to keyboard `Space + ←` while a child row is lifted, or to a
+  // mouse drag with `dragOffset.x ≤ -12` + 80 ms dwell. Only meaningful when
+  // the right-clicked category is a child (parentId set).
+  const handlePromoteToRoot = useCallback(async () => {
+    if (contextMenu?.category?.parentId) {
       try {
-        await deleteCategory(contextMenu.category.id);
-      } catch (error) {
-        console.error('Failed to delete category:', error);
+        await moveCategoryToParent(contextMenu.category.id, null);
+      } catch (e) {
+        console.error('Failed to promote category to root:', e);
       }
+    }
+    setContextMenu(null);
+  }, [contextMenu, moveCategoryToParent]);
+
+  // P0-3 (per 02 V2 §2.21 + acceptance #26): when deleting a parent that
+  // currently has ≥ 1 children, surface a confirmation dialog before the
+  // backend cascade-promotes the children. The dialog text is locked by
+  // _v2_patch_plan §3.6 — keep verbatim. No-children categories delete
+  // directly (V3-compatible behaviour, no UX regression).
+  //
+  // Dialog channel: `window.confirm` (macOS-friendly, single-shot, blocking).
+  // Spec §2.21 line 617 explicitly accepts this as the fallback when a
+  // Tauri-native NSAlert is not wired up. The Cancel button maps to `false`
+  // and short-circuits without touching backend state.
+  const handleDeleteCategory = async () => {
+    if (!contextMenu?.category) return;
+    const cat = contextMenu.category;
+
+    const childCount = categories.filter((c) => c.parentId === cat.id).length;
+    if (childCount > 0) {
+      const word = childCount === 1 ? 'sub-category' : 'sub-categories';
+      const ok = window.confirm(
+        `Delete '${cat.name}'?\n\n` +
+          `${cat.name} contains ${childCount} ${word}. Sub-categories will be promoted to root level. This cannot be undone.`,
+      );
+      if (!ok) {
+        setContextMenu(null);
+        return;
+      }
+    }
+
+    try {
+      await deleteCategory(cat.id);
+    } catch (error) {
+      console.error('Failed to delete category:', error);
     }
     setContextMenu(null);
   };
@@ -480,26 +537,33 @@ export default function MainLayout() {
   }, [isRefreshing, initApp, loadSkills, loadMcps, loadScenes, loadProjects]);
 
   // Reorder handlers - delegate to store actions (which perform optimistic update + IPC + fallback)
+  // 2026-05-04: pass through directly so the caller's try/catch can observe
+  // rejections. The store's Stage-2 catch already handles fallback; the
+  // outer try/catch in handleDragEnd uses the rejection only as a signal to
+  // skip downstream work.
   const handleReorderCategories = useCallback(
-    async (orderedIds: string[]) => {
-      try {
-        await reorderCategories(orderedIds);
-      } catch (e) {
-        console.error('Failed to reorder categories:', e);
-      }
-    },
+    (orderedIds: string[]) => reorderCategories(orderedIds),
     [reorderCategories],
   );
 
   const handleReorderTags = useCallback(
-    async (orderedIds: string[]) => {
-      try {
-        await reorderTags(orderedIds);
-      } catch (e) {
-        console.error('Failed to reorder tags:', e);
-      }
-    },
+    (orderedIds: string[]) => reorderTags(orderedIds),
     [reorderTags],
+  );
+
+  // Hierarchy drop-into handler: commits a parent_id change for a Category and
+  // returns a Promise so SortableCategoriesList.handleDragEnd can `await` it
+  // before re-reading fresh `categories` state to compute the follow-up
+  // reorder payload (per 03 V2 §5.7 / P0-ARCH-3 — serial double-IPC).
+  //
+  // 2026-05-04 fix: do NOT swallow the rejection via try/catch — propagate
+  // the Promise rejection so SortableCategoriesList.handleDragEnd's own
+  // try/catch can react (skip the follow-up reorder). The previous swallow
+  // hid IPC failures from the caller while the appStore had already reverted
+  // the optimistic state, producing the "弹回" (snap-back) symptom.
+  const handleSetCategoryParent = useCallback(
+    (id: string, newParentId: string | null) => moveCategoryToParent(id, newParentId),
+    [moveCategoryToParent],
   );
 
   // V3 R-P0-2: when editing/adding, return early without clearing input state.
@@ -597,6 +661,7 @@ export default function MainLayout() {
           // Drag-and-drop reorder
           onReorderCategories={handleReorderCategories}
           onReorderTags={handleReorderTags}
+          onSetCategoryParent={handleSetCategoryParent}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
           isDragging={isDragging}
@@ -610,10 +675,21 @@ export default function MainLayout() {
         </main>
       </div>
 
-      {/* Category Context Menu */}
+      {/* Category Context Menu — per 02 V2 §2.20: child rows additionally
+          show "Promote to root" between Rename and Delete. Root rows
+          (no parentId) only see Rename + Delete. */}
       {contextMenu && (
         <ContextMenu
           items={[
+            ...(contextMenu.category.parentId
+              ? [
+                  {
+                    label: 'Promote to Root',
+                    icon: <ArrowUp size={14} />,
+                    onClick: handlePromoteToRoot,
+                  },
+                ]
+              : []),
             {
               label: 'Rename',
               icon: <Pencil size={14} />,

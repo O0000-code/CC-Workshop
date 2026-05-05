@@ -13,6 +13,11 @@ export { SearchInput } from './SearchInput';
 export { default as ErrorBoundary, ErrorBoundary as ErrorBoundaryComponent } from './ErrorBoundary';
 export { default as Dropdown, Dropdown as DropdownComponent } from './Dropdown';
 export type { DropdownProps, DropdownOption } from './Dropdown';
+export {
+  default as CategoryTreeDropdown,
+  CategoryTreeDropdown as CategoryTreeDropdownComponent,
+} from './CategoryTreeDropdown';
+export type { CategoryTreeDropdownProps } from './CategoryTreeDropdown';
 export { FilteredEmptyState } from './FilteredEmptyState';
 export { IconPicker, ICON_MAP } from './IconPicker';
 export type { IconPickerProps } from './IconPicker';

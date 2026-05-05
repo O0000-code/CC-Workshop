@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Category, Tag } from '@/types';
+import type { AppData, Category, MigrationReport, Tag } from '@/types';
 import { isTauri, safeInvoke } from '@/utils/tauri';
 
 // ====================================================================
@@ -100,7 +100,7 @@ interface AppState {
   // Tauri-integrated Actions
   loadCategories: () => Promise<void>;
   loadTags: () => Promise<void>;
-  addCategory: (name: string, color: string) => Promise<Category>;
+  addCategory: (name: string, color: string, parentId?: string) => Promise<Category>;
   updateCategory: (id: string, name?: string, color?: string) => Promise<void>;
   deleteCategory: (id: string) => Promise<void>;
   addTag: (name: string) => Promise<Tag>;
@@ -108,6 +108,17 @@ interface AppState {
   deleteTag: (id: string) => Promise<void>;
   reorderCategories: (orderedIds: string[]) => Promise<void>;
   reorderTags: (orderedIds: string[]) => Promise<void>;
+  /**
+   * V1 hierarchy: move a category to a new parent (or promote to root with
+   * `null`). Two-phase commit — applies optimistic state synchronously, then
+   * persists via the shared `enqueueReorder` queue so concurrent reorder /
+   * setParent calls execute in user-intent order.
+   *
+   * Returns a `Promise<void>` so callers (e.g. `onDragEnd` chaining setParent
+   * → reorder) can `await` Stage 2 completion before deriving the next IPC's
+   * payload — see 03_tech_plan V2 §4.3 / P0-ARCH-3.
+   */
+  moveCategoryToParent: (id: string, newParentId: string | null) => Promise<void>;
   initApp: () => Promise<void>;
 
   // Editing state Actions
@@ -234,7 +245,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  addCategory: async (name: string, color: string) => {
+  addCategory: async (name: string, color: string, parentId?: string) => {
     // Skip in non-Tauri environment
     if (!isTauri()) {
       console.warn('AppStore: Cannot add category in browser mode');
@@ -242,7 +253,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     try {
-      const category = await safeInvoke<Category>('add_category', { name, color });
+      const category = await safeInvoke<Category>('add_category', { name, color, parentId });
       if (category) {
         set((state) => ({
           categories: [...state.categories, category],
@@ -399,10 +410,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       categoriesVersion: state.categoriesVersion + 1,
     }));
 
+    console.warn('[reorderCategories] Stage 1 optimistic applied', {
+      orderedIds,
+      reorderedActive: reordered.find((c) => orderedIds.includes(c.id)),
+    });
+
     // Stage 2: queued IPC
     return enqueueReorder(async () => {
       try {
+        console.warn('[reorderCategories] Stage 2 IPC dispatch', { orderedIds });
         const updated = await safeInvoke<Category[]>('reorder_categories', { orderedIds });
+        console.warn('[reorderCategories] Stage 2 IPC returned', {
+          updatedLen: updated?.length,
+          updatedFirst: updated?.[0],
+        });
         if (updated) {
           // V3 P1-2: only set when backend differs from current local state.
           // Stage 1 already produced an optimistic equal Vec; the canonical
@@ -502,6 +523,107 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
+  // ============================================================
+  // Move category to parent — two-phase commit (V1 hierarchy)
+  // ============================================================
+  // Stage 1 (synchronous): apply parentId locally + bump
+  //         categoriesVersion so the sidebar updates immediately.
+  // Stage 2 (queued, async): persist via the shared `enqueueReorder`
+  //         queue, so concurrent reorderCategories / moveCategoryToParent
+  //         IPCs run in submission order — preserving user intent
+  //         when onDragEnd issues both setParent and reorder back-to-back
+  //         (P0-ARCH-3).
+  // Failure: try `get_categories` first (canonical state — may include
+  //          legitimate concurrent changes we don't want to throw away);
+  //          fall back to the snapshot taken at call time only if that
+  //          also fails (P1-7).
+  // Returns: Promise<void> so callers can `await` Stage 2 before
+  //          computing the next IPC's payload.
+  // ============================================================
+  moveCategoryToParent: (id: string, newParentId: string | null) => {
+    if (!isTauri()) return Promise.resolve();
+
+    // Stage 1: optimistic, synchronous
+    const snapshotForFallback = get().categories;
+    const optimistic = snapshotForFallback.map((c) =>
+      c.id === id ? { ...c, parentId: newParentId ?? undefined } : c,
+    );
+
+    set((state) => ({
+      categories: optimistic,
+      categoriesVersion: state.categoriesVersion + 1,
+    }));
+
+    console.warn('[moveCategoryToParent] Stage 1 optimistic applied', {
+      id,
+      newParentId,
+    });
+
+    // Stage 2: queued IPC
+    return enqueueReorder(async () => {
+      try {
+        console.warn('[moveCategoryToParent] Stage 2 IPC dispatch', {
+          id,
+          newParentId,
+        });
+        const updated = await safeInvoke<Category[]>('set_category_parent', {
+          id,
+          newParentId,
+        });
+        console.warn('[moveCategoryToParent] Stage 2 IPC returned', {
+          updatedLen: updated?.length,
+          updatedActive: updated?.find((c) => c.id === id),
+        });
+        if (updated) {
+          // V3 P1-2 pattern + V2 hierarchy upgrade: only set when backend
+          // differs from current local state. Compare both id ORDER and
+          // parentId (not just id order) since this mutation changes the
+          // hierarchy graph, not the sibling order.
+          const current = get().categories;
+          const sameOrderAndHierarchy =
+            current.length === updated.length &&
+            current.every(
+              (c, i) =>
+                c.id === updated[i].id && (c.parentId ?? null) === (updated[i].parentId ?? null),
+            );
+          if (!sameOrderAndHierarchy) {
+            set((state) => ({
+              categories: updated,
+              categoriesVersion: state.categoriesVersion + 1,
+            }));
+          }
+        }
+      } catch (error) {
+        console.error('Failed to set category parent:', error);
+        const message = typeof error === 'string' ? error : String(error);
+
+        // V2 [P1-7]: fallback to canonical backend first. snapshot revert is
+        // a last resort because the snapshot may be stale relative to other
+        // concurrent reorder/setParent calls that succeeded in between.
+        try {
+          const real = await safeInvoke<Category[]>('get_categories');
+          if (real) {
+            set((state) => ({
+              categories: real,
+              categoriesVersion: state.categoriesVersion + 1,
+              error: message,
+            }));
+            return;
+          }
+        } catch (recoverError) {
+          console.error('Failed to recover canonical categories:', recoverError);
+        }
+
+        // Last resort: revert to snapshot taken at call time
+        set((state) => ({
+          categories: snapshotForFallback,
+          categoriesVersion: state.categoriesVersion + 1,
+          error: message,
+        }));
+      }
+    });
+  },
+
   initApp: async () => {
     // Skip in non-Tauri environment
     if (!isTauri()) {
@@ -514,6 +636,45 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       await safeInvoke('init_app_data');
       await Promise.all([get().loadCategories(), get().loadTags()]);
+
+      // ====================================================================
+      // V1 hierarchy: one-time category_id backfill for legacy data.json
+      // ====================================================================
+      // The migration is idempotent and gated by `data.hasCompletedCategoryIdMigration`
+      // (stored in AppData, not AppSettings — so settingsStore.saveSettings
+      // can never reset it accidentally; see 03_tech_plan V2 §3.5 / P0-DATA-1).
+      //
+      // Failure handling (per Phase-1 audit P0-1 + 03 V2 §4.10):
+      //   - IPC throws (write_app_data failure / DATA_MUTEX poisoning)
+      //     → log warning, leave flag false, retry on next launch.
+      //     App keeps working: dual-read fallback (category_id ? lookup :
+      //     name lookup) is operational regardless of migration state.
+      //   - IPC succeeds with orphaned skills/mcps in the report
+      //     → backend has already advanced the flag (orphan names are a
+      //     terminal user state, not a retry signal). Frontend just logs
+      //     the orphan counts; a future UI may surface a re-classify prompt.
+      //
+      // We do NOT block app initialisation on migration outcome — even a
+      // total IPC failure leaves the app in a usable (dual-read) state.
+      try {
+        const data = await safeInvoke<AppData>('read_app_data');
+        if (data && !data.hasCompletedCategoryIdMigration) {
+          const report = await safeInvoke<MigrationReport>('migrate_category_id_for_skills_mcps');
+          if (report) {
+            // Project ESLint: only `warn` and `error` are allowed (no
+            // `info` / `log`). This is a one-time launch summary so we
+            // emit at warn level to stay visible in production builds.
+            console.warn(
+              `[migrate_category_id] migrated ${report.migratedSkills} skills + ${report.migratedMcps} mcps; orphans: ${report.orphanedSkills.length} skills + ${report.orphanedMcps.length} mcps`,
+            );
+          }
+        }
+      } catch (migErr) {
+        // Non-fatal — frontend keeps the dual-read fallback operational and
+        // backend will retry on next launch (flag stays false).
+        console.error('Category id migration failed (non-fatal):', migErr);
+      }
+
       set({ isLoading: false });
     } catch (error) {
       console.error('Failed to initialize app:', error);

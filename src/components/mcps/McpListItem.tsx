@@ -1,9 +1,14 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useMemo } from 'react';
 import { MoreHorizontal, Trash2, Puzzle } from 'lucide-react';
 import { ICON_MAP } from '@/components/common';
 import { truncateToFirstSentence } from '@/utils/text';
 import { McpServer } from '@/types';
-import { getCategoryColor } from '@/utils/constants';
+import { getCategoryColor as getCategoryColorFromName } from '@/utils/constants';
+import { useAppStore } from '@/stores/appStore';
+import {
+  getCategoryDisplayName,
+  getCategoryColor as getResolvedCategoryColor,
+} from '@/utils/categoryTree';
 import { TagsWithTooltip } from '@/components/common/TagsWithTooltip';
 import { Badge } from '@/components/common/Badge';
 
@@ -35,7 +40,6 @@ const getMcpIcon = (mcp: McpServer): React.ElementType => {
   }
   return categoryIconMap[mcp.category] || ICON_MAP['plug'];
 };
-
 
 // ============================================================================
 // McpListItem Component
@@ -73,7 +77,19 @@ export const McpListItem: React.FC<McpListItemProps> = ({
   const menuRef = useRef<HTMLDivElement>(null);
   const [showMenu, setShowMenu] = useState(false);
   const IconComponent = getMcpIcon(mcp);
-  const categoryColor = getCategoryColor(mcp.category);
+  // V2 §5.9 dual-read: prefer the categoryId-resolved name/color, fall back
+  // to the cached `mcp.category` string for legacy entries.
+  const allCategories = useAppStore((s) => s.categories);
+  const displayCategoryName = useMemo(
+    () => getCategoryDisplayName(mcp.categoryId, mcp.category, allCategories),
+    [mcp.categoryId, mcp.category, allCategories],
+  );
+  const categoryColor = useMemo(
+    () =>
+      getResolvedCategoryColor(mcp.categoryId, mcp.category, allCategories) ??
+      getCategoryColorFromName(mcp.category),
+    [mcp.categoryId, mcp.category, allCategories],
+  );
 
   // Plugin source detection
   const isPluginSource = mcp.installSource === 'plugin';
@@ -141,7 +157,6 @@ export const McpListItem: React.FC<McpListItemProps> = ({
     >
       {/* Left Section */}
       <div className="flex items-center gap-3.5 min-w-0 flex-1">
-
         {/* Icon Container with Plugin Badge */}
         <div className="relative shrink-0">
           <div
@@ -190,14 +205,11 @@ export const McpListItem: React.FC<McpListItemProps> = ({
       </div>
 
       {/* Right Section - Category & Tags (hidden in compact mode with delay on show) */}
-      <div
-        className="flex items-center gap-1.5 shrink-0"
-        style={rightSectionStyle}
-      >
-        {/* Category Badge - only show if category exists */}
-        {mcp.category && (
+      <div className="flex items-center gap-1.5 shrink-0" style={rightSectionStyle}>
+        {/* Category Badge - only show if a resolvable category exists */}
+        {displayCategoryName && (
           <Badge variant="category" color={categoryColor}>
-            {mcp.category.charAt(0).toUpperCase() + mcp.category.slice(1)}
+            {displayCategoryName.charAt(0).toUpperCase() + displayCategoryName.slice(1)}
           </Badge>
         )}
 
@@ -206,10 +218,7 @@ export const McpListItem: React.FC<McpListItemProps> = ({
       </div>
 
       {/* More Menu - Always visible */}
-      <div
-        ref={menuRef}
-        className="shrink-0 ml-4 relative"
-      >
+      <div ref={menuRef} className="shrink-0 ml-4 relative">
         <button
           onClick={handleMoreClick}
           className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-[#F4F4F5] transition-colors"

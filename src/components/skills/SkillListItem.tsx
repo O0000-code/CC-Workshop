@@ -1,10 +1,15 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useMemo } from 'react';
 import { Sparkles, MoreHorizontal, Trash2, Puzzle } from 'lucide-react';
 import Badge from '../common/Badge';
 import { ICON_MAP } from '@/components/common';
 import { TagsWithTooltip } from '@/components/common/TagsWithTooltip';
 import { truncateToFirstSentence } from '@/utils/text';
-import { getCategoryColor } from '@/utils/constants';
+import { getCategoryColor as getCategoryColorFromName } from '@/utils/constants';
+import { useAppStore } from '@/stores/appStore';
+import {
+  getCategoryDisplayName,
+  getCategoryColor as getResolvedCategoryColor,
+} from '@/utils/categoryTree';
 import { Skill } from '@/types';
 
 // ============================================================================
@@ -27,7 +32,6 @@ const getSkillIcon = (skill: Skill): React.ElementType => {
   }
   return Sparkles;
 };
-
 
 // ============================================================================
 // SkillListItem Component
@@ -65,7 +69,19 @@ export const SkillListItem: React.FC<SkillListItemProps> = ({
   const menuRef = useRef<HTMLDivElement>(null);
   const [showMenu, setShowMenu] = useState(false);
   const IconComponent = getSkillIcon(skill);
-  const categoryColor = getCategoryColor(skill.category);
+  // V2 §5.9 dual-read: prefer the categoryId-resolved name/color, fall back
+  // to the cached `skill.category` string for legacy entries.
+  const allCategories = useAppStore((s) => s.categories);
+  const displayCategoryName = useMemo(
+    () => getCategoryDisplayName(skill.categoryId, skill.category, allCategories),
+    [skill.categoryId, skill.category, allCategories],
+  );
+  const categoryColor = useMemo(
+    () =>
+      getResolvedCategoryColor(skill.categoryId, skill.category, allCategories) ??
+      getCategoryColorFromName(skill.category),
+    [skill.categoryId, skill.category, allCategories],
+  );
 
   // Plugin source detection
   const isPluginSource = skill.installSource === 'plugin';
@@ -129,7 +145,6 @@ export const SkillListItem: React.FC<SkillListItemProps> = ({
     >
       {/* Left Section */}
       <div className="flex items-center gap-3.5 min-w-0 flex-1">
-
         {/* Icon Container with Plugin Badge */}
         <div className="relative shrink-0">
           <div
@@ -178,14 +193,11 @@ export const SkillListItem: React.FC<SkillListItemProps> = ({
       </div>
 
       {/* Right Section - Category & Tags (hidden in compact mode with delay on show) */}
-      <div
-        className="flex items-center gap-1.5 shrink-0"
-        style={rightSectionStyle}
-      >
-        {/* Category Badge - only show if category exists */}
-        {skill.category && (
+      <div className="flex items-center gap-1.5 shrink-0" style={rightSectionStyle}>
+        {/* Category Badge - only show if a resolvable category exists */}
+        {displayCategoryName && (
           <Badge variant="category" color={categoryColor}>
-            {skill.category.charAt(0).toUpperCase() + skill.category.slice(1)}
+            {displayCategoryName.charAt(0).toUpperCase() + displayCategoryName.slice(1)}
           </Badge>
         )}
 
@@ -194,10 +206,7 @@ export const SkillListItem: React.FC<SkillListItemProps> = ({
       </div>
 
       {/* More Menu - Always visible */}
-      <div
-        ref={menuRef}
-        className="shrink-0 ml-4 relative"
-      >
+      <div ref={menuRef} className="shrink-0 ml-4 relative">
         <button
           onClick={handleMoreClick}
           className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-[#F4F4F5] transition-colors"

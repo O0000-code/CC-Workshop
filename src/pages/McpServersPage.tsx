@@ -26,7 +26,7 @@ import {
   EmptyState,
   IconPicker,
   ICON_MAP,
-  Dropdown,
+  CategoryTreeDropdown,
   ScopeSelector,
   Button,
 } from '@/components/common';
@@ -216,16 +216,13 @@ export const McpServersPage: React.FC = () => {
     }
   }, [selectedMcpId, selectedMcp, fetchMcpTools, fetchingToolsForMcp, mcpFetchErrors]);
 
-  // Category dropdown options - only use categories from appStore
-  const categoryOptions = useMemo(() => {
-    const options = categories.map((cat) => ({
-      value: cat.name,
-      label: cat.name,
-      color: cat.color || '#71717A',
-    }));
-    // Add Uncategorized option at the beginning
-    return [{ value: '', label: 'Uncategorized', color: '#71717A' }, ...options];
-  }, [categories]);
+  // V2 dual-read: prefer categoryId (canonical), fall back to name lookup
+  // for legacy entries. See 03_tech_plan V2 §5.9.
+  const currentCategoryId = useMemo(() => {
+    if (!selectedMcp) return '';
+    if (selectedMcp.categoryId) return selectedMcp.categoryId;
+    return categories.find((c) => c.name === selectedMcp.category)?.id ?? '';
+  }, [selectedMcp, categories]);
 
   // Tag input state
   const [tagInputValue, setTagInputValue] = useState('');
@@ -287,11 +284,11 @@ export const McpServersPage: React.FC = () => {
     setIconPickerState({ isOpen: false, mcpId: null, triggerRef: null });
   };
 
-  // Handle category change
-  const handleCategoryChange = (category: string | string[]) => {
-    if (selectedMcpId && typeof category === 'string') {
-      updateMcpCategory(selectedMcpId, category);
-    }
+  // V2 §5.9: dropdown emits categoryId; resolve id → name for store dual-write.
+  const handleCategoryChange = (categoryId: string) => {
+    if (!selectedMcpId) return;
+    const targetName = categoryId ? (categories.find((c) => c.id === categoryId)?.name ?? '') : '';
+    updateMcpCategory(selectedMcpId, targetName);
   };
 
   // Handle adding a tag
@@ -424,9 +421,9 @@ export const McpServersPage: React.FC = () => {
         {/* Category Selector */}
         <div className="flex flex-col gap-2">
           <span className="text-[11px] font-medium text-[#71717A]">Category</span>
-          <Dropdown
-            options={categoryOptions}
-            value={selectedMcp.category || ''}
+          <CategoryTreeDropdown
+            categories={categories}
+            value={currentCategoryId}
             onChange={handleCategoryChange}
             placeholder="Select category"
             compact

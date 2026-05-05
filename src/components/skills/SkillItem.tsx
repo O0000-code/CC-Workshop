@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useMemo } from 'react';
 import {
   Code,
   Github,
@@ -19,6 +19,11 @@ import {
 import type { Skill } from '../../types';
 import Badge from '../common/Badge';
 import { ICON_MAP } from '@/components/common';
+import { useAppStore } from '@/stores/appStore';
+import {
+  getCategoryDisplayName,
+  getCategoryColor as getResolvedCategoryColor,
+} from '@/utils/categoryTree';
 
 // ============================================================================
 // Types
@@ -110,7 +115,17 @@ export function SkillItem({
   const menuRef = useRef<HTMLDivElement>(null);
   const [showMenu, setShowMenu] = useState(false);
   const Icon = getSkillIcon(skill);
-  const categoryColor = categoryColors[skill.category] || '#71717A';
+  // V2 §5.9 dual-read: prefer the categoryId-resolved color/name, fall
+  // back to the cached `skill.category` string for legacy entries.
+  const allCategories = useAppStore((s) => s.categories);
+  const displayCategoryName = useMemo(
+    () => getCategoryDisplayName(skill.categoryId, skill.category, allCategories),
+    [skill.categoryId, skill.category, allCategories],
+  );
+  const categoryColor = useMemo(() => {
+    const resolved = getResolvedCategoryColor(skill.categoryId, skill.category, allCategories);
+    return resolved ?? categoryColors[skill.category] ?? '#71717A';
+  }, [skill.categoryId, skill.category, allCategories]);
 
   const handleMoreClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -167,9 +182,7 @@ export function SkillItem({
 
         {/* Info */}
         <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <span className="text-sm font-medium text-[#18181B]">
-            {skill.name}
-          </span>
+          <span className="text-sm font-medium text-[#18181B]">{skill.name}</span>
           <span className="max-w-[500px] truncate text-xs font-normal text-[#71717A]">
             {skill.description}
           </span>
@@ -179,7 +192,9 @@ export function SkillItem({
         <div className="flex flex-shrink-0 items-center gap-1.5">
           {/* Category Badge */}
           <Badge variant="category" color={categoryColor}>
-            {skill.category ? skill.category.charAt(0).toUpperCase() + skill.category.slice(1) : 'Uncategorized'}
+            {displayCategoryName
+              ? displayCategoryName.charAt(0).toUpperCase() + displayCategoryName.slice(1)
+              : 'Uncategorized'}
           </Badge>
 
           {/* Tags (max 2) */}
@@ -240,9 +255,7 @@ export function SkillItem({
           ${onIconClick ? 'cursor-pointer hover:ring-2 hover:ring-[#18181B]/10 transition-shadow' : ''}
         `}
       >
-        <Icon
-          className={`h-4 w-4 ${selected ? 'text-[#18181B]' : 'text-[#52525B]'}`}
-        />
+        <Icon className={`h-4 w-4 ${selected ? 'text-[#18181B]' : 'text-[#52525B]'}`} />
       </div>
 
       {/* Info */}
@@ -255,9 +268,7 @@ export function SkillItem({
         >
           {skill.name}
         </span>
-        <span className="truncate text-[11px] font-normal text-[#71717A]">
-          {skill.description}
-        </span>
+        <span className="truncate text-[11px] font-normal text-[#71717A]">{skill.description}</span>
       </div>
 
       {/* More Menu */}

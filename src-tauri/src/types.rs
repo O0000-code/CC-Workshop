@@ -8,6 +8,15 @@ pub struct Skill {
     pub name: String,
     pub description: String,
     pub category: String,
+    /// Source of truth for category reference. `None` = uncategorized OR
+    /// not-yet-migrated (legacy data.json). UI prefers this over `category`.
+    /// Note: `Skill` is runtime-derived — built by `scan_skills` from
+    /// `SkillMetadata` + filesystem — and not directly persisted in `data.json`.
+    /// The persisted source of truth is `SkillMetadata.category_id`.
+    /// Backward compat: `serde(default)` makes the absence of this key in old
+    /// JSON deserialise to `None`; `skip_serializing_if` keeps new writes clean.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<String>,
     pub tags: Vec<String>,
     pub enabled: bool,
     pub source_path: String,
@@ -40,6 +49,15 @@ pub struct McpServer {
     pub name: String,
     pub description: String,
     pub category: String,
+    /// Source of truth for category reference. `None` = uncategorized OR
+    /// not-yet-migrated (legacy data.json). UI prefers this over `category`.
+    /// Note: `McpServer` is runtime-derived — built by `scan_mcps` from
+    /// `McpMetadata` + filesystem — and not directly persisted in `data.json`.
+    /// The persisted source of truth is `McpMetadata.category_id`.
+    /// Backward compat: `serde(default)` makes the absence of this key in old
+    /// JSON deserialise to `None`; `skip_serializing_if` keeps new writes clean.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<String>,
     pub tags: Vec<String>,
     pub enabled: bool,
     pub source_path: String,
@@ -138,6 +156,12 @@ pub struct Category {
     pub name: String,
     pub color: String,
     pub count: u32,
+    /// Parent category id. `None` = root level. Max depth = 2 (root + children).
+    /// Backward compat: `serde(default)` makes the absence of this key in old
+    /// `data.json` deserialise to `None` (root). `skip_serializing_if` keeps
+    /// new writes clean — root rows do NOT emit the key, matching pre-V1 JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,12 +197,28 @@ pub struct AppData {
     /// Current global CLAUDE.md file ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global_claude_md_id: Option<String>,
+    /// V1 hierarchy migration state. Set to `true` by
+    /// `migrate_category_id_for_skills_mcps` after a successful run; subsequent
+    /// app launches skip the migration. Stored in `AppData` (NOT `AppSettings`)
+    /// to bypass the `settingsStore.saveSettings` enumerate risk that would
+    /// otherwise reset this flag every time the user changes any setting.
+    /// Backward compat: `serde(default)` makes the absence of this key in old
+    /// `data.json` deserialise to `false`, triggering a one-time migration on
+    /// next startup.
+    #[serde(default)]
+    pub has_completed_category_id_migration: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillMetadata {
     pub category: String,
+    /// Persisted source of truth for category reference (mirrored into
+    /// runtime `Skill.category_id` by `scan_skills`). `None` = uncategorized
+    /// OR not-yet-migrated (legacy `data.json`). Backward compat: missing key
+    /// in old metadata deserialises to `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<String>,
     pub tags: Vec<String>,
     pub enabled: bool,
     pub usage_count: u32,
@@ -191,11 +231,54 @@ pub struct SkillMetadata {
 #[serde(rename_all = "camelCase")]
 pub struct McpMetadata {
     pub category: String,
+    /// Persisted source of truth for category reference (mirrored into
+    /// runtime `McpServer.category_id` by `scan_mcps`). `None` = uncategorized
+    /// OR not-yet-migrated (legacy `data.json`). Backward compat: missing key
+    /// in old metadata deserialises to `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<String>,
     pub tags: Vec<String>,
     pub enabled: bool,
     pub usage_count: u32,
     pub last_used: Option<String>,
     pub scope: String, // "global" | "project"
+}
+
+/// Result of running [`migrate_category_id_for_skills_mcps`].
+///
+/// V2 [P0-DATA-3] (per `03_tech_plan.md` V2 §3.4 — Decisional source):
+/// - `migrated_*`: successfully filled `category_id` on metadata entries
+///   whose `category` (name) resolved against the current `categories` Vec.
+/// - `orphaned_*`: HashMap keys (skill_id / mcp_id) whose `category` name
+///   does not match any existing category. These entries are left unchanged
+///   (display still falls back to the cached `category` name string).
+///
+/// **Flag advancement rule** (per Phase-1 audit P0-1 ruling, finalised in
+/// `03_tech_plan` V2 §3.4): orphan presence is a **terminal state** — the
+/// metadata's `category` string does not match any current Category and the
+/// user must rename or re-classify manually. Re-running migration on every
+/// launch would never resolve orphans on its own and would add I/O churn.
+/// So `has_completed_category_id_migration` in [`AppData`] is advanced to
+/// `true` once a migration pass completes, **regardless of orphan presence**.
+/// The `orphaned_*` lists are returned as part of this report so the
+/// front-end can surface them for manual cleanup if desired.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationReport {
+    /// Number of skill_metadata entries whose `category_id` was filled in
+    /// during this run (excludes already-migrated entries).
+    pub migrated_skills: u32,
+    /// Number of mcp_metadata entries whose `category_id` was filled in
+    /// during this run (excludes already-migrated entries).
+    pub migrated_mcps: u32,
+    /// HashMap keys of skill_metadata entries whose `category` name did not
+    /// resolve. These entries are persisted unchanged; the flag still
+    /// advances (orphan = terminal state, see struct doc above).
+    pub orphaned_skills: Vec<String>,
+    /// HashMap keys of mcp_metadata entries whose `category` name did not
+    /// resolve. These entries are persisted unchanged; the flag still
+    /// advances (orphan = terminal state, see struct doc above).
+    pub orphaned_mcps: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -930,6 +1013,7 @@ mod tests {
         assert!(data.imported_plugin_mcps.is_empty());
         assert!(data.claude_md_files.is_empty());
         assert!(data.global_claude_md_id.is_none());
+        assert!(!data.has_completed_category_id_migration);
     }
 
     #[test]
@@ -951,6 +1035,7 @@ mod tests {
             name: "Development".to_string(),
             color: "#3B82F6".to_string(),
             count: 5,
+            parent_id: None,
         };
         let json = serde_json::to_string(&category).unwrap();
         let deserialized: Category = serde_json::from_str(&json).unwrap();
@@ -958,6 +1043,7 @@ mod tests {
         assert_eq!(deserialized.name, "Development");
         assert_eq!(deserialized.color, "#3B82F6");
         assert_eq!(deserialized.count, 5);
+        assert!(deserialized.parent_id.is_none());
     }
 
     #[test]
@@ -999,5 +1085,296 @@ mod tests {
         assert_eq!(config.args, Some(vec!["server.js".to_string()]));
         assert!(config.url.is_none());
         assert!(config.mcp_type.is_none());
+    }
+
+    // ========================================================================
+    // T1a: Category-hierarchy field-addition serde compatibility tests
+    // (per 03_tech_plan V2 §2 + §3.5)
+    //
+    // Each test exercises one of the two backward-compat paths:
+    //   - "with"  : new JSON includes the new key → deserialises round-trip
+    //   - "without": pre-V1 JSON omits the new key → deserialises with default
+    //                (None for Option<String> fields, false for the bool flag)
+    // The "without" cases are the critical regression guard: any old `data.json`
+    // on disk MUST continue to parse. `serde(default)` plus `Option<String>`
+    // (or plain `bool`) supplies the default; this suite locks that contract.
+    // ========================================================================
+
+    #[test]
+    fn category_with_parent_id_serde_roundtrip() {
+        let category = Category {
+            id: "child-1".to_string(),
+            name: "Frontend".to_string(),
+            color: "#10B981".to_string(),
+            count: 3,
+            parent_id: Some("dev-root".to_string()),
+        };
+        let json = serde_json::to_string(&category).unwrap();
+        // camelCase rename means Rust `parent_id` ↔ JSON `parentId`.
+        assert!(json.contains("\"parentId\":\"dev-root\""));
+        let deserialized: Category = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.parent_id, Some("dev-root".to_string()));
+        assert_eq!(deserialized.id, "child-1");
+        assert_eq!(deserialized.name, "Frontend");
+    }
+
+    #[test]
+    fn category_without_parent_id_serde_roundtrip() {
+        // Simulates pre-V1 data.json: no parentId key at all. After
+        // deserialise, parent_id must be None. After serialise back, the key
+        // must NOT appear (skip_serializing_if = "Option::is_none") — this
+        // keeps writes byte-clean for users who never touch hierarchy.
+        let legacy_json = r##"{"id":"cat-legacy","name":"Productivity","color":"#3B82F6","count":7}"##;
+        let deserialized: Category = serde_json::from_str(legacy_json).unwrap();
+        assert!(deserialized.parent_id.is_none());
+        assert_eq!(deserialized.name, "Productivity");
+
+        let reserialized = serde_json::to_string(&deserialized).unwrap();
+        assert!(!reserialized.contains("parentId"));
+    }
+
+    #[test]
+    fn skill_with_category_id_roundtrip() {
+        let skill = Skill {
+            id: "skill-1".to_string(),
+            name: "test-skill".to_string(),
+            description: "A skill".to_string(),
+            category: "Development".to_string(),
+            category_id: Some("dev-cat-id".to_string()),
+            tags: vec!["a".to_string()],
+            enabled: true,
+            source_path: "/x".to_string(),
+            scope: "user".to_string(),
+            invocation: None,
+            allowed_tools: None,
+            instructions: String::new(),
+            created_at: "2026-05-04T00:00:00Z".to_string(),
+            last_used: None,
+            usage_count: 0,
+            icon: None,
+            installed_at: None,
+            install_source: None,
+            plugin_id: None,
+            plugin_name: None,
+            marketplace: None,
+            plugin_enabled: None,
+        };
+        let json = serde_json::to_string(&skill).unwrap();
+        assert!(json.contains("\"categoryId\":\"dev-cat-id\""));
+        let deserialized: Skill = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.category_id, Some("dev-cat-id".to_string()));
+        assert_eq!(deserialized.category, "Development");
+    }
+
+    #[test]
+    fn skill_without_category_id_old_data_compat() {
+        // Old skill JSON (no categoryId). Even though Skill is runtime-derived
+        // (built by scan_skills), being able to deserialise without categoryId
+        // matters for any cached / round-tripped fixture and for the IPC
+        // boundary where the frontend may send legacy shapes.
+        let legacy_json = r#"{
+            "id":"old-skill",
+            "name":"legacy",
+            "description":"",
+            "category":"Misc",
+            "tags":[],
+            "enabled":true,
+            "sourcePath":"/path",
+            "scope":"user",
+            "invocation":null,
+            "allowedTools":null,
+            "instructions":"",
+            "createdAt":"2025-12-01T00:00:00Z",
+            "lastUsed":null,
+            "usageCount":0,
+            "icon":null,
+            "installedAt":null
+        }"#;
+        let deserialized: Skill = serde_json::from_str(legacy_json).unwrap();
+        assert!(deserialized.category_id.is_none());
+        assert_eq!(deserialized.category, "Misc");
+
+        let reserialized = serde_json::to_string(&deserialized).unwrap();
+        assert!(!reserialized.contains("categoryId"));
+    }
+
+    #[test]
+    fn mcpserver_with_category_id_roundtrip() {
+        let mcp = McpServer {
+            id: "mcp-1".to_string(),
+            name: "test-mcp".to_string(),
+            description: String::new(),
+            category: "Tools".to_string(),
+            category_id: Some("tools-cat-id".to_string()),
+            tags: vec![],
+            enabled: true,
+            source_path: "/y".to_string(),
+            scope: "global".to_string(),
+            command: "node".to_string(),
+            args: vec![],
+            env: None,
+            provided_tools: vec![],
+            created_at: "2026-05-04T00:00:00Z".to_string(),
+            last_used: None,
+            usage_count: 0,
+            installed_at: None,
+            url: None,
+            mcp_type: None,
+            install_source: None,
+            plugin_id: None,
+            plugin_name: None,
+            marketplace: None,
+            plugin_enabled: None,
+        };
+        let json = serde_json::to_string(&mcp).unwrap();
+        assert!(json.contains("\"categoryId\":\"tools-cat-id\""));
+        let deserialized: McpServer = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.category_id, Some("tools-cat-id".to_string()));
+        assert_eq!(deserialized.category, "Tools");
+    }
+
+    #[test]
+    fn mcpserver_without_category_id_old_data_compat() {
+        // Old MCP JSON (no categoryId). Same rationale as the Skill variant.
+        let legacy_json = r#"{
+            "id":"old-mcp",
+            "name":"legacy-mcp",
+            "description":"",
+            "category":"Misc",
+            "tags":[],
+            "enabled":true,
+            "sourcePath":"/p",
+            "scope":"global",
+            "command":"node",
+            "args":[],
+            "env":null,
+            "providedTools":[],
+            "createdAt":"2025-12-01T00:00:00Z",
+            "lastUsed":null,
+            "usageCount":0,
+            "installedAt":null
+        }"#;
+        let deserialized: McpServer = serde_json::from_str(legacy_json).unwrap();
+        assert!(deserialized.category_id.is_none());
+        assert_eq!(deserialized.category, "Misc");
+
+        let reserialized = serde_json::to_string(&deserialized).unwrap();
+        assert!(!reserialized.contains("categoryId"));
+    }
+
+    #[test]
+    fn skillmetadata_without_category_id_old_data_compat() {
+        // SkillMetadata is the persisted source of truth in data.json
+        // (under the `skillMetadata` map). Old data.json lacks the
+        // `categoryId` key on each metadata entry — it MUST deserialise to
+        // None so the runtime fallback (display name from `category`) works.
+        let legacy_json = r#"{
+            "category":"Productivity",
+            "tags":["work"],
+            "enabled":true,
+            "usageCount":0,
+            "lastUsed":null,
+            "icon":null,
+            "scope":"global"
+        }"#;
+        let deserialized: SkillMetadata = serde_json::from_str(legacy_json).unwrap();
+        assert!(deserialized.category_id.is_none());
+        assert_eq!(deserialized.category, "Productivity");
+
+        let reserialized = serde_json::to_string(&deserialized).unwrap();
+        assert!(!reserialized.contains("categoryId"));
+    }
+
+    #[test]
+    fn skillmetadata_with_category_id_roundtrip() {
+        let metadata = SkillMetadata {
+            category: "Productivity".to_string(),
+            category_id: Some("prod-cat-id".to_string()),
+            tags: vec!["work".to_string()],
+            enabled: true,
+            usage_count: 5,
+            last_used: None,
+            icon: None,
+            scope: "global".to_string(),
+        };
+        let json = serde_json::to_string(&metadata).unwrap();
+        assert!(json.contains("\"categoryId\":\"prod-cat-id\""));
+        let deserialized: SkillMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.category_id, Some("prod-cat-id".to_string()));
+    }
+
+    #[test]
+    fn mcpmetadata_without_category_id_old_data_compat() {
+        // McpMetadata is the persisted source of truth for MCPs. Same
+        // backward-compat contract as SkillMetadata.
+        let legacy_json = r#"{
+            "category":"Tools",
+            "tags":[],
+            "enabled":true,
+            "usageCount":0,
+            "lastUsed":null,
+            "scope":"global"
+        }"#;
+        let deserialized: McpMetadata = serde_json::from_str(legacy_json).unwrap();
+        assert!(deserialized.category_id.is_none());
+        assert_eq!(deserialized.category, "Tools");
+
+        let reserialized = serde_json::to_string(&deserialized).unwrap();
+        assert!(!reserialized.contains("categoryId"));
+    }
+
+    #[test]
+    fn mcpmetadata_with_category_id_roundtrip() {
+        let metadata = McpMetadata {
+            category: "Tools".to_string(),
+            category_id: Some("tools-cat-id".to_string()),
+            tags: vec![],
+            enabled: true,
+            usage_count: 0,
+            last_used: None,
+            scope: "global".to_string(),
+        };
+        let json = serde_json::to_string(&metadata).unwrap();
+        assert!(json.contains("\"categoryId\":\"tools-cat-id\""));
+        let deserialized: McpMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.category_id, Some("tools-cat-id".to_string()));
+    }
+
+    #[test]
+    fn appdata_without_migration_flag_defaults_to_false() {
+        // Critical backward compat: old data.json has NO
+        // `hasCompletedCategoryIdMigration` key. Per 03 V2 §3.5 [P0-DATA-1],
+        // the field is `bool` with `#[serde(default)]` — missing key MUST
+        // deserialise to `false`, which is the signal that triggers a
+        // one-time migration on next startup.
+        let legacy_json = r#"{
+            "categories":[],
+            "tags":[],
+            "scenes":[],
+            "projects":[],
+            "skillMetadata":{},
+            "mcpMetadata":{}
+        }"#;
+        let deserialized: AppData = serde_json::from_str(legacy_json).unwrap();
+        assert!(!deserialized.has_completed_category_id_migration);
+        // Sanity-check the other defaults still kick in (no regression to
+        // the existing serde(default) annotations).
+        assert!(deserialized.trashed_scenes.is_empty());
+        assert!(deserialized.imported_plugin_skills.is_empty());
+        assert!(deserialized.claude_md_files.is_empty());
+        assert!(deserialized.global_claude_md_id.is_none());
+    }
+
+    #[test]
+    fn appdata_with_migration_flag_true_roundtrip() {
+        // After a successful migration the flag is true and the key is
+        // emitted. Re-deserialise must observe true so the next launch
+        // skips migration.
+        let mut data = AppData::default();
+        data.has_completed_category_id_migration = true;
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("\"hasCompletedCategoryIdMigration\":true"));
+        let deserialized: AppData = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.has_completed_category_id_migration);
     }
 }

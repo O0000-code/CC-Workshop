@@ -5,36 +5,56 @@ export interface Skill {
   id: string;
   name: string;
   description: string;
+  /** Cached display name of the category. Kept in sync with Category.name; the
+   * canonical reference is `categoryId` once the V1 hierarchy migration completes. */
   category: string;
+  /**
+   * Source of truth for category reference (V1 hierarchy migration).
+   * `undefined` = uncategorized OR not-yet-migrated (legacy data.json). UI prefers
+   * this over `category` for routing and sidebar count aggregation. The persisted
+   * source of truth lives in `SkillMetadata.category_id` on the Rust side; this
+   * field mirrors it via `scan_skills`.
+   */
+  categoryId?: string;
   tags: string[];
   enabled: boolean;
   sourcePath: string;
-  scope: 'global' | 'project';  // 安装范围: global=用户级全局, project=项目级
+  scope: 'global' | 'project'; // 安装范围: global=用户级全局, project=项目级
   invocation?: string;
   allowedTools?: string[];
   instructions: string;
   createdAt: string;
   lastUsed?: string;
   usageCount: number;
-  icon?: string;  // 自定义图标名称
-  installedAt?: string;  // 安装时间 (文件创建时间)
+  icon?: string; // 自定义图标名称
+  installedAt?: string; // 安装时间 (文件创建时间)
   // 插件相关字段 - 从 Rust 后端返回
-  installSource?: 'local' | 'plugin';  // 安装来源
-  pluginId?: string;  // 插件 ID，如 "nanobanana-skill@claude-code-settings"
-  pluginName?: string;  // 插件显示名称
-  marketplace?: string;  // marketplace 名称
-  pluginEnabled?: boolean;  // 插件在 Claude Code 中是否启用
+  installSource?: 'local' | 'plugin'; // 安装来源
+  pluginId?: string; // 插件 ID，如 "nanobanana-skill@claude-code-settings"
+  pluginName?: string; // 插件显示名称
+  marketplace?: string; // marketplace 名称
+  pluginEnabled?: boolean; // 插件在 Claude Code 中是否启用
 }
 
 export interface McpServer {
   id: string;
   name: string;
   description: string;
+  /** Cached display name of the category. Kept in sync with Category.name; the
+   * canonical reference is `categoryId` once the V1 hierarchy migration completes. */
   category: string;
+  /**
+   * Source of truth for category reference (V1 hierarchy migration).
+   * `undefined` = uncategorized OR not-yet-migrated (legacy data.json). UI prefers
+   * this over `category` for routing and sidebar count aggregation. The persisted
+   * source of truth lives in `McpMetadata.category_id` on the Rust side; this
+   * field mirrors it via `scan_mcps`.
+   */
+  categoryId?: string;
   tags: string[];
   enabled: boolean;
   sourcePath: string;
-  scope: 'global' | 'project';  // 安装范围: global=用户级全局, project=项目级
+  scope: 'global' | 'project'; // 安装范围: global=用户级全局, project=项目级
   command: string;
   args: string[];
   env?: Record<string, string>;
@@ -42,16 +62,16 @@ export interface McpServer {
   createdAt: string;
   lastUsed?: string;
   usageCount: number;
-  icon?: string;  // 自定义图标名称
-  installedAt?: string;  // 安装时间 (文件创建时间)
+  icon?: string; // 自定义图标名称
+  installedAt?: string; // 安装时间 (文件创建时间)
   url?: string;
   mcpType?: string;
   // 插件相关字段 - 从 Rust 后端返回
-  installSource?: 'local' | 'plugin';  // 安装来源
-  pluginId?: string;  // 插件 ID，如 "nanobanana-skill@claude-code-settings"
-  pluginName?: string;  // 插件显示名称
-  marketplace?: string;  // marketplace 名称
-  pluginEnabled?: boolean;  // 插件在 Claude Code 中是否启用
+  installSource?: 'local' | 'plugin'; // 安装来源
+  pluginId?: string; // 插件 ID，如 "nanobanana-skill@claude-code-settings"
+  pluginName?: string; // 插件显示名称
+  marketplace?: string; // marketplace 名称
+  pluginEnabled?: boolean; // 插件在 Claude Code 中是否启用
 }
 
 export interface Tool {
@@ -78,7 +98,7 @@ export interface Project {
   path: string;
   sceneId: string;
   lastSynced?: string;
-  icon?: string;  // 自定义图标名称
+  icon?: string; // 自定义图标名称
 }
 
 export interface Category {
@@ -86,6 +106,13 @@ export interface Category {
   name: string;
   color: string;
   count: number;
+  /**
+   * Parent category id. `undefined` = root level. Max depth = 2 (root + children).
+   * Backward compat: legacy `data.json` rows omit this key → deserialised to
+   * `undefined` (root). Corresponds to Rust `Category.parent_id: Option<String>`
+   * with `serde(default, skip_serializing_if = "Option::is_none")`.
+   */
+  parentId?: string;
 }
 
 export interface Tag {
@@ -102,10 +129,10 @@ export interface AppSettings {
   claudeConfigDir: string;
   anthropicApiKey: string;
   autoClassifyNewItems: boolean;
-  terminalApp: string;          // 终端应用 (Terminal/iTerm/Warp/custom)
-  claudeCommand: string;        // 启动 Claude Code 的命令
-  hasCompletedImport: boolean;  // 是否已完成首次导入
-  warpOpenMode: 'tab' | 'window';  // Warp 打开模式：新 Tab 或新窗口
+  terminalApp: string; // 终端应用 (Terminal/iTerm/Warp/custom)
+  claudeCommand: string; // 启动 Claude Code 的命令
+  hasCompletedImport: boolean; // 是否已完成首次导入
+  warpOpenMode: 'tab' | 'window'; // Warp 打开模式：新 Tab 或新窗口
   /** CLAUDE.md 分发目标路径 */
   claudeMdDistributionPath?: ClaudeMdDistributionPath;
 }
@@ -127,9 +154,9 @@ export interface ClassifyItem {
   id: string;
   name: string;
   description: string;
-  content?: string;  // For CLAUDE.md files
-  instructions?: string;  // For Skills
-  tools?: string[];  // For MCPs - tool names
+  content?: string; // For CLAUDE.md files
+  instructions?: string; // For Skills
+  tools?: string[]; // For MCPs - tool names
 }
 
 /**
@@ -152,7 +179,7 @@ export interface ClassifyResult {
 export interface ExistingConfig {
   skills: DetectedSkill[];
   mcps: DetectedMcp[];
-  hasConfig: boolean;  // 是否存在可导入的配置
+  hasConfig: boolean; // 是否存在可导入的配置
 }
 
 /**
@@ -172,8 +199,8 @@ export interface DetectedMcp {
   command: string;
   args: string[];
   env?: Record<string, string>;
-  scope?: 'user' | 'local';  // 来源范围: user=用户全局配置, local=项目本地配置
-  projectPath?: string;       // Local scope 时的项目路径
+  scope?: 'user' | 'local'; // 来源范围: user=用户全局配置, local=项目本地配置
+  projectPath?: string; // Local scope 时的项目路径
   url?: string;
   mcpType?: string;
 }
@@ -185,7 +212,7 @@ export interface DetectedMcp {
 export interface ImportItem {
   type: 'skill' | 'mcp';
   name: string;
-  sourcePath: string;  // 原始路径
+  sourcePath: string; // 原始路径
 }
 
 /**
@@ -198,15 +225,15 @@ export interface ImportResult {
     mcps: number;
   };
   errors: string[];
-  backupPath: string;  // 备份目录路径
+  backupPath: string; // 备份目录路径
 }
 
 /**
  * 备份信息
  */
 export interface BackupInfo {
-  path: string;              // 备份目录路径
-  timestamp: string;         // ISO 格式时间戳
+  path: string; // 备份目录路径
+  timestamp: string; // ISO 格式时间戳
   itemsCount: {
     skills: number;
     mcps: number;
@@ -269,17 +296,54 @@ export interface UsageStats {
 /**
  * 应用持久化数据
  * 存储在 ~/.ensemble/data.json 中
+ *
+ * Mirrors Rust `AppData` in `src-tauri/src/types.rs`. Note: `skills` and
+ * `mcpServers` are NOT persisted in `data.json` — they are runtime-derived
+ * by `scan_skills` / `scan_mcps`. The fields below are kept optional for
+ * legacy callers; do not rely on them being populated by `read_app_data`.
  */
 export interface AppData {
-  skills: Skill[];
-  mcpServers: McpServer[];
+  skills?: Skill[];
+  mcpServers?: McpServer[];
   scenes: Scene[];
   projects: Project[];
   categories: Category[];
   tags: Tag[];
-  settings: AppSettings;
-  importedPluginSkills?: string[];  // 已导入的插件 Skills 的 pluginId 列表
-  importedPluginMcps?: string[];    // 已导入的插件 MCPs 的 pluginId 列表
+  settings?: AppSettings;
+  importedPluginSkills?: string[]; // 已导入的插件 Skills 的 pluginId 列表
+  importedPluginMcps?: string[]; // 已导入的插件 MCPs 的 pluginId 列表
+  /**
+   * V1 hierarchy migration completion flag. Set to `true` by the backend
+   * `migrate_category_id_for_skills_mcps` IPC after a successful run; the
+   * frontend reads this on `initApp` to decide whether to invoke migration.
+   * Stored in AppData (not AppSettings) to bypass the
+   * `settingsStore.saveSettings` enumerate risk that would otherwise reset
+   * the flag every time the user changes any setting.
+   * Backward compat: legacy `data.json` omits this key → `undefined` →
+   * frontend treats as `false` and triggers migration.
+   */
+  hasCompletedCategoryIdMigration?: boolean;
+}
+
+/**
+ * Result returned by the one-time `migrate_category_id_for_skills_mcps` IPC.
+ * Mirrors Rust `MigrationReport` in `src-tauri/src/types.rs:265-278`.
+ *
+ * Per Phase-1 audit P0-1 / 03 V2 §3.4: orphans do NOT block the flag advance —
+ * orphan names are a legitimate terminal user state (the user has skills/mcps
+ * referencing categories that no longer exist; the cached `category` name
+ * remains as fallback display). Orphan ids are surfaced here so the UI can
+ * optionally prompt the user to re-classify them.
+ */
+export interface MigrationReport {
+  /** Number of skill_metadata entries whose `categoryId` was filled this run. */
+  migratedSkills: number;
+  /** Number of mcp_metadata entries whose `categoryId` was filled this run. */
+  migratedMcps: number;
+  /** HashMap keys (skill ids) of entries whose `category` name did not resolve. */
+  orphanedSkills: string[];
+  /** HashMap keys (mcp ids) of entries whose `category` name did not resolve. */
+  orphanedMcps: string[];
 }
 
 // ==================== 插件相关类型导出 ====================

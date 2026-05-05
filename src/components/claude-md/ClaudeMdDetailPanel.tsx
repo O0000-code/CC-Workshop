@@ -1,13 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import {
-  FileText,
-  FolderOpen,
-  Layers,
-  X,
-  Plus,
-} from 'lucide-react';
+import { FileText, FolderOpen, Layers, X, Plus } from 'lucide-react';
 import { SlidePanel } from '@/components/layout';
-import { Toggle, Dropdown, Button } from '@/components/common';
+import { Toggle, CategoryTreeDropdown, Button } from '@/components/common';
 import { safeInvoke } from '@/utils/tauri';
 import { useClaudeMdStore } from '@/stores/claudeMdStore';
 import { useAppStore } from '@/stores/appStore';
@@ -91,10 +85,7 @@ function RemovableTag({ name, onRemove }: RemovableTagProps) {
   return (
     <span className="flex items-center gap-1.5 rounded-md border border-[#E5E5E5] px-2.5 py-1.5">
       <span className="text-xs font-medium text-[#18181B]">{name}</span>
-      <button
-        onClick={onRemove}
-        className="text-[#A1A1AA] transition-colors hover:text-[#71717A]"
-      >
+      <button onClick={onRemove} className="text-[#A1A1AA] transition-colors hover:text-[#71717A]">
         <X className="h-3 w-3" />
       </button>
     </span>
@@ -117,13 +108,7 @@ export interface ClaudeMdDetailPanelProps {
 
 export function ClaudeMdDetailPanel({ file, isOpen, onClose }: ClaudeMdDetailPanelProps) {
   // ALL HOOKS MUST BE CALLED FIRST - before any conditional returns
-  const {
-    files,
-    updateFile,
-    setGlobal,
-    unsetGlobal,
-    isSetting,
-  } = useClaudeMdStore();
+  const { files, updateFile, setGlobal, unsetGlobal, isSetting } = useClaudeMdStore();
 
   const { categories, tags: appTags, addTag: addGlobalTag } = useAppStore();
   const { scenes } = useScenesStore();
@@ -136,7 +121,7 @@ export function ClaudeMdDetailPanel({ file, isOpen, onClose }: ClaudeMdDetailPan
   // Get the latest file data from store (in case it's updated)
   const selectedFile = useMemo(
     () => (file ? files.find((f) => f.id === file.id) || file : null),
-    [files, file]
+    [files, file],
   );
 
   // Get scenes that use the selected CLAUDE.md file
@@ -145,22 +130,14 @@ export function ClaudeMdDetailPanel({ file, isOpen, onClose }: ClaudeMdDetailPan
     return scenes.filter((scene) => scene.claudeMdIds?.includes(selectedFile.id));
   }, [scenes, selectedFile]);
 
-  // Category dropdown options
-  const categoryOptions = useMemo(() => {
-    const options = categories.map(cat => ({
-      value: cat.id,
-      label: cat.name,
-      color: cat.color || '#71717A',
-    }));
-    // Add Uncategorized option at the beginning
-    return [{ value: '', label: 'Uncategorized', color: '#71717A' }, ...options];
-  }, [categories]);
+  // V2 §5.9 row 6: ClaudeMd was already categoryId-keyed; the only change is
+  // switching to the hierarchy-aware tree dropdown so children are indented.
 
   // Get tag names from IDs
   const fileTags = useMemo(() => {
     if (!selectedFile?.tagIds) return [];
     return selectedFile.tagIds
-      .map(tagId => appTags.find(t => t.id === tagId))
+      .map((tagId) => appTags.find((t) => t.id === tagId))
       .filter(Boolean) as { id: string; name: string }[];
   }, [selectedFile?.tagIds, appTags]);
 
@@ -168,9 +145,8 @@ export function ClaudeMdDetailPanel({ file, isOpen, onClose }: ClaudeMdDetailPan
   const tagSuggestions = useMemo(() => {
     if (!tagInputValue.trim()) return appTags;
     const query = tagInputValue.toLowerCase();
-    return appTags.filter(tag =>
-      tag.name.toLowerCase().includes(query) &&
-      !selectedFile?.tagIds?.includes(tag.id)
+    return appTags.filter(
+      (tag) => tag.name.toLowerCase().includes(query) && !selectedFile?.tagIds?.includes(tag.id),
     );
   }, [tagInputValue, appTags, selectedFile?.tagIds]);
 
@@ -183,8 +159,8 @@ export function ClaudeMdDetailPanel({ file, isOpen, onClose }: ClaudeMdDetailPan
   }, [isOpen]);
 
   // Event handlers
-  const handleCategoryChange = (categoryId: string | string[]) => {
-    if (selectedFile && typeof categoryId === 'string') {
+  const handleCategoryChange = (categoryId: string) => {
+    if (selectedFile) {
       updateFile(selectedFile.id, { categoryId: categoryId || undefined });
     }
   };
@@ -194,7 +170,7 @@ export function ClaudeMdDetailPanel({ file, isOpen, onClose }: ClaudeMdDetailPan
       const trimmedName = tagName.trim();
 
       // Check if tag already exists in appStore
-      let existingTag = appTags.find(t => t.name.toLowerCase() === trimmedName.toLowerCase());
+      let existingTag = appTags.find((t) => t.name.toLowerCase() === trimmedName.toLowerCase());
 
       // If new tag, add to appStore first
       if (!existingTag) {
@@ -218,7 +194,7 @@ export function ClaudeMdDetailPanel({ file, isOpen, onClose }: ClaudeMdDetailPan
 
   const handleRemoveTag = (tagId: string) => {
     if (selectedFile) {
-      const newTagIds = selectedFile.tagIds.filter(t => t !== tagId);
+      const newTagIds = selectedFile.tagIds.filter((t) => t !== tagId);
       updateFile(selectedFile.id, { tagIds: newTagIds });
     }
   };
@@ -258,12 +234,7 @@ export function ClaudeMdDetailPanel({ file, isOpen, onClose }: ClaudeMdDetailPan
   // If no file, render empty SlidePanel to maintain animation
   if (!selectedFile) {
     return (
-      <SlidePanel
-        isOpen={isOpen}
-        onClose={onClose}
-        width={800}
-        header={null}
-      >
+      <SlidePanel isOpen={isOpen} onClose={onClose} width={800} header={null}>
         <div />
       </SlidePanel>
     );
@@ -279,10 +250,11 @@ export function ClaudeMdDetailPanel({ file, isOpen, onClose }: ClaudeMdDetailPan
 
       {/* Title Wrap - gap 2px */}
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <h2 className="text-[15px] font-semibold text-[#18181B]">
-          {selectedFile.name}
-        </h2>
-        <p className="w-full truncate text-xs font-normal text-[#71717A]" title={selectedFile.sourcePath}>
+        <h2 className="text-[15px] font-semibold text-[#18181B]">{selectedFile.name}</h2>
+        <p
+          className="w-full truncate text-xs font-normal text-[#71717A]"
+          title={selectedFile.sourcePath}
+        >
           {selectedFile.sourcePath}
         </p>
       </div>
@@ -296,8 +268,14 @@ export function ClaudeMdDetailPanel({ file, isOpen, onClose }: ClaudeMdDetailPan
       <div className="flex gap-8">
         <InfoItem label="Imported" value={formatDate(selectedFile.createdAt)} />
         <InfoItem label="File Size" value={formatFileSize(selectedFile.size)} />
-        <InfoItem label="Lines" value={`${countLines(selectedFile.content).toLocaleString()} lines`} />
-        <InfoItem label="Scenes" value={`${usedInScenes.length} ${usedInScenes.length === 1 ? 'scene' : 'scenes'}`} />
+        <InfoItem
+          label="Lines"
+          value={`${countLines(selectedFile.content).toLocaleString()} lines`}
+        />
+        <InfoItem
+          label="Scenes"
+          value={`${usedInScenes.length} ${usedInScenes.length === 1 ? 'scene' : 'scenes'}`}
+        />
       </div>
 
       {/* Category & Tags Section */}
@@ -305,8 +283,8 @@ export function ClaudeMdDetailPanel({ file, isOpen, onClose }: ClaudeMdDetailPan
         {/* Category Item */}
         <div className="flex flex-col gap-2">
           <span className="text-[11px] font-medium text-[#71717A]">Category</span>
-          <Dropdown
-            options={categoryOptions}
+          <CategoryTreeDropdown
+            categories={categories}
             value={selectedFile.categoryId || ''}
             onChange={handleCategoryChange}
             placeholder="Select category"
@@ -320,11 +298,7 @@ export function ClaudeMdDetailPanel({ file, isOpen, onClose }: ClaudeMdDetailPan
           <span className="text-[11px] font-medium text-[#71717A]">Tags</span>
           <div className="flex flex-wrap items-center gap-2">
             {fileTags.map((tag) => (
-              <RemovableTag
-                key={tag.id}
-                name={tag.name}
-                onRemove={() => handleRemoveTag(tag.id)}
-              />
+              <RemovableTag key={tag.id} name={tag.name} onRemove={() => handleRemoveTag(tag.id)} />
             ))}
             {isTagInputOpen ? (
               <div className="relative">
@@ -360,7 +334,9 @@ export function ClaudeMdDetailPanel({ file, isOpen, onClose }: ClaudeMdDetailPan
                       </button>
                     ))}
                     {/* Option to create new tag if not in suggestions */}
-                    {!tagSuggestions.some(t => t.name.toLowerCase() === tagInputValue.toLowerCase()) && (
+                    {!tagSuggestions.some(
+                      (t) => t.name.toLowerCase() === tagInputValue.toLowerCase(),
+                    ) && (
                       <button
                         onMouseDown={(e) => {
                           e.preventDefault();
@@ -423,9 +399,7 @@ export function ClaudeMdDetailPanel({ file, isOpen, onClose }: ClaudeMdDetailPan
           {/* Set as Global Row - padding 16px */}
           <div className="flex items-center justify-between p-4">
             <div className="flex flex-col gap-1">
-              <span className="text-[13px] font-medium text-[#18181B]">
-                Set as Global
-              </span>
+              <span className="text-[13px] font-medium text-[#18181B]">Set as Global</span>
               <span className="text-xs font-normal text-[#71717A]">
                 Use this as ~/.claude/CLAUDE.md
               </span>
@@ -480,9 +454,7 @@ export function ClaudeMdDetailPanel({ file, isOpen, onClose }: ClaudeMdDetailPan
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[#F4F4F5]">
               <Layers className="h-3.5 w-3.5 text-[#A1A1AA]" />
             </div>
-            <span className="text-[13px] text-[#71717A]">
-              Not used in any scenes yet
-            </span>
+            <span className="text-[13px] text-[#71717A]">Not used in any scenes yet</span>
           </div>
         )}
       </section>

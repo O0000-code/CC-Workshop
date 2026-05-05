@@ -30,7 +30,12 @@ import { IconPicker, ICON_MAP, ScopeSelector } from '@/components/common';
 import SkillItem from '../components/skills/SkillItem';
 import { useSkillsStore } from '../stores/skillsStore';
 import { useScenesStore } from '../stores/scenesStore';
+import { useAppStore } from '../stores/appStore';
 import { safeInvoke } from '../utils/tauri';
+import {
+  getCategoryDisplayName,
+  getCategoryColor as resolveCategoryColor,
+} from '../utils/categoryTree';
 import type { Skill } from '../types';
 
 // ============================================================================
@@ -152,6 +157,7 @@ export function SkillDetailPage() {
   } = useSkillsStore();
 
   const { scenes } = useScenesStore();
+  const { categories } = useAppStore();
 
   // Decode the URL-encoded skill ID
   const skillId = encodedSkillId ? decodeURIComponent(encodedSkillId) : null;
@@ -246,9 +252,7 @@ export function SkillDetailPage() {
     <>
       <div className="flex items-center gap-3">
         <h2 className="text-base font-semibold text-[#18181B]">Skills</h2>
-        <Badge variant="status">
-          {enabledCount} Active
-        </Badge>
+        <Badge variant="status">{enabledCount} Active</Badge>
       </div>
       <SearchInput
         value={filter.search}
@@ -274,9 +278,7 @@ export function SkillDetailPage() {
         />
       ))}
       {filteredSkills.length === 0 && (
-        <div className="py-8 text-center text-sm text-[#71717A]">
-          No skills found
-        </div>
+        <div className="py-8 text-center text-sm text-[#71717A]">No skills found</div>
       )}
     </div>
   );
@@ -298,12 +300,8 @@ export function SkillDetailPage() {
 
         {/* Title & Description */}
         <div className="flex flex-col gap-0.5">
-          <h2 className="text-base font-semibold text-[#18181B]">
-            {selectedSkill.name}
-          </h2>
-          <p className="text-xs font-normal text-[#71717A]">
-            {selectedSkill.description}
-          </p>
+          <h2 className="text-base font-semibold text-[#18181B]">{selectedSkill.name}</h2>
+          <p className="text-xs font-normal text-[#71717A]">{selectedSkill.description}</p>
         </div>
       </div>
 
@@ -320,10 +318,22 @@ export function SkillDetailPage() {
     <div className="flex flex-col gap-7">
       {/* Info Section */}
       <div className="flex gap-8">
-        <InfoItem label="Installed" value={formatDate(selectedSkill.installedAt || selectedSkill.createdAt)} />
-        <InfoItem label="Usage" value={`${(selectedSkillUsage?.call_count ?? 0).toLocaleString()} calls`} />
-        <InfoItem label="Last Used" value={formatRelativeTime(selectedSkillUsage?.last_used ?? undefined)} />
-        <InfoItem label="Scenes" value={`${scenesCount} ${scenesCount === 1 ? 'scene' : 'scenes'}`} />
+        <InfoItem
+          label="Installed"
+          value={formatDate(selectedSkill.installedAt || selectedSkill.createdAt)}
+        />
+        <InfoItem
+          label="Usage"
+          value={`${(selectedSkillUsage?.call_count ?? 0).toLocaleString()} calls`}
+        />
+        <InfoItem
+          label="Last Used"
+          value={formatRelativeTime(selectedSkillUsage?.last_used ?? undefined)}
+        />
+        <InfoItem
+          label="Scenes"
+          value={`${scenesCount} ${scenesCount === 1 ? 'scene' : 'scenes'}`}
+        />
       </div>
 
       {/* Category & Tags Section */}
@@ -331,16 +341,31 @@ export function SkillDetailPage() {
         {/* Category Selector */}
         <div className="flex items-center gap-3">
           <span className="text-[11px] font-medium text-[#71717A]">Category</span>
-          <button className="flex items-center gap-2 rounded-md border border-[#E5E5E5] px-2.5 py-1.5">
-            <span
-              className="h-2 w-2 rounded-sm"
-              style={{ backgroundColor: categoryColors[selectedSkill.category] || '#71717A' }}
-            />
-            <span className="text-[13px] font-medium text-[#18181B]">
-              {selectedSkill.category.charAt(0).toUpperCase() + selectedSkill.category.slice(1)}
-            </span>
-            <ChevronDown className="h-3.5 w-3.5 text-[#A1A1AA]" />
-          </button>
+          {/* V2 §5.9 row 3: dual-read display — categoryId-resolved name
+              wins over the cached `category` string; the legacy
+              `categoryColors` static map remains as a final fallback for
+              entries that pre-date both ids and the new color system. */}
+          {(() => {
+            const displayName = getCategoryDisplayName(
+              selectedSkill.categoryId,
+              selectedSkill.category,
+              categories,
+            );
+            const resolvedColor =
+              resolveCategoryColor(selectedSkill.categoryId, selectedSkill.category, categories) ??
+              categoryColors[selectedSkill.category] ??
+              '#71717A';
+            const labelText = displayName
+              ? displayName.charAt(0).toUpperCase() + displayName.slice(1)
+              : 'Uncategorized';
+            return (
+              <button className="flex items-center gap-2 rounded-md border border-[#E5E5E5] px-2.5 py-1.5">
+                <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: resolvedColor }} />
+                <span className="text-[13px] font-medium text-[#18181B]">{labelText}</span>
+                <ChevronDown className="h-3.5 w-3.5 text-[#A1A1AA]" />
+              </button>
+            );
+          })()}
         </div>
 
         {/* Tags */}
@@ -446,9 +471,7 @@ export function SkillDetailPage() {
         <div className="flex flex-col gap-3 rounded-lg border border-[#E5E5E5] p-4">
           <div className="flex items-center gap-2.5">
             <span className="text-xs font-medium text-[#71717A]">Path</span>
-            <span className="font-mono text-xs text-[#18181B]">
-              {selectedSkill.sourcePath}
-            </span>
+            <span className="font-mono text-xs text-[#18181B]">{selectedSkill.sourcePath}</span>
           </div>
           <Button
             variant="secondary"
@@ -475,9 +498,7 @@ export function SkillDetailPage() {
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[#F4F4F5]">
               <Layers className="h-3.5 w-3.5 text-[#A1A1AA]" />
             </div>
-            <span className="text-[13px] text-[#71717A]">
-              Not used in any scenes yet
-            </span>
+            <span className="text-[13px] text-[#71717A]">Not used in any scenes yet</span>
           </div>
         )}
       </div>
@@ -549,9 +570,7 @@ function ConfigItem({ label, value, isLast = false }: ConfigItemProps) {
         !isLast ? 'border-b border-[#E5E5E5]' : ''
       }`}
     >
-      <span className="w-24 flex-shrink-0 text-xs font-medium text-[#71717A]">
-        {label}
-      </span>
+      <span className="w-24 flex-shrink-0 text-xs font-medium text-[#71717A]">{label}</span>
       <div className="flex-1">{value}</div>
     </div>
   );

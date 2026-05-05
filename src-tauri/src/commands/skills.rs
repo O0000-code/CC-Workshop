@@ -1,3 +1,4 @@
+use crate::commands::data::{read_app_data, write_app_data, DATA_MUTEX};
 use crate::types::{Skill, SkillMetadata};
 use crate::utils::{expand_path, get_data_file_path, parse_skill_md};
 use std::fs;
@@ -56,23 +57,42 @@ pub fn get_skill(source_dir: String, skill_id: String) -> Result<Option<Skill>, 
     Ok(skills.into_iter().find(|s| s.id == skill_id))
 }
 
-/// Update skill metadata (category, tags, enabled status, icon)
+/// Update skill metadata (category, tags, enabled status, icon, category_id).
+///
+/// **DATA_MUTEX**: Acquired at the outermost scope (T1f / `phase1_audit.md`
+/// P1-3 closure — was previously a known gap). Concurrent
+/// `update_skill_metadata` + `reorder_categories` (and any other data.json
+/// mutator) are now serialised, eliminating the V1 lost-update window in
+/// which a stale `read_app_data` snapshot could overwrite a fresh
+/// `categories` reorder. See `03_tech_plan.md` V2 §3.1 + §3.6 for the
+/// canonical coverage table.
+///
+/// `category_id` uses the three-state `Option<Option<String>>` pattern
+/// (V2 [P1-6], mirrors `update_category.parentId` semantics):
+/// - **outer `None`** (JS payload omits the key OR sends `undefined`)
+///   → "do not modify the `category_id`"
+/// - **outer `Some(None)`** (JS payload sends `null`)
+///   → "clear the `category_id` (uncategorized)"
+/// - **outer `Some(Some(id))`** (JS payload sends `{ categoryId: "id" }`)
+///   → "set `category_id` to the given id"
+///
+/// Frontend stores call this with both `category` (cached display name) and
+/// `categoryId` (canonical reference) when the dropdown changes — dual-write
+/// keeps the cached name in sync with the resolved id while the V1
+/// hierarchy migration is still rolling out (see `03_tech_plan.md` V2 §4.6
+/// + `04_implementation_plan.md` V2 T3e).
 #[tauri::command]
+#[allow(non_snake_case)]
 pub fn update_skill_metadata(
     skill_id: String,
     category: Option<String>,
+    categoryId: Option<Option<String>>,
     tags: Option<Vec<String>>,
     enabled: Option<bool>,
     icon: Option<String>,
 ) -> Result<(), String> {
-    let data_path = get_data_file_path();
-
-    let mut app_data: crate::types::AppData = if data_path.exists() {
-        let content = fs::read_to_string(&data_path).map_err(|e| e.to_string())?;
-        serde_json::from_str(&content).unwrap_or_default()
-    } else {
-        crate::types::AppData::default()
-    };
+    let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
+    let mut app_data = read_app_data()?;
 
     let metadata = app_data
         .skill_metadata
@@ -81,6 +101,9 @@ pub fn update_skill_metadata(
 
     if let Some(cat) = category {
         metadata.category = cat;
+    }
+    if let Some(new_category_id_opt) = categoryId {
+        metadata.category_id = new_category_id_opt;
     }
     if let Some(t) = tags {
         metadata.tags = t;
@@ -92,14 +115,7 @@ pub fn update_skill_metadata(
         metadata.icon = Some(i);
     }
 
-    // Ensure directory exists
-    if let Some(parent) = data_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-
-    let json = serde_json::to_string_pretty(&app_data).map_err(|e| e.to_string())?;
-    fs::write(&data_path, json).map_err(|e| e.to_string())?;
-
+    write_app_data(app_data)?;
     Ok(())
 }
 
@@ -206,6 +222,7 @@ fn parse_skill_file(
         name,
         description: frontmatter.description.unwrap_or_default(),
         category: metadata.map(|m| m.category.clone()).unwrap_or_default(),
+        category_id: metadata.and_then(|m| m.category_id.clone()),
         tags: metadata.map(|m| m.tags.clone()).unwrap_or_default(),
         enabled: metadata.map(|m| m.enabled).unwrap_or(true),
         source_path: skill_dir.to_string_lossy().to_string(),
@@ -276,17 +293,17 @@ pub fn delete_skill(skill_id: String, ensemble_dir: String) -> Result<(), String
     fs::rename(skill_path, &dest_path)
         .map_err(|e| format!("Failed to move skill to trash: {}", e))?;
 
-    // Remove metadata for this skill
-    let data_path = get_data_file_path();
-    if data_path.exists() {
-        if let Ok(content) = fs::read_to_string(&data_path) {
-            if let Ok(mut app_data) = serde_json::from_str::<crate::types::AppData>(&content) {
-                app_data.skill_metadata.remove(&skill_id);
-                if let Ok(json) = serde_json::to_string_pretty(&app_data) {
-                    let _ = fs::write(&data_path, json);
-                }
-            }
-        }
+    // Remove metadata for this skill (T1f: holds DATA_MUTEX so a concurrent
+    // `update_skill_metadata` / `reorder_categories` cannot lose this delete).
+    {
+        let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
+        let mut app_data = read_app_data().unwrap_or_default();
+        app_data.skill_metadata.remove(&skill_id);
+        // `write_app_data` errors are intentionally swallowed here to preserve
+        // existing best-effort semantics: the trash move already succeeded, so
+        // surfacing a metadata-cleanup error would mislead the caller. The lock
+        // still serialises the write against concurrent mutators.
+        let _ = write_app_data(app_data);
     }
 
     Ok(())

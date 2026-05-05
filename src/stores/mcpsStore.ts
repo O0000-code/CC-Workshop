@@ -1,5 +1,12 @@
 import { create } from 'zustand';
-import { McpServer, FetchMcpToolsResult, McpUsage, UsageStats, ClassifyItem, ClassifyResult } from '@/types';
+import {
+  McpServer,
+  FetchMcpToolsResult,
+  McpUsage,
+  UsageStats,
+  ClassifyItem,
+  ClassifyResult,
+} from '@/types';
 import { useSettingsStore } from './settingsStore';
 import { usePluginsStore } from './pluginsStore';
 import { useAppStore } from './appStore';
@@ -18,7 +25,7 @@ interface McpsState {
   filter: McpsFilter;
   isLoading: boolean;
   error: string | null;
-  fetchingToolsForMcp: string | null;  // Track which MCP is currently fetching tools
+  fetchingToolsForMcp: string | null; // Track which MCP is currently fetching tools
   fetchToolsSuccessMcp: string | null; // Track which MCP just succeeded fetching tools
   mcpFetchErrors: Record<string, string>; // Per-MCP fetch error messages
 
@@ -113,9 +120,7 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
     if (mcp.pluginId) {
       const pluginsStore = usePluginsStore.getState();
       const importKey = `${mcp.pluginId}|${mcp.name}`;
-      const newImported = pluginsStore.importedPluginMcps.filter(
-        (s) => s !== importKey
-      );
+      const newImported = pluginsStore.importedPluginMcps.filter((s) => s !== importKey);
       pluginsStore.setImportedPluginMcps(newImported);
     }
 
@@ -148,18 +153,42 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
       return;
     }
 
+    const mcp = get().mcpServers.find((m) => m.id === id);
+    if (!mcp) return;
+
+    const oldCategory = mcp.category;
+    const oldCategoryId = mcp.categoryId;
+
+    // Resolve name → id from current categories (V2 §4.6 dual-write).
+    // `category === ''` means "Uncategorized" → newCategoryId stays undefined.
+    const cats = useAppStore.getState().categories;
+    const newCategoryId = category ? cats.find((c) => c.name === category)?.id : undefined;
+
+    // Optimistic update — write both fields locally (UI sees fresh state
+    // immediately; backend confirms via the IPC below).
+    set((state) => ({
+      mcpServers: state.mcpServers.map((m) =>
+        m.id === id ? { ...m, category, categoryId: newCategoryId } : m,
+      ),
+    }));
+
     try {
+      // V2 [P1-6] Option<Option<T>> mapping: `null` = clear, omit = no-op,
+      // string = set. Frontend always sends an outer `Some(_)` here so the
+      // backend mirrors the optimistic state exactly.
       await safeInvoke('update_mcp_metadata', {
         mcpId: id,
         category,
+        categoryId: newCategoryId === undefined ? null : newCategoryId,
       });
+    } catch (error) {
+      // Rollback on error
       set((state) => ({
         mcpServers: state.mcpServers.map((m) =>
-          m.id === id ? { ...m, category } : m
+          m.id === id ? { ...m, category: oldCategory, categoryId: oldCategoryId } : m,
         ),
+        error: String(error),
       }));
-    } catch (error) {
-      set({ error: String(error) });
     }
   },
 
@@ -176,9 +205,7 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
         tags,
       });
       set((state) => ({
-        mcpServers: state.mcpServers.map((m) =>
-          m.id === id ? { ...m, tags } : m
-        ),
+        mcpServers: state.mcpServers.map((m) => (m.id === id ? { ...m, tags } : m)),
       }));
     } catch (error) {
       set({ error: String(error) });
@@ -191,9 +218,7 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
       console.warn('McpsStore: Cannot update MCP icon in browser mode');
       // Still update local state for development/testing
       set((state) => ({
-        mcpServers: state.mcpServers.map((m) =>
-          m.id === id ? { ...m, icon } : m
-        ),
+        mcpServers: state.mcpServers.map((m) => (m.id === id ? { ...m, icon } : m)),
       }));
       return;
     }
@@ -204,9 +229,7 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
         icon,
       });
       set((state) => ({
-        mcpServers: state.mcpServers.map((m) =>
-          m.id === id ? { ...m, icon } : m
-        ),
+        mcpServers: state.mcpServers.map((m) => (m.id === id ? { ...m, icon } : m)),
       }));
     } catch (error) {
       set({ error: String(error) });
@@ -226,9 +249,7 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
 
     // Optimistic update
     set((state) => ({
-      mcpServers: state.mcpServers.map((m) =>
-        m.id === id ? { ...m, scope } : m
-      ),
+      mcpServers: state.mcpServers.map((m) => (m.id === id ? { ...m, scope } : m)),
     }));
 
     const { mcpSourceDir, claudeConfigDir } = useSettingsStore.getState();
@@ -244,9 +265,7 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
       // Rollback on error
       const message = typeof error === 'string' ? error : String(error);
       set((state) => ({
-        mcpServers: state.mcpServers.map((m) =>
-          m.id === id ? { ...m, scope: oldScope } : m
-        ),
+        mcpServers: state.mcpServers.map((m) => (m.id === id ? { ...m, scope: oldScope } : m)),
         error: message,
       }));
     }
@@ -294,7 +313,7 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
                       description: t.description || '',
                     })),
                   }
-                : m
+                : m,
             ),
             fetchingToolsForMcp: null,
             mcpFetchErrors: remainingErrors,
@@ -379,7 +398,7 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
         id: m.id,
         name: m.name,
         description: m.description,
-        tools: m.providedTools.map(t => t.name),
+        tools: m.providedTools.map((t) => t.name),
       }));
 
       const existingCategories = categories.map((c) => c.name);
@@ -399,8 +418,8 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
 
       // Collect new categories and tags that need to be created
       const { addCategory, addTag, loadCategories, loadTags } = useAppStore.getState();
-      const existingCategoryNames = new Set(categories.map(c => c.name));
-      const existingTagNames = new Set(tags.map(t => t.name));
+      const existingCategoryNames = new Set(categories.map((c) => c.name));
+      const existingTagNames = new Set(tags.map((t) => t.name));
 
       const newCategories = new Set<string>();
       const newTags = new Set<string>();
@@ -417,10 +436,23 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
       }
 
       // Create new categories (using predefined colors)
-      const categoryColors = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#14B8A6', '#F97316'];
+      const categoryColors = [
+        '#3B82F6',
+        '#10B981',
+        '#F59E0B',
+        '#EF4444',
+        '#8B5CF6',
+        '#EC4899',
+        '#14B8A6',
+        '#F97316',
+      ];
       let colorIndex = categories.length;
       for (const categoryName of newCategories) {
-        await addCategory(categoryName, categoryColors[colorIndex % categoryColors.length]);
+        await addCategory(
+          categoryName,
+          categoryColors[colorIndex % categoryColors.length],
+          undefined, // D14=A: new categories from autoClassify always land at root
+        );
         colorIndex++;
       }
 
@@ -429,13 +461,26 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
         await addTag(tagName);
       }
 
+      // P1-2: dual-write `categoryId` alongside `category` so the entry is
+      // canonical post-migration. Snapshot the latest categories AFTER
+      // addCategory above so we can resolve the freshly-created category's
+      // id by name. Without this, autoClassify-created entries stay
+      // "orphaned" forever (category_id stays None even after the migration
+      // flag advances) — see final_audit P1-2.
+      const updatedCategories = useAppStore.getState().categories;
+      const categoryIdByName = new Map<string, string>(
+        updatedCategories.map((c) => [c.name, c.id]),
+      );
+
       // Apply results
       for (const result of results) {
         const mcp = mcpServers.find((m) => m.id === result.id);
         if (mcp) {
+          const resolvedCategoryId = categoryIdByName.get(result.suggested_category) ?? null;
           await safeInvoke('update_mcp_metadata', {
             mcpId: result.id,
             category: result.suggested_category,
+            categoryId: resolvedCategoryId,
             tags: result.suggested_tags,
             icon: result.suggested_icon,
           });
@@ -477,7 +522,7 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
       filtered = filtered.filter(
         (mcp) =>
           mcp.name.toLowerCase().includes(searchLower) ||
-          mcp.description.toLowerCase().includes(searchLower)
+          mcp.description.toLowerCase().includes(searchLower),
       );
     }
 
@@ -488,9 +533,7 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
 
     // Filter by tags
     if (state.filter.tags.length > 0) {
-      filtered = filtered.filter((mcp) =>
-        state.filter.tags.some((tag) => mcp.tags.includes(tag))
-      );
+      filtered = filtered.filter((mcp) => state.filter.tags.some((tag) => mcp.tags.includes(tag)));
     }
 
     // Sort: plugin-imported MCPs at the bottom

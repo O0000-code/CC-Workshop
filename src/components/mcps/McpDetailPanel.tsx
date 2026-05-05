@@ -18,7 +18,13 @@ import {
   Loader2,
 } from 'lucide-react';
 import { SlidePanel } from '@/components/layout';
-import { IconPicker, ICON_MAP, Dropdown, ScopeSelector, Button } from '@/components/common';
+import {
+  IconPicker,
+  ICON_MAP,
+  CategoryTreeDropdown,
+  ScopeSelector,
+  Button,
+} from '@/components/common';
 import { useMcpsStore } from '@/stores/mcpsStore';
 import { useAppStore } from '@/stores/appStore';
 import { useScenesStore } from '@/stores/scenesStore';
@@ -105,12 +111,8 @@ const ToolItem: React.FC<ToolItemProps> = ({ tool, isLast }) => {
       </div>
       {/* Info */}
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="text-[13px] font-medium text-[#18181B]">
-          {tool.name}
-        </span>
-        <span className="text-[11px] font-normal text-[#71717A] truncate">
-          {tool.description}
-        </span>
+        <span className="text-[13px] font-medium text-[#18181B]">{tool.name}</span>
+        <span className="text-[11px] font-normal text-[#71717A] truncate">{tool.description}</span>
       </div>
     </div>
   );
@@ -164,7 +166,7 @@ export function McpDetailPanel({ mcp, isOpen, onClose }: McpDetailPanelProps) {
   // Get the latest mcp data from store (in case it's updated)
   const selectedMcp = useMemo(
     () => (mcp ? mcpServers.find((m) => m.id === mcp.id) || mcp : null),
-    [mcpServers, mcp]
+    [mcpServers, mcp],
   );
 
   // Get scenes that use the selected MCP
@@ -173,24 +175,20 @@ export function McpDetailPanel({ mcp, isOpen, onClose }: McpDetailPanelProps) {
     return scenes.filter((scene) => scene.mcpIds.includes(selectedMcp.id));
   }, [scenes, selectedMcp]);
 
-  // Category dropdown options - only use categories from appStore
-  const categoryOptions = useMemo(() => {
-    const options = categories.map(cat => ({
-      value: cat.name,
-      label: cat.name,
-      color: cat.color || '#71717A',
-    }));
-    // Add Uncategorized option at the beginning
-    return [{ value: '', label: 'Uncategorized', color: '#71717A' }, ...options];
-  }, [categories]);
+  // V2 dual-read: prefer categoryId (canonical), fall back to name lookup
+  // for legacy entries. See 03_tech_plan V2 §5.9.
+  const currentCategoryId = useMemo(() => {
+    if (!selectedMcp) return '';
+    if (selectedMcp.categoryId) return selectedMcp.categoryId;
+    return categories.find((c) => c.name === selectedMcp.category)?.id ?? '';
+  }, [selectedMcp, categories]);
 
   // Filtered tag suggestions based on input
   const tagSuggestions = useMemo(() => {
     if (!tagInputValue.trim()) return appTags;
     const query = tagInputValue.toLowerCase();
-    return appTags.filter(tag =>
-      tag.name.toLowerCase().includes(query) &&
-      !selectedMcp?.tags?.includes(tag.name)
+    return appTags.filter(
+      (tag) => tag.name.toLowerCase().includes(query) && !selectedMcp?.tags?.includes(tag.name),
     );
   }, [tagInputValue, appTags, selectedMcp?.tags]);
 
@@ -231,10 +229,11 @@ export function McpDetailPanel({ mcp, isOpen, onClose }: McpDetailPanelProps) {
     setIconPickerState({ isOpen: false, triggerRef: null });
   };
 
-  const handleCategoryChange = (category: string | string[]) => {
-    if (selectedMcp && typeof category === 'string') {
-      updateMcpCategory(selectedMcp.id, category);
-    }
+  // V2 §5.9: dropdown emits categoryId; resolve id → name for store dual-write.
+  const handleCategoryChange = (categoryId: string) => {
+    if (!selectedMcp) return;
+    const targetName = categoryId ? (categories.find((c) => c.id === categoryId)?.name ?? '') : '';
+    updateMcpCategory(selectedMcp.id, targetName);
   };
 
   const handleAddTag = async (tagName: string) => {
@@ -242,7 +241,7 @@ export function McpDetailPanel({ mcp, isOpen, onClose }: McpDetailPanelProps) {
       const trimmedName = tagName.trim();
 
       // Check if tag already exists in appStore
-      const existingTag = appTags.find(t => t.name.toLowerCase() === trimmedName.toLowerCase());
+      const existingTag = appTags.find((t) => t.name.toLowerCase() === trimmedName.toLowerCase());
 
       // If new tag, add to appStore first so it appears in sidebar
       if (!existingTag) {
@@ -262,7 +261,7 @@ export function McpDetailPanel({ mcp, isOpen, onClose }: McpDetailPanelProps) {
 
   const handleRemoveTag = (tagName: string) => {
     if (selectedMcp) {
-      const newTags = selectedMcp.tags.filter(t => t !== tagName);
+      const newTags = selectedMcp.tags.filter((t) => t !== tagName);
       updateMcpTags(selectedMcp.id, newTags);
     }
   };
@@ -292,12 +291,7 @@ export function McpDetailPanel({ mcp, isOpen, onClose }: McpDetailPanelProps) {
   // If no mcp, render empty SlidePanel to maintain animation
   if (!selectedMcp) {
     return (
-      <SlidePanel
-        isOpen={isOpen}
-        onClose={onClose}
-        width={800}
-        header={null}
-      >
+      <SlidePanel isOpen={isOpen} onClose={onClose} width={800} header={null}>
         <div />
       </SlidePanel>
     );
@@ -321,12 +315,8 @@ export function McpDetailPanel({ mcp, isOpen, onClose }: McpDetailPanelProps) {
       </div>
       {/* Title Info */}
       <div className="flex flex-col gap-0.5">
-        <h2 className="text-sm font-semibold text-[#18181B]">
-          {selectedMcp.name}
-        </h2>
-        <p className="text-xs font-normal text-[#71717A]">
-          {selectedMcp.description}
-        </p>
+        <h2 className="text-sm font-semibold text-[#18181B]">{selectedMcp.name}</h2>
+        <p className="text-xs font-normal text-[#71717A]">{selectedMcp.description}</p>
       </div>
     </div>
   );
@@ -353,17 +343,18 @@ export function McpDetailPanel({ mcp, isOpen, onClose }: McpDetailPanelProps) {
             </span>
           </div>
           <div className="flex flex-1 flex-col gap-1">
-            <span className="text-[11px] font-medium text-[#71717A]">
-              Total Calls
-            </span>
+            <span className="text-[11px] font-medium text-[#71717A]">Total Calls</span>
             <span className="text-[13px] font-medium text-[#18181B]">
-              {(usageStats[selectedMcp?.id ?? '']?.total_calls ?? usageStats[selectedMcp?.name ?? '']?.total_calls ?? 0).toLocaleString()} calls
+              {(
+                usageStats[selectedMcp?.id ?? '']?.total_calls ??
+                usageStats[selectedMcp?.name ?? '']?.total_calls ??
+                0
+              ).toLocaleString()}{' '}
+              calls
             </span>
           </div>
           <div className="flex flex-1 flex-col gap-1">
-            <span className="text-[11px] font-medium text-[#71717A]">
-              Scenes
-            </span>
+            <span className="text-[11px] font-medium text-[#71717A]">Scenes</span>
             <span className="text-[13px] font-medium text-[#18181B]">
               {usedInScenes.length} {usedInScenes.length === 1 ? 'scene' : 'scenes'}
             </span>
@@ -373,9 +364,9 @@ export function McpDetailPanel({ mcp, isOpen, onClose }: McpDetailPanelProps) {
         {/* Category Selector */}
         <div className="flex flex-col gap-2">
           <span className="text-[11px] font-medium text-[#71717A]">Category</span>
-          <Dropdown
-            options={categoryOptions}
-            value={selectedMcp.category || ''}
+          <CategoryTreeDropdown
+            categories={categories}
+            value={currentCategoryId}
             onChange={handleCategoryChange}
             placeholder="Select category"
             compact
@@ -435,7 +426,9 @@ export function McpDetailPanel({ mcp, isOpen, onClose }: McpDetailPanelProps) {
                       </button>
                     ))}
                     {/* Option to create new tag if not in suggestions */}
-                    {!tagSuggestions.some(t => t.name.toLowerCase() === tagInputValue.toLowerCase()) && (
+                    {!tagSuggestions.some(
+                      (t) => t.name.toLowerCase() === tagInputValue.toLowerCase(),
+                    ) && (
                       <button
                         onMouseDown={(e) => {
                           e.preventDefault();
@@ -525,9 +518,7 @@ export function McpDetailPanel({ mcp, isOpen, onClose }: McpDetailPanelProps) {
 
       {/* Source Configuration Section */}
       <section className="flex flex-col gap-4">
-        <h3 className="text-sm font-semibold text-[#18181B]">
-          Source Configuration
-        </h3>
+        <h3 className="text-sm font-semibold text-[#18181B]">Source Configuration</h3>
         <div className="overflow-hidden rounded-lg border border-[#E5E5E5]">
           {/* Config Path */}
           <div className="flex items-center gap-3 px-3.5 py-3 border-b border-[#E5E5E5]">
@@ -560,12 +551,7 @@ export function McpDetailPanel({ mcp, isOpen, onClose }: McpDetailPanelProps) {
           </div>
         </div>
         {/* Open in Finder Button */}
-        <Button
-          variant="secondary"
-          size="small"
-          icon={<FolderOpen />}
-          onClick={handleOpenInFinder}
-        >
+        <Button variant="secondary" size="small" icon={<FolderOpen />} onClick={handleOpenInFinder}>
           Open in Finder
         </Button>
       </section>
@@ -591,9 +577,7 @@ export function McpDetailPanel({ mcp, isOpen, onClose }: McpDetailPanelProps) {
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[#F4F4F5]">
               <Layers className="h-3.5 w-3.5 text-[#A1A1AA]" />
             </div>
-            <span className="text-[13px] text-[#71717A]">
-              Not used in any scenes yet
-            </span>
+            <span className="text-[13px] text-[#71717A]">Not used in any scenes yet</span>
           </div>
         )}
       </section>

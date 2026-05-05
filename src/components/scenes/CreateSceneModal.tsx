@@ -17,10 +17,12 @@ import {
   FileText,
 } from 'lucide-react';
 import { Skill, McpServer } from '@/types';
-import { Dropdown } from '@/components/common/Dropdown';
+import { Dropdown, type DropdownOption } from '@/components/common/Dropdown';
 import { usePluginsStore } from '@/stores/pluginsStore';
 import { useScenesStore } from '@/stores/scenesStore';
 import { useClaudeMdStore } from '@/stores/claudeMdStore';
+import { useAppStore } from '@/stores/appStore';
+import { flattenTree } from '@/components/sidebar/dnd/treeUtilities';
 
 // ============================================================================
 // Types
@@ -127,11 +129,12 @@ const CheckableItem: React.FC<CheckableItemProps> = ({
         px-4
         py-3.5
         transition-colors
-        ${disabled
-          ? 'cursor-not-allowed border-[#E5E5E5] bg-white'
-          : selected
-            ? 'cursor-pointer border-[#E5E5E5] bg-[#FAFAFA]'
-            : 'cursor-pointer border-[#E5E5E5] bg-white hover:bg-[#FAFAFA]'
+        ${
+          disabled
+            ? 'cursor-not-allowed border-[#E5E5E5] bg-white'
+            : selected
+              ? 'cursor-pointer border-[#E5E5E5] bg-[#FAFAFA]'
+              : 'cursor-pointer border-[#E5E5E5] bg-white hover:bg-[#FAFAFA]'
         }
       `}
     >
@@ -146,11 +149,13 @@ const CheckableItem: React.FC<CheckableItemProps> = ({
             backgroundColor: '#18181B',
           }}
         >
-          <span className="text-[12px] font-medium text-white">
-            Already globally enabled
-          </span>
-          <span className="text-[11px] font-normal leading-normal text-[#A1A1AA]" style={{ width: '220px' }}>
-            This {type === 'skill' ? 'skill' : 'MCP'} is enabled via plugin and is already active in all projects.
+          <span className="text-[12px] font-medium text-white">Already globally enabled</span>
+          <span
+            className="text-[11px] font-normal leading-normal text-[#A1A1AA]"
+            style={{ width: '220px' }}
+          >
+            This {type === 'skill' ? 'skill' : 'MCP'} is enabled via plugin and is already active in
+            all projects.
           </span>
         </div>
       )}
@@ -166,12 +171,7 @@ const CheckableItem: React.FC<CheckableItemProps> = ({
           justify-center
           rounded
           transition-colors
-          ${disabled
-            ? 'bg-[#F4F4F5]'
-            : selected
-              ? 'bg-[#18181B]'
-              : 'border-2 border-[#D4D4D4]'
-          }
+          ${disabled ? 'bg-[#F4F4F5]' : selected ? 'bg-[#18181B]' : 'border-2 border-[#D4D4D4]'}
         `}
       >
         {selected && !disabled && <Check className="h-3.5 w-3.5 text-white" strokeWidth={3} />}
@@ -227,11 +227,12 @@ const CheckableItem: React.FC<CheckableItemProps> = ({
               py-[3px]
               text-[10px]
               font-medium
-              ${disabled
-                ? 'bg-[#FAFAFA] text-[#D4D4D8]'
-                : selected && index === 0
-                  ? 'bg-white text-[#18181B]'
-                  : 'bg-[#FAFAFA] text-[#52525B]'
+              ${
+                disabled
+                  ? 'bg-[#FAFAFA] text-[#D4D4D8]'
+                  : selected && index === 0
+                    ? 'bg-white text-[#18181B]'
+                    : 'bg-[#FAFAFA] text-[#52525B]'
               }
             `}
           >
@@ -320,10 +321,7 @@ const CollapsibleGroup: React.FC<CollapsibleGroupProps> = ({
   return (
     <div className="flex flex-col gap-2">
       {/* Header */}
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 text-left"
-      >
+      <button onClick={() => setIsOpen(!isOpen)} className="flex items-center gap-2 text-left">
         {isOpen ? (
           <ChevronDown className="h-3.5 w-3.5 text-[#71717A]" />
         ) : (
@@ -362,6 +360,13 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
   // CLAUDE.md state from stores
   const { getDistributableClaudeMd } = useScenesStore();
   const { files: claudeMdFiles, loadFiles: loadClaudeMdFiles } = useClaudeMdStore();
+  // V2 [P0-DATA-4]: categoryFilter is keyed by `categoryId` (D1=A migration),
+  // not by category name. With hierarchical categories, two children of
+  // different parents could share a name ("Tools/Web" vs "Research/Web") —
+  // filtering by name would silently merge their content. The full category
+  // list is read here so we can build hierarchy-aware options + map back
+  // selected ids → name for display.
+  const { categories: allCategories } = useAppStore();
 
   // Local state - initialize with initialScene values if in edit mode
   const [name, setName] = useState('');
@@ -411,18 +416,24 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
   }, [isOpen, loadInstalledPlugins, loadClaudeMdFiles]);
 
   // Check if a Skill should be disabled (from an enabled plugin)
-  const isSkillDisabled = useCallback((skill: Skill): boolean => {
-    if (skill.installSource !== 'plugin') return false;
-    if (!skill.pluginId) return false;
-    return pluginEnabledStatus[skill.pluginId] === true;
-  }, [pluginEnabledStatus]);
+  const isSkillDisabled = useCallback(
+    (skill: Skill): boolean => {
+      if (skill.installSource !== 'plugin') return false;
+      if (!skill.pluginId) return false;
+      return pluginEnabledStatus[skill.pluginId] === true;
+    },
+    [pluginEnabledStatus],
+  );
 
   // Check if an MCP should be disabled (from an enabled plugin)
-  const isMcpDisabled = useCallback((mcp: McpServer): boolean => {
-    if (mcp.installSource !== 'plugin') return false;
-    if (!mcp.pluginId) return false;
-    return pluginEnabledStatus[mcp.pluginId] === true;
-  }, [pluginEnabledStatus]);
+  const isMcpDisabled = useCallback(
+    (mcp: McpServer): boolean => {
+      if (mcp.installSource !== 'plugin') return false;
+      if (!mcp.pluginId) return false;
+      return pluginEnabledStatus[mcp.pluginId] === true;
+    },
+    [pluginEnabledStatus],
+  );
 
   // Handle keyboard events
   useEffect(() => {
@@ -443,30 +454,121 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
     };
   }, [isOpen, onClose]);
 
-  // Get unique categories and tags
-  const categories = useMemo(() => {
+  // V2 [P0-DATA-4]: Build hierarchy-aware category filter options keyed by
+  // `categoryId`. Renders only roots (and their children) that actually
+  // appear in the current items, so the dropdown stays compact. Falls back
+  // to legacy name-based grouping for items whose `categoryId` is still
+  // empty (pre-migration data); these surface as a flat "name-only"
+  // synthetic option set after the hierarchy block.
+  //
+  // Why categoryId rather than name (per `_v2_patch_plan` §3.3 +
+  // 03_tech_plan V2 §5.9 row 7): with depth-2 hierarchy, sibling roots
+  // ("Tools" vs "Research") may each have a child literally named "Web".
+  // A name-keyed filter merges them into a single "Web" line that selects
+  // both subtrees' contents — D7=A's "self + descendants" semantic is
+  // bypassed and the user sees content they didn't ask for.
+  const categories = useMemo<DropdownOption[]>(() => {
     const items = activeTab === 'skills' ? skills : mcpServers;
-    const uniqueCategories = [...new Set(items.map((item) => item.category))];
-    return uniqueCategories.map((cat) => ({
-      value: cat,
-      label: cat,
-      count: items.filter((item) => item.category === cat).length,
-    }));
-  }, [activeTab, skills, mcpServers]);
+
+    // Index items by categoryId for fast count and "used" detection.
+    const byCategoryId = new Map<string, number>();
+    const legacyByName = new Map<string, number>(); // items with no categoryId
+    for (const item of items) {
+      if (item.categoryId) {
+        byCategoryId.set(item.categoryId, (byCategoryId.get(item.categoryId) ?? 0) + 1);
+      } else if (item.category) {
+        legacyByName.set(item.category, (legacyByName.get(item.category) ?? 0) + 1);
+      }
+    }
+
+    // Hierarchy block — flatten all categories, then keep only those that
+    // either contain items themselves or have a descendant with items
+    // (so an empty-but-parent-of-used category still shows for context).
+    const allRootIds = new Set(allCategories.filter((c) => !c.parentId).map((c) => c.id));
+    const fullFlat = flattenTree(allCategories, allRootIds);
+
+    const usedRoots = new Set<string>();
+    for (const cat of fullFlat) {
+      if (byCategoryId.has(cat.id)) {
+        // Walk up to root and mark.
+        let cursor: string | null = cat.id;
+        while (cursor) {
+          usedRoots.add(cursor);
+          const parent = allCategories.find((c) => c.id === cursor);
+          cursor = parent?.parentId ?? null;
+        }
+      }
+    }
+
+    const opts: DropdownOption[] = [];
+    for (const cat of fullFlat) {
+      if (!usedRoots.has(cat.id)) continue;
+      // Count = items directly in this category. Aggregation (D8=B)
+      // happens at filter time below — the dropdown badge shows direct
+      // count to avoid double-counting in a flat picker.
+      const count = byCategoryId.get(cat.id) ?? 0;
+      opts.push({
+        value: cat.id,
+        label: cat.name,
+        count: count > 0 ? count : undefined,
+        indent: cat.depth,
+      });
+    }
+
+    // Legacy fallback — entries that have only a name string. These ride
+    // at the bottom with `__legacy:` prefix on `value` so the filter logic
+    // can route them back to a name match without colliding with real ids.
+    if (legacyByName.size > 0) {
+      // Skip names that already resolve to one of the rendered ids — the
+      // skill/mcp will appear under the resolved id when re-scanned.
+      const resolvedNames = new Set(
+        Array.from(byCategoryId.keys())
+          .map((id) => allCategories.find((c) => c.id === id)?.name)
+          .filter((n): n is string => !!n),
+      );
+      for (const [name, count] of legacyByName) {
+        if (resolvedNames.has(name)) continue;
+        opts.push({ value: `__legacy:${name}`, label: name, count, indent: 0 });
+      }
+    }
+
+    return opts;
+  }, [activeTab, skills, mcpServers, allCategories]);
 
   const tags = useMemo(() => {
     const items = activeTab === 'skills' ? skills : mcpServers;
     const allTags = items.flatMap((item) => item.tags);
-    const tagCounts = allTags.reduce((acc, tag) => {
-      acc[tag] = (acc[tag] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
+    const tagCounts = allTags.reduce(
+      (acc, tag) => {
+        acc[tag] = (acc[tag] || 0) + 1;
+        return acc;
+      },
+      {} as Record<string, number>,
+    );
     return Object.entries(tagCounts).map(([tag, count]) => ({
       value: tag,
       label: tag,
       count,
     }));
   }, [activeTab, skills, mcpServers]);
+
+  // V2 [P0-DATA-4]: precompute the categoryId set the filter accepts.
+  // When the user picks a parent, we expand to the parent + all
+  // descendants (D7=A semantic). When the user picks a child, we keep
+  // just that id. Legacy `__legacy:<name>` filter values fall through to
+  // a direct `item.category === name && item.categoryId === undefined`
+  // check below.
+  const categoryFilterIds = useMemo<Set<string> | null>(() => {
+    if (!categoryFilter) return null;
+    if (categoryFilter.startsWith('__legacy:')) return null;
+    const ids = new Set<string>([categoryFilter]);
+    // Walk descendants of categoryFilter (max depth = 2 → one level deep
+    // at most, per `02_design_spec` §6.5).
+    for (const c of allCategories) {
+      if (c.parentId === categoryFilter) ids.add(c.id);
+    }
+    return ids;
+  }, [categoryFilter, allCategories]);
 
   // Filter and sort items (disabled items at bottom)
   const filteredItems = useMemo(() => {
@@ -483,9 +585,30 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
         }
       }
 
-      // Category filter
-      if (categoryFilter && item.category !== categoryFilter) {
-        return false;
+      // V2 [P0-DATA-4] Category filter — id-based with hierarchy expansion.
+      if (categoryFilter) {
+        if (categoryFilter.startsWith('__legacy:')) {
+          // Legacy name-only path — accept items with no categoryId whose
+          // cached `category` matches the legacy name.
+          const legacyName = categoryFilter.slice('__legacy:'.length);
+          if (item.categoryId || item.category !== legacyName) return false;
+        } else {
+          // Hierarchical id path — accept items whose categoryId is in
+          // the expanded set (parent + descendants per D7=A). If the item
+          // has no categoryId yet (legacy data), fall back to name match
+          // so pre-migration entries don't disappear from the picker
+          // unfairly.
+          if (categoryFilterIds && categoryFilterIds.size > 0) {
+            const matchesId = item.categoryId ? categoryFilterIds.has(item.categoryId) : false;
+            const matchesNameFallback =
+              !item.categoryId &&
+              !!item.category &&
+              Array.from(categoryFilterIds).some(
+                (id) => allCategories.find((c) => c.id === id)?.name === item.category,
+              );
+            if (!matchesId && !matchesNameFallback) return false;
+          }
+        }
       }
 
       // Tag filter
@@ -499,37 +622,42 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
 
     // Sort: enabled items first, disabled items at bottom
     return filtered.sort((a, b) => {
-      const aDisabled = activeTab === 'skills'
-        ? isSkillDisabled(a as Skill)
-        : isMcpDisabled(a as McpServer);
-      const bDisabled = activeTab === 'skills'
-        ? isSkillDisabled(b as Skill)
-        : isMcpDisabled(b as McpServer);
+      const aDisabled =
+        activeTab === 'skills' ? isSkillDisabled(a as Skill) : isMcpDisabled(a as McpServer);
+      const bDisabled =
+        activeTab === 'skills' ? isSkillDisabled(b as Skill) : isMcpDisabled(b as McpServer);
 
       if (aDisabled === bDisabled) return 0;
       return aDisabled ? 1 : -1;
     });
-  }, [activeTab, skills, mcpServers, searchQuery, categoryFilter, tagFilter, isSkillDisabled, isMcpDisabled]);
+  }, [
+    activeTab,
+    skills,
+    mcpServers,
+    searchQuery,
+    categoryFilter,
+    categoryFilterIds,
+    tagFilter,
+    isSkillDisabled,
+    isMcpDisabled,
+    allCategories,
+  ]);
 
   // Selection handlers
   const handleToggleSkill = useCallback((id: string) => {
     setSelectedSkillIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     );
   }, []);
 
   const handleToggleMcp = useCallback((id: string) => {
-    setSelectedMcpIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
+    setSelectedMcpIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }, []);
 
   const handleSelectAll = useCallback(() => {
     if (activeTab === 'skills') {
       // Filter out disabled skills
-      const selectableItems = filteredItems.filter(
-        (item) => !isSkillDisabled(item as Skill)
-      );
+      const selectableItems = filteredItems.filter((item) => !isSkillDisabled(item as Skill));
       const selectableIds = selectableItems.map((item) => item.id);
       const allSelected = selectableIds.every((id) => selectedSkillIds.includes(id));
       if (allSelected) {
@@ -539,9 +667,7 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
       }
     } else {
       // Filter out disabled MCPs
-      const selectableItems = filteredItems.filter(
-        (item) => !isMcpDisabled(item as McpServer)
-      );
+      const selectableItems = filteredItems.filter((item) => !isMcpDisabled(item as McpServer));
       const selectableIds = selectableItems.map((item) => item.id);
       const allSelected = selectableIds.every((id) => selectedMcpIds.includes(id));
       if (allSelected) {
@@ -580,23 +706,35 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
       onCreateScene(sceneData);
     }
     onClose();
-  }, [name, description, selectedSkillIds, selectedMcpIds, selectedClaudeMdId, onCreateScene, onUpdateScene, onClose, isEditMode, initialScene]);
+  }, [
+    name,
+    description,
+    selectedSkillIds,
+    selectedMcpIds,
+    selectedClaudeMdId,
+    onCreateScene,
+    onUpdateScene,
+    onClose,
+    isEditMode,
+    initialScene,
+  ]);
 
   // Get selected items for display
   const selectedSkills = useMemo(
     () => skills.filter((s) => selectedSkillIds.includes(s.id)),
-    [skills, selectedSkillIds]
+    [skills, selectedSkillIds],
   );
 
   const selectedMcps = useMemo(
     () => mcpServers.filter((m) => selectedMcpIds.includes(m.id)),
-    [mcpServers, selectedMcpIds]
+    [mcpServers, selectedMcpIds],
   );
 
   // Get the selected CLAUDE.md file (single select)
   const selectedClaudeMdFile = useMemo(
-    () => (selectedClaudeMdId ? claudeMdFiles.find((f) => f.id === selectedClaudeMdId) || null : null),
-    [claudeMdFiles, selectedClaudeMdId]
+    () =>
+      selectedClaudeMdId ? claudeMdFiles.find((f) => f.id === selectedClaudeMdId) || null : null,
+    [claudeMdFiles, selectedClaudeMdId],
   );
 
   if (!isOpen) return null;
@@ -613,7 +751,9 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
         {/* Modal Header */}
         <div className="flex h-16 flex-shrink-0 items-center justify-between border-b border-[#E5E5E5] px-7">
           <div className="flex flex-col gap-1">
-            <h2 className="text-lg font-semibold text-[#18181B]">{isEditMode ? 'Edit Scene' : 'Create New Scene'}</h2>
+            <h2 className="text-lg font-semibold text-[#18181B]">
+              {isEditMode ? 'Edit Scene' : 'Create New Scene'}
+            </h2>
             <p className="text-[13px] font-normal text-[#71717A]">
               Configure skills and MCP servers for this development context
             </p>
@@ -900,9 +1040,10 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
                 {(activeTab === 'skills' || activeTab === 'mcps') && (
                   <>
                     {filteredItems.map((item) => {
-                      const disabled = activeTab === 'skills'
-                        ? isSkillDisabled(item as Skill)
-                        : isMcpDisabled(item as McpServer);
+                      const disabled =
+                        activeTab === 'skills'
+                          ? isSkillDisabled(item as Skill)
+                          : isMcpDisabled(item as McpServer);
                       const disabledReason = disabled
                         ? `此 ${activeTab === 'skills' ? 'Skill' : 'MCP'} 由已启用的插件提供，全局已生效，无需添加到场景`
                         : undefined;
@@ -988,11 +1129,7 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
                                 justify-center
                                 rounded
                                 transition-colors
-                                ${
-                                  isSelected
-                                    ? 'bg-[#18181B]'
-                                    : 'border-2 border-[#D4D4D4]'
-                                }
+                                ${isSelected ? 'bg-[#18181B]' : 'border-2 border-[#D4D4D4]'}
                               `}
                             >
                               {isSelected && (
@@ -1015,9 +1152,7 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
                             >
                               <FileText
                                 className={`h-[18px] w-[18px] ${
-                                  isSelected
-                                    ? 'text-[#18181B]'
-                                    : 'text-[#52525B]'
+                                  isSelected ? 'text-[#18181B]' : 'text-[#52525B]'
                                 }`}
                               />
                             </div>
@@ -1039,11 +1174,7 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
                               <span
                                 className={`
                                   truncate text-xs font-normal
-                                  ${
-                                    isSelected
-                                      ? 'text-[#52525B]'
-                                      : 'text-[#71717A]'
-                                  }
+                                  ${isSelected ? 'text-[#52525B]' : 'text-[#71717A]'}
                                 `}
                               >
                                 {file.sourcePath}
@@ -1056,7 +1187,9 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
                     {distributableClaudeMd.length === 0 && (
                       <div className="flex flex-col items-center justify-center py-12 text-center">
                         <FileText className="h-8 w-8 text-[#D4D4D8]" />
-                        <p className="mt-3 text-sm font-medium text-[#71717A]">No CLAUDE.md files available</p>
+                        <p className="mt-3 text-sm font-medium text-[#71717A]">
+                          No CLAUDE.md files available
+                        </p>
                         <p className="mt-1 text-xs text-[#A1A1AA]">
                           Import CLAUDE.md files in the CLAUDE.md management page
                         </p>
@@ -1073,7 +1206,9 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
             {/* Right Header */}
             <div className="flex h-14 items-center justify-between border-b border-[#E5E5E5] px-5">
               <span className="text-sm font-semibold text-[#18181B]">Selected Items</span>
-              {(selectedSkillIds.length > 0 || selectedMcpIds.length > 0 || selectedClaudeMdId !== null) && (
+              {(selectedSkillIds.length > 0 ||
+                selectedMcpIds.length > 0 ||
+                selectedClaudeMdId !== null) && (
                 <button
                   onClick={handleClearAll}
                   className="rounded px-2.5 py-1 text-[11px] font-medium text-[#DC2626] transition-colors hover:bg-[#FEE2E2]"

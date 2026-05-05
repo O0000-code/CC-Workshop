@@ -26,7 +26,7 @@ import { parseDescription } from '@/utils/parseDescription';
 import Badge from '@/components/common/Badge';
 import Button from '@/components/common/Button';
 import EmptyState from '@/components/common/EmptyState';
-import { IconPicker, ICON_MAP, Dropdown, ScopeSelector } from '@/components/common';
+import { IconPicker, ICON_MAP, CategoryTreeDropdown, ScopeSelector } from '@/components/common';
 import { SkillListItem } from '@/components/skills/SkillListItem';
 import { ImportSkillsModal } from '@/components/modals';
 import { useSkillsStore } from '@/stores/skillsStore';
@@ -215,17 +215,6 @@ export function SkillsPage() {
     loadInstalledPlugins();
   }, [loadUsageStats, loadInstalledPlugins]);
 
-  // Category dropdown options - only use categories from appStore
-  const categoryOptions = useMemo(() => {
-    const options = categories.map((cat) => ({
-      value: cat.name,
-      label: cat.name,
-      color: cat.color || '#71717A',
-    }));
-    // Add Uncategorized option at the beginning
-    return [{ value: '', label: 'Uncategorized', color: '#71717A' }, ...options];
-  }, [categories]);
-
   // Selected skill ID state (replaces URL-based navigation)
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
 
@@ -234,6 +223,15 @@ export function SkillsPage() {
     () => skills.find((s) => s.id === selectedSkillId) || null,
     [skills, selectedSkillId],
   );
+
+  // V2 dual-read: prefer categoryId (canonical), fall back to name lookup
+  // for legacy entries that have not yet completed the
+  // `migrate_category_id_for_skills_mcps` migration. See 03_tech_plan V2 §5.9.
+  const currentCategoryId = useMemo(() => {
+    if (!selectedSkill) return '';
+    if (selectedSkill.categoryId) return selectedSkill.categoryId;
+    return categories.find((c) => c.name === selectedSkill.category)?.id ?? '';
+  }, [selectedSkill, categories]);
 
   // Get scenes that use the selected skill
   const usedInScenes = useMemo(() => {
@@ -327,11 +325,13 @@ export function SkillsPage() {
     setIconPickerState({ isOpen: false, skillId: null, triggerRef: null });
   };
 
-  // Handle category change
-  const handleCategoryChange = (category: string | string[]) => {
-    if (selectedSkillId && typeof category === 'string') {
-      updateSkillCategory(selectedSkillId, category);
-    }
+  // V2 §5.9: dropdown emits categoryId; resolve id → name and let the store
+  // handle dual-write (name → metadata.category cached display +
+  // metadata.category_id canonical reference).
+  const handleCategoryChange = (categoryId: string) => {
+    if (!selectedSkillId) return;
+    const targetName = categoryId ? (categories.find((c) => c.id === categoryId)?.name ?? '') : '';
+    updateSkillCategory(selectedSkillId, targetName);
   };
 
   // Handle adding a tag
@@ -446,9 +446,9 @@ export function SkillsPage() {
         {/* Category Selector */}
         <div className="flex flex-col gap-2">
           <span className="text-[11px] font-medium text-[#71717A]">Category</span>
-          <Dropdown
-            options={categoryOptions}
-            value={selectedSkill.category || ''}
+          <CategoryTreeDropdown
+            categories={categories}
+            value={currentCategoryId}
             onChange={handleCategoryChange}
             placeholder="Select category"
             compact

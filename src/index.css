@@ -668,13 +668,35 @@ body {
     transform var(--duration-drag-indicator-move) var(--ease-drag);
 }
 
+/* Hierarchy drop indicator wrapper — wraps `.drop-indicator-h` and
+   expresses projected depth via padding-left (per 02_design_spec V2 §2.7).
+   Wrapper transitions padding-left over 150ms (`--duration-drag-indicator-move`)
+   so the indicator slides horizontally as the user crosses the +/- 12 px
+   X threshold + 80 ms dwell. The `.drop-indicator-h` class itself is
+   unchanged — geometry stays block + margin-only + transform-driven. */
+.drop-indicator-wrapper {
+  transition: padding-left var(--duration-drag-indicator-move) var(--ease-drag);
+}
+
 @media (prefers-reduced-motion: reduce) {
   [data-sortable-list] *,
   .drag-overlay-row,
   .drag-overlay-pill,
   .drop-indicator-h,
-  .drop-indicator-v {
+  .drop-indicator-v,
+  .drop-indicator-wrapper {
     transition: none !important;
     animation: none !important;
   }
+}
+
+/* === Category Hierarchy (V2) === */
+
+:root {
+  /* Visual indent per hierarchy depth level. Drives SortableCategoryRow
+     padding-left, DragOverlay alignment, and CategoryTreeDropdown indent.
+     Locked at 16px per 02_design_spec V2 §5 + design-language.md Constraints
+     (single new token; chevron rotation, padding-left transition, and
+     reduced-motion all reuse V3 tokens / wildcard coverage above). */
+  --indent-step: 16px;
 }

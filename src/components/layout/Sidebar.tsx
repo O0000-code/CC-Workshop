@@ -83,8 +83,18 @@ export interface SidebarProps {
   // Sortable* lists). All five must come together: reorder callbacks persist
   // the new order, drag start/end gate UI globally (Refresh disable), and
   // isDragging mirrors the active drag state for visual feedback.
-  onReorderCategories: (orderedIds: string[]) => void;
-  onReorderTags: (orderedIds: string[]) => void;
+  //
+  // V2 hierarchy [P0-ARCH-3]: `onReorderCategories` and `onSetCategoryParent`
+  // both return `Promise<void>` so SortableCategoriesList can `await` the
+  // parent-change Stage 2 commit before computing the Stage 3 reorder payload
+  // off fresh `categories` state. See 03 V2 §5.7 / §5.8.
+  onReorderCategories: (orderedIds: string[]) => Promise<void>;
+  onReorderTags: (orderedIds: string[]) => Promise<void>;
+  /** Commit a Category parent_id change. Optional — when omitted, drop-into
+   *  drops in SortableCategoriesList silently degrade to same-level reorders.
+   *  Production wiring lives in MainLayout (`handleSetCategoryParent` →
+   *  `appStore.moveCategoryToParent`). */
+  onSetCategoryParent?: (id: string, newParentId: string | null) => Promise<void>;
   onDragStart: () => void;
   onDragEnd: () => void;
   isDragging: boolean;
@@ -138,6 +148,7 @@ export function Sidebar({
   // Drag-and-drop reorder props
   onReorderCategories,
   onReorderTags,
+  onSetCategoryParent,
   onDragStart,
   onDragEnd,
   isDragging,
@@ -317,6 +328,7 @@ export function Sidebar({
             setShowAll={setShowAllCategories}
             maxVisible={MAX_VISIBLE_CATEGORIES}
             onReorder={onReorderCategories}
+            onSetCategoryParent={onSetCategoryParent}
             onDragStart={onDragStart}
             onDragEnd={onDragEnd}
             onCategoryClick={handleCategoryRowClick}

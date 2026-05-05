@@ -99,6 +99,8 @@ pub fn run() {
             data::update_category,
             data::delete_category,
             data::reorder_categories,
+            data::set_category_parent,
+            data::migrate_category_id_for_skills_mcps,
             // Tags
             data::get_tags,
             data::add_tag,

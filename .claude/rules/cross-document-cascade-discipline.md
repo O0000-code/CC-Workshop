@@ -32,6 +32,27 @@ V2 review surfaced N residual P0s. V3 fixes:
 
 If the cascade footprint is unknown when you finish editing, that is itself the signal that you do not yet understand the change.
 
+**Cascade scope — all binding artifacts, not only `.md` files.** The grep step before declaring "cascade complete" must cover every place where the obsoleted phrasing could still live as a binding claim. The MUST-cover artifacts (each with project evidence of silent drift) are:
+
+- `.md` spec / plan / decision documents (the obvious case)
+- Source-file inline doc comments (`///` in Rust, `/**` in TS, `"""` in Python) — comments that paraphrase a spec rule become a stale claim the moment the spec changes
+- Test function names and test description strings — `it("only when both X and Y are empty")` rots the same way a doc comment does, and is read by every future contributor as authoritative
+
+Additionally, when applicable, the cascade should also clean up:
+
+- The cascade's own commit message body and PR description — if the cascade is incomplete when the commit lands, the commit message describes a state that does not exist (the lost cost is reader confusion, not runtime bugs, but it remains a stale claim)
+- Reusable SubAgent prompt templates stored in `.dev/` or equivalent — these are read by future SubAgents and inherit the same staleness risk as `.md` documents
+
+The grep must be a **reverse-match against the obsoleted phrasing**, not a forward-match against the new phrasing. Example after revising "block advance only when both arrays are empty" → "advance whenever no required field is empty":
+
+```
+rg -n 'both .* are empty|both orphaned_.* are empty' src-tauri/ src/ test/ .dev/
+```
+
+Every hit is a stale claim that must be updated or explicitly retired. A grep that returns zero hits at the obsoleted phrasing AND zero unintended hits at the new phrasing is the cascade-complete signal.
+
+**Evidence from this project** — In the category-hierarchy session, `_v2_patch_plan §3.4` was revised to drop "orphan blocks advance", but the doc comment on `types.rs:247-262` still said "ONLY when both `orphaned_*` are empty". The final-audit SubAgent caught this as P1; without that audit, the doc comment would have rotted in place forever, contradicting the actual code. Same session: a test function still named `test_advance_blocked_by_orphans_*` after the rule changed. The cascade must extend to source-level comments and test names, not just `.md` files — otherwise the documents stay aligned while the code-adjacent narrative drifts.
+
 **Action 2: Alignment SubAgent.** A blocking, single-purpose SubAgent that:
 - Reads the current versions of all decisional documents (verbatim, not summaries).
 - Cross-checks every section number, every numeric parameter, every acceptance bullet, and every cross-reference for consistency.

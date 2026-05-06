@@ -30,6 +30,7 @@ interface RenderArgs {
   depth?: 0 | 1;
   hasChildren?: boolean;
   isExpanded?: boolean;
+  showDropIndicatorAfter?: boolean;
   onToggleExpanded?: () => void;
   onClick?: () => void;
   onDoubleClick?: () => void;
@@ -55,6 +56,7 @@ function renderRow(args: RenderArgs = {}) {
           depth={args.depth ?? 0}
           hasChildren={args.hasChildren ?? false}
           isExpanded={args.isExpanded ?? false}
+          showDropIndicatorAfter={args.showDropIndicatorAfter ?? false}
           onToggleExpanded={args.onToggleExpanded ?? (() => {})}
           onClick={args.onClick ?? (() => {})}
           onDoubleClick={args.onDoubleClick ?? (() => {})}
@@ -114,6 +116,31 @@ describe('SortableCategoryRow — depth + padding', () => {
   it('depth=1 + hasChildren=false → no chevron rendered (children never have grandchildren in MAX_DEPTH=1)', () => {
     renderRow({ depth: 1, hasChildren: false });
     expect(getChevronButton()).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hierarchy drop indicator
+// ---------------------------------------------------------------------------
+
+describe('SortableCategoryRow — drop indicator anchoring', () => {
+  it('renders the drop-into indicator inside the transformed row when requested', () => {
+    renderRow({ showDropIndicatorAfter: true });
+    const row = getRowElement();
+    const wrapper = row.querySelector<HTMLElement>('.drop-indicator-wrapper');
+
+    expect(wrapper).not.toBeNull();
+    expect(wrapper!.style.position).toBe('absolute');
+    expect(wrapper!.style.bottom).toBe('-2px');
+    expect(wrapper!.style.paddingLeft).toBe(`${INDENT_STEP_PX}px`);
+    expect(wrapper!.querySelector('.drop-indicator-h')).not.toBeNull();
+  });
+
+  it('does not render the drop-into indicator by default', () => {
+    renderRow();
+    const row = getRowElement();
+
+    expect(row.querySelector('.drop-indicator-wrapper')).toBeNull();
   });
 });
 

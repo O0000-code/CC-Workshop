@@ -5,6 +5,7 @@ import {
   buildTree,
   getProjection,
   getVisibleDropIntoProjection,
+  isPointerBelowRowCenter,
   removeChildrenOf,
   getChildCount,
   MAX_DEPTH,
@@ -113,6 +114,24 @@ describe('getVisibleDropIntoProjection — indicator/commit contract', () => {
         'Analysis',
       ),
     ).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pointer-side helper
+// ---------------------------------------------------------------------------
+
+describe('isPointerBelowRowCenter', () => {
+  const rowRect = { top: 100, height: 32 };
+
+  it('returns false for the upper half and true for the lower half of a row', () => {
+    expect(isPointerBelowRowCenter(112, rowRect)).toBe(false);
+    expect(isPointerBelowRowCenter(117, rowRect)).toBe(true);
+  });
+
+  it('returns null when the pointer or row rect is unavailable', () => {
+    expect(isPointerBelowRowCenter(null, rowRect)).toBeNull();
+    expect(isPointerBelowRowCenter(117, null)).toBeNull();
   });
 });
 
@@ -489,6 +508,18 @@ describe('getProjection', () => {
       const result = getProjection(threeRoots, 'A', 'B', 16, INDENT_STEP_PX, true);
       expect(result.depth).toBe(1);
       expect(result.parentId).toBe('B');
+      expect(result.isInvalid).toBe(false);
+    });
+
+    it('drag B right in its original slot below A, over=B, pointer side unknown → B becomes child of A', () => {
+      // This covers the real DnD boundary from the sidebar: dnd-kit can
+      // report `over === active` while the pointer is in the active row's
+      // original invisible slot between A and C. In that same-slot case,
+      // the legacy neighbour model is correct: previousItem=A, so B can
+      // become a child of A without waiting for C to be pushed down.
+      const result = getProjection(threeRoots, 'B', 'B', 16, INDENT_STEP_PX);
+      expect(result.depth).toBe(1);
+      expect(result.parentId).toBe('A');
       expect(result.isInvalid).toBe(false);
     });
 

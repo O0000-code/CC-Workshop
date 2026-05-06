@@ -77,6 +77,12 @@ interface SortableCategoryRowProps {
    * Defaults to a no-op (chevron only rendered when `hasChildren`).
    */
   onToggleExpanded?: () => void;
+  /**
+   * Render the hierarchy drop-into indicator directly under this row. The
+   * indicator lives inside the sortable element so it follows dnd-kit's
+   * transform instead of lagging behind as an untransformed sibling.
+   */
+  showDropIndicatorAfter?: boolean;
   onClick: () => void;
   onDoubleClick: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
@@ -92,6 +98,7 @@ export function SortableCategoryRow({
   hasChildren = false,
   isExpanded = false,
   onToggleExpanded = () => {},
+  showDropIndicatorAfter = false,
   onClick,
   onDoubleClick,
   onContextMenu,
@@ -211,7 +218,7 @@ export function SortableCategoryRow({
       // grabbing) is handled in CSS via [aria-roledescription='sortable'].
       // V2: padding-left moved to inline style; pr-2.5 keeps the right side.
       className={`
-        h-8 pr-2.5 flex items-center gap-2.5 rounded-[6px] cursor-pointer
+        relative h-8 pr-2.5 flex items-center gap-2.5 rounded-[6px] cursor-pointer
         transition-colors duration-150
         ${isActive ? 'bg-[#F4F4F5]' : 'hover:bg-[#F4F4F5]'}
       `}
@@ -263,6 +270,22 @@ export function SortableCategoryRow({
         isActive={isActive}
         onColorChange={onColorChange}
       />
+      {showDropIndicatorAfter && (
+        <div
+          className="drop-indicator-wrapper"
+          style={{
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            bottom: -2,
+            paddingLeft: INDENT_STEP_PX,
+            pointerEvents: 'none',
+          }}
+          aria-hidden="true"
+        >
+          <div className="drop-indicator-h" />
+        </div>
+      )}
     </div>
   );
 }

@@ -157,6 +157,20 @@ export function getVisibleDropIntoProjection(
   return projection;
 }
 
+/**
+ * Resolve whether the actual pointer is in the lower half of a row.
+ * This deliberately uses pointer coordinates, not the dragged overlay's
+ * transformed rect: snap modifiers and DragOverlay measurement can move
+ * the visual clone away from the cursor, which flips top/bottom intent.
+ */
+export function isPointerBelowRowCenter(
+  pointerY: number | null | undefined,
+  rect: Pick<DOMRect, 'top' | 'height'> | null | undefined,
+): boolean | null {
+  if (pointerY == null || rect == null) return null;
+  return pointerY > rect.top + rect.height / 2;
+}
+
 // ---------------------------------------------------------------------------
 // flattenTree
 // ---------------------------------------------------------------------------

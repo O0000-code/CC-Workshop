@@ -20,6 +20,7 @@ import type {
 } from '@dnd-kit/core';
 import { restrictToWindowEdges } from '@dnd-kit/modifiers';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { getEventCoordinates } from '@dnd-kit/utilities';
 import type { Category } from '@/types';
 import { useAppStore } from '@/stores/appStore';
 import { CategoryInlineInput } from './CategoryInlineInput';
@@ -35,6 +36,7 @@ import {
   flattenTree,
   getVisibleDropIntoProjection,
   getProjection,
+  isPointerBelowRowCenter,
   removeChildrenOf,
   type FlattenedCategory,
   type Projection,
@@ -209,15 +211,16 @@ export function SortableCategoriesList({
    *  getProjection's depth computation — NOT the absolute screen coord. */
   const [offsetLeft, setOffsetLeft] = useState(0);
   /**
-   * Whether the active row's visible center is currently below the over
-   * row's visible center. Drives the position-aware `previousItem` /
-   * `nextItem` resolution in `getProjection` — see the position-aware
-   * mode docs in `dnd/treeUtilities.ts`. `null` = unknown (no active
-   * drag, or over === active). Recomputed each `onDragMove` from
-   * `event.active.rect.current.translated` and `event.over.rect`.
+   * Whether the actual pointer is currently below the over row's center.
+   * Drives the position-aware `previousItem` / `nextItem` resolution in
+   * `getProjection` — see the position-aware mode docs in
+   * `dnd/treeUtilities.ts`. `null` = unknown (no active drag, keyboard
+   * drag, or over === active).
    */
   const [pointerBelowOver, setPointerBelowOver] = useState<boolean | null>(null);
   const [isKeyboardDrag, setIsKeyboardDrag] = useState(false);
+  const pointerStartRef = useRef<{ x: number; y: number } | null>(null);
+  const pointerCurrentRef = useRef<{ x: number; y: number } | null>(null);
   /** True for the single frame after this row was just dropped. The 50 ms
    *  guard window in handleDragEnd covers the React render after drop +
    *  the synthetic click that fires on mouseup. V3 invariant #19. */
@@ -262,6 +265,25 @@ export function SortableCategoriesList({
   useEffect(() => {
     dwellStateRef.current = dwellState;
   }, [dwellState]);
+
+  useEffect(() => {
+    if (activeId === null || isKeyboardDrag) return;
+
+    const updatePointer = (event: Event) => {
+      const coordinates = getEventCoordinates(event);
+      if (coordinates) {
+        pointerCurrentRef.current = coordinates;
+      }
+    };
+
+    document.addEventListener('mousemove', updatePointer, { capture: true });
+    document.addEventListener('touchmove', updatePointer, { capture: true, passive: true });
+
+    return () => {
+      document.removeEventListener('mousemove', updatePointer, { capture: true });
+      document.removeEventListener('touchmove', updatePointer, { capture: true });
+    };
+  }, [activeId, isKeyboardDrag]);
 
   // V2 [P1-4 final-audit fix]: cursor onto the latest projected drop target
   // for the active row. Read by `makeAnnouncements` at drop time so the
@@ -388,7 +410,10 @@ export function SortableCategoriesList({
   //
   // The 6th arg `pointerBelowOver ?? undefined` lets `getProjection` choose
   // between position-aware (mouse drag with known pointer side) and legacy
-  // (over === active, or null for keyboard drags) neighbour resolution.
+  // neighbour resolution. Legacy is still intentional for keyboard drags
+  // and for the same-slot indent case (`over === active`): when a root row
+  // stays in its original visual slot and the user drags right, the row
+  // above that slot is the parent candidate.
   // See the bug-fix block in `dnd/treeUtilities.ts:getProjection` docs.
   //
   // Bug fix 2026-05-05 (P0-2): pass `baseFlat` as the 7th `originalItems`
@@ -404,12 +429,17 @@ export function SortableCategoriesList({
     if (activeId === null || overId === null) return null;
     // Asymmetric gate: only ROOT-active demote requires dwell.
     if (!isChildActive && dwellState === 'OUT') return null;
-    // Mouse/touch demote needs a resolved insertion side. Falling back to
-    // the legacy arrayMove path here revives the top-edge bug: dragging
-    // above a row can be projected as "make it a child of that row".
-    // Keyboard drags intentionally keep the legacy path because there is no
-    // pointer side; the coordinate getter supplies depth intent via X.
-    if (!isChildActive && !isKeyboardDrag && pointerBelowOver === null) return null;
+    // Mouse/touch demote usually needs a resolved insertion side. Falling
+    // back to the legacy arrayMove path for a different over row revives
+    // the top-edge bug: dragging above a row can be projected as "make it
+    // a child of that row". The important exception is `over === active`:
+    // dnd-kit can report the active row's original invisible slot while
+    // the pointer is visually below the row above it. In that same-slot
+    // case, legacy neighbour resolution is exactly the right model: indent
+    // the active row under its previous visible row.
+    if (!isChildActive && !isKeyboardDrag && pointerBelowOver === null && overId !== activeId) {
+      return null;
+    }
     return getProjection(
       displayFlat,
       activeId,
@@ -599,7 +629,10 @@ export function SortableCategoriesList({
     setOverId(event.active.id); // start "over" = self for cleaner getProjection
     setOffsetLeft(0);
     setPointerBelowOver(null);
-    setIsKeyboardDrag(isKeyboardActivator(event.activatorEvent));
+    const startedByKeyboard = isKeyboardActivator(event.activatorEvent);
+    setIsKeyboardDrag(startedByKeyboard);
+    pointerStartRef.current = startedByKeyboard ? null : getEventCoordinates(event.activatorEvent);
+    pointerCurrentRef.current = pointerStartRef.current;
     // Bug fix 2026-05-05 (P0-1): keep ref + state in lockstep at start.
     dwellStateRef.current = 'OUT';
     // V2 [P1-4]: clear projection ref so the announcer doesn't read a stale
@@ -618,27 +651,26 @@ export function SortableCategoriesList({
     // measuring (P0-1).
     setOffsetLeft((prev) => (prev === newOffset ? prev : newOffset));
 
-    // Bug fix 2026-05-04: compute which side of `over` the active row's
-    // visible center is on, so getProjection can use position-aware
+    // Bug fix 2026-05-06: compute which side of `over` the actual pointer
+    // is on, so getProjection can use position-aware
     // previousItem/nextItem resolution. Without this, dragging A "below B"
     // could pick over=C (closestCenter geometry) and make A a child of C,
     // and dragging A "above B" picks over=B making A a child of B —
     // the inverse of Things 3 / Linear / Notion convention.
     //
-    // `active.rect.current.translated` is dnd-kit's per-frame rect of the
-    // active item with the current drag transform applied (see
-    // `node_modules/@dnd-kit/core/dist/store/types.d.ts:30-33`). `over.rect`
-    // is the over droppable's rect (`store/types.d.ts:35-40`). Both are
-    // measured in the same coordinate space, so center.y comparison is
-    // direct.
+    // The previous implementation compared the dragged overlay center to
+    // the over row center. That center includes DragOverlay measurement and
+    // the magnetic snap modifier, so it can be above the target while the
+    // user's cursor is below it (or vice versa). Prefer the live pointer
+    // captured from document-level mouse/touch events; fall back to dnd-kit's
+    // event delta only before the first move event reaches that listener.
     let nextPointerBelowOver: boolean | null = null;
     if (event.over) {
-      const activeRect = event.active.rect.current.translated;
-      const overRect = event.over.rect;
-      if (activeRect && event.over.id !== event.active.id) {
-        const activeCenterY = activeRect.top + activeRect.height / 2;
-        const overCenterY = overRect.top + overRect.height / 2;
-        nextPointerBelowOver = activeCenterY > overCenterY;
+      const start = pointerStartRef.current;
+      const current = pointerCurrentRef.current;
+      const pointerY = current?.y ?? (start ? start.y + event.delta.y : null);
+      if (start && event.over.id !== event.active.id) {
+        nextPointerBelowOver = isPointerBelowRowCenter(pointerY, event.over.rect);
       }
     }
     setPointerBelowOver((prev) => (prev === nextPointerBelowOver ? prev : nextPointerBelowOver));
@@ -847,6 +879,8 @@ export function SortableCategoriesList({
     setPointerBelowOver(null);
     setDragOverrideExpand(false);
     setIsKeyboardDrag(false);
+    pointerStartRef.current = null;
+    pointerCurrentRef.current = null;
     visibleDropIntoProjectionRef.current = null;
     onDragEnd();
 
@@ -1007,6 +1041,8 @@ export function SortableCategoriesList({
     setPointerBelowOver(null);
     setDragOverrideExpand(false);
     setIsKeyboardDrag(false);
+    pointerStartRef.current = null;
+    pointerCurrentRef.current = null;
     // V2 [P1-4]: clear projection ref so the announcer's onDragCancel
     // doesn't accidentally read a stale value from a prior drag-end.
     dropProjectionRef.current = null;
@@ -1141,16 +1177,8 @@ export function SortableCategoriesList({
                   onDoubleClick={() => onCategoryDoubleClick(item.id)}
                   onContextMenu={(e) => onCategoryContextMenu(itemCategory, e)}
                   onColorChange={(color) => onCategoryColorChange(item.id, color)}
+                  showDropIndicatorAfter={showDropIndicatorAfterThisRow}
                 />
-                {showDropIndicatorAfterThisRow && (
-                  <div
-                    className="drop-indicator-wrapper"
-                    style={{ paddingLeft: INDENT_STEP_PX }}
-                    aria-hidden="true"
-                  >
-                    <div className="drop-indicator-h" />
-                  </div>
-                )}
               </div>
             );
           })}

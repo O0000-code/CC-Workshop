@@ -129,6 +129,34 @@ export interface Projection {
   isInvalid: boolean;
 }
 
+/**
+ * Resolve whether a projected hierarchy change is allowed to commit as a
+ * drop-into action, using the same contract as the visible sidebar indicator:
+ *
+ *   visible indicator under parent row ⇔ releasing now may call
+ *   setCategoryParent(active, parent).
+ *
+ * This helper intentionally rejects standalone end-of-drag projections. The
+ * final `DragEndEvent` can report a slightly different `over` row or side of
+ * the row than the last painted drag frame; committing that hidden projection
+ * is what made "above the row" drops sometimes become children while "below
+ * the row" drops could snap back. Callers should pass the projection that was
+ * actually represented by the blue drop-into indicator.
+ */
+export function getVisibleDropIntoProjection(
+  projection: Projection | null,
+  parentRowIdForIndicator: string | null,
+  activeOriginalParentId: string | null,
+): Projection | null {
+  if (!projection) return null;
+  if (parentRowIdForIndicator === null) return null;
+  if (projection.isInvalid) return null;
+  if (projection.parentId === null) return null;
+  if (projection.parentId === activeOriginalParentId) return null;
+  if (projection.parentId !== parentRowIdForIndicator) return null;
+  return projection;
+}
+
 // ---------------------------------------------------------------------------
 // flattenTree
 // ---------------------------------------------------------------------------

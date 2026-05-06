@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import {
   DndContext,
@@ -33,9 +33,11 @@ import {
   ABS_X_THRESHOLD_PX,
   INDENT_STEP_PX,
   flattenTree,
+  getVisibleDropIntoProjection,
   getProjection,
   removeChildrenOf,
   type FlattenedCategory,
+  type Projection,
 } from './dnd/treeUtilities';
 import { makeTreeKeyboardCoordinates, type TreeSensorContext } from './dnd/treeKeyboardCoordinates';
 
@@ -133,6 +135,10 @@ const EXPANDED_KEY = 'ensemble.sidebar.expandedCategories';
  *  lazy commit). Hardcoded per 02 V2 §5 token table note. */
 const DWELL_MS = 80;
 
+function isKeyboardActivator(event: Event | null): boolean {
+  return event instanceof KeyboardEvent || event?.type === 'keydown';
+}
+
 /** Helper: compute the default-expanded set (every parent that has children).
  *  Matches 02 V2 §2.15 "默认状态 (首次启动 / localStorage 为空) → 全部父类默认展开". */
 function computeDefaultExpanded(categories: Category[]): Set<string> {
@@ -211,6 +217,7 @@ export function SortableCategoriesList({
    * `event.active.rect.current.translated` and `event.over.rect`.
    */
   const [pointerBelowOver, setPointerBelowOver] = useState<boolean | null>(null);
+  const [isKeyboardDrag, setIsKeyboardDrag] = useState(false);
   /** True for the single frame after this row was just dropped. The 50 ms
    *  guard window in handleDragEnd covers the React render after drop +
    *  the synthetic click that fires on mouseup. V3 invariant #19. */
@@ -267,6 +274,12 @@ export function SortableCategoriesList({
     oldParentId: string | null;
     newParentId: string | null;
   } | null>(null);
+
+  // The last projection that was actually represented by the blue
+  // drop-into indicator. This is the single source of truth for committing
+  // root→child drops: if the user saw the indicator, releasing must commit;
+  // if they did not see it, release must not invent a hidden parent change.
+  const visibleDropIntoProjectionRef = useRef<Projection | null>(null);
 
   // ------------------------------------------------------------------
   // Derived state — flatten + projection + sortedIds
@@ -391,6 +404,12 @@ export function SortableCategoriesList({
     if (activeId === null || overId === null) return null;
     // Asymmetric gate: only ROOT-active demote requires dwell.
     if (!isChildActive && dwellState === 'OUT') return null;
+    // Mouse/touch demote needs a resolved insertion side. Falling back to
+    // the legacy arrayMove path here revives the top-edge bug: dragging
+    // above a row can be projected as "make it a child of that row".
+    // Keyboard drags intentionally keep the legacy path because there is no
+    // pointer side; the coordinate getter supplies depth intent via X.
+    if (!isChildActive && !isKeyboardDrag && pointerBelowOver === null) return null;
     return getProjection(
       displayFlat,
       activeId,
@@ -410,6 +429,7 @@ export function SortableCategoriesList({
     dwellState,
     pointerBelowOver,
     isChildActive,
+    isKeyboardDrag,
     activeOriginalParentId,
   ]);
 
@@ -455,6 +475,14 @@ export function SortableCategoriesList({
     if (projected.parentId === activeOriginalParentId) return null;
     return projected.parentId;
   }, [projected, dwellState, activeOriginalParentId]);
+
+  useLayoutEffect(() => {
+    visibleDropIntoProjectionRef.current = getVisibleDropIntoProjection(
+      projected,
+      parentRowIdForIndicator,
+      activeOriginalParentId,
+    );
+  }, [projected, parentRowIdForIndicator, activeOriginalParentId]);
 
   // V2 [P0-ARCH-1]: live state ref for the keyboard coordinate getter.
   // The closure created by makeTreeKeyboardCoordinates captures THIS ref
@@ -571,11 +599,13 @@ export function SortableCategoriesList({
     setOverId(event.active.id); // start "over" = self for cleaner getProjection
     setOffsetLeft(0);
     setPointerBelowOver(null);
+    setIsKeyboardDrag(isKeyboardActivator(event.activatorEvent));
     // Bug fix 2026-05-05 (P0-1): keep ref + state in lockstep at start.
     dwellStateRef.current = 'OUT';
     // V2 [P1-4]: clear projection ref so the announcer doesn't read a stale
     // value from the previous drag.
     dropProjectionRef.current = null;
+    visibleDropIntoProjectionRef.current = null;
     onDragStart();
   };
 
@@ -621,6 +651,7 @@ export function SortableCategoriesList({
     // callback can see a stale `dwellState` and re-set the same transition
     // twice, fueling render loops under StrictMode + MeasuringStrategy.Always.
     const newOverId = event.over?.id ?? null;
+    setOverId((prev) => (prev === newOverId ? prev : newOverId));
     const overChanged = newOverId !== dwellOverIdRef.current;
     const xPassesThreshold = Math.abs(newOffset) >= ABS_X_THRESHOLD_PX;
 
@@ -702,16 +733,19 @@ export function SortableCategoriesList({
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
 
-    // Recompute the final projection from the drop-end event itself —
-    // the React-state `projected` useMemo is one frame behind the last
-    // setOffsetLeft / setPointerBelowOver because React batches setState
-    // until the next render; useMemo only re-runs after that render.
+    // Recompute only the projections that are supposed to be hidden from the
+    // blue drop-into contract. Root→child demotion is governed by
+    // `visibleDropIntoProjectionRef`: the last projection actually painted as
+    // the indicator. This keeps the user-facing invariant exact:
+    //   indicator visible ⇔ release commits that parent
+    // and prevents the final DragEndEvent's geometry from silently swapping
+    // parent candidates or reviving the legacy "above row" parent bug.
     //
     // Gating (V2 + V2.1 2026-05-05):
-    //   - ROOT active: only recompute when dwell has fully armed
-    //     (`DROP_INTO_READY`). HOVER_NEAR is "user crossed 12 px but didn't
-    //     hold for 80 ms" — at that point we treat the drop as a same-level
-    //     reorder. Demote needs explicit X intent + intentional pause.
+    //   - ROOT active: only the last visible drop-into projection may commit
+    //     a parent change. HOVER_NEAR or a one-frame DragEnd recompute is
+    //     treated as same-level reorder. Demote needs explicit X intent,
+    //     intentional pause, and a painted indicator.
     //   - CHILD active: always recompute. Promote (child → root) responds
     //     to over.id leaving the original subtree, with no X / dwell. If we
     //     gated on dwell here, a quick drag-and-release that crosses out of
@@ -726,9 +760,8 @@ export function SortableCategoriesList({
     // tree. Without this the indicator and IPC would let a
     // parent-with-children become another root's child — backend rejects,
     // UI snaps back.
-    let finalProjection = projected;
-    const allowProjectionRecompute = dwellStateRef.current === 'DROP_INTO_READY' || isChildActive;
-    if (over && allowProjectionRecompute) {
+    let finalProjection: Projection | null = visibleDropIntoProjectionRef.current;
+    if (over && isChildActive) {
       const activeRect = active.rect.current.translated;
       let endPointerBelowOver: boolean | undefined;
       if (activeRect && over.id !== active.id) {
@@ -746,7 +779,7 @@ export function SortableCategoriesList({
         baseFlatRef.current,
         activeOriginalParentId,
       );
-    } else {
+    } else if (!finalProjection) {
       finalProjection = null;
     }
 
@@ -813,6 +846,8 @@ export function SortableCategoriesList({
     setOffsetLeft(0);
     setPointerBelowOver(null);
     setDragOverrideExpand(false);
+    setIsKeyboardDrag(false);
+    visibleDropIntoProjectionRef.current = null;
     onDragEnd();
 
     if (over) {
@@ -971,9 +1006,11 @@ export function SortableCategoriesList({
     setOffsetLeft(0);
     setPointerBelowOver(null);
     setDragOverrideExpand(false);
+    setIsKeyboardDrag(false);
     // V2 [P1-4]: clear projection ref so the announcer's onDragCancel
     // doesn't accidentally read a stale value from a prior drag-end.
     dropProjectionRef.current = null;
+    visibleDropIntoProjectionRef.current = null;
     // V3 P2-3 (invariant #7): reset dropAnimationConfig so the next drag
     // starts with the default animation (otherwise a previous distance-aware
     // `null` would leak into the next drop).

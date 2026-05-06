@@ -4,6 +4,7 @@ import {
   flattenTree,
   buildTree,
   getProjection,
+  getVisibleDropIntoProjection,
   removeChildrenOf,
   getChildCount,
   MAX_DEPTH,
@@ -64,6 +65,54 @@ describe('exported constants', () => {
 
   it('ABS_X_THRESHOLD_PX is 12 (matches design_spec V2 §6.3)', () => {
     expect(ABS_X_THRESHOLD_PX).toBe(12);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getVisibleDropIntoProjection
+// ---------------------------------------------------------------------------
+
+describe('getVisibleDropIntoProjection — indicator/commit contract', () => {
+  it('accepts a valid projected parent only when it matches the visible indicator row', () => {
+    const projection = { depth: 1, parentId: 'Analysis', isInvalid: false };
+
+    expect(getVisibleDropIntoProjection(projection, 'Analysis', null)).toBe(projection);
+  });
+
+  it('rejects a hidden final projection whose parent differs from the painted indicator', () => {
+    const projection = { depth: 1, parentId: 'Writing', isInvalid: false };
+
+    expect(getVisibleDropIntoProjection(projection, 'Analysis', null)).toBeNull();
+  });
+
+  it('rejects top-edge demote projections when no indicator was visible', () => {
+    const projection = { depth: 1, parentId: 'Analysis', isInvalid: false };
+
+    expect(getVisibleDropIntoProjection(projection, null, null)).toBeNull();
+  });
+
+  it('rejects invalid, root-level, and same-parent projections', () => {
+    expect(
+      getVisibleDropIntoProjection(
+        { depth: 0, parentId: 'Analysis', isInvalid: true },
+        'Analysis',
+        null,
+      ),
+    ).toBeNull();
+    expect(
+      getVisibleDropIntoProjection(
+        { depth: 0, parentId: null, isInvalid: false },
+        'Analysis',
+        null,
+      ),
+    ).toBeNull();
+    expect(
+      getVisibleDropIntoProjection(
+        { depth: 1, parentId: 'Analysis', isInvalid: false },
+        'Analysis',
+        'Analysis',
+      ),
+    ).toBeNull();
   });
 });
 

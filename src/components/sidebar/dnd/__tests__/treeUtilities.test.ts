@@ -5,6 +5,7 @@ import {
   buildTree,
   getProjection,
   getVisibleDropIntoProjection,
+  getSubtreeReorderIds,
   isPointerBelowRowCenter,
   removeChildrenOf,
   getChildCount,
@@ -335,6 +336,71 @@ describe('removeChildrenOf', () => {
     const result = removeChildrenOf(items, [123 as unknown as string]); // simulate numeric id
     // 'p' comparison fails (parentId is 'p', not '123'), nothing removed.
     expect(result.map((r) => r.id)).toEqual(['p', 'c']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getSubtreeReorderIds
+// ---------------------------------------------------------------------------
+
+describe('getSubtreeReorderIds', () => {
+  it('moves a promoted child below a target root when pointer is below the target', () => {
+    const items: FlattenedCategory[] = [
+      flat('Writing', 0, null, 0, true),
+      flat('Analysis', 1, 'Writing', 1),
+      flat('Development', 0, null, 2),
+    ];
+
+    expect(getSubtreeReorderIds(items, 'Analysis', 'Development', true)).toEqual([
+      'Writing',
+      'Development',
+      'Analysis',
+    ]);
+  });
+
+  it('moves a promoted child above its original parent when pointer is above that parent', () => {
+    const items: FlattenedCategory[] = [
+      flat('Writing', 0, null, 0, true),
+      flat('Analysis', 1, 'Writing', 1),
+      flat('Development', 0, null, 2),
+    ];
+
+    expect(getSubtreeReorderIds(items, 'Analysis', 'Writing', false)).toEqual([
+      'Analysis',
+      'Writing',
+      'Development',
+    ]);
+  });
+
+  it('keeps an active parent subtree together during same-level reorder', () => {
+    const items: FlattenedCategory[] = [
+      flat('A', 0, null, 0, true),
+      flat('A-child', 1, 'A', 1),
+      flat('B', 0, null, 2),
+      flat('C', 0, null, 3),
+    ];
+
+    expect(getSubtreeReorderIds(items, 'A', 'C', true)).toEqual(['B', 'C', 'A', 'A-child']);
+  });
+
+  it('returns null when over is inside the active subtree', () => {
+    const items: FlattenedCategory[] = [
+      flat('A', 0, null, 0, true),
+      flat('A-child', 1, 'A', 1),
+      flat('B', 0, null, 2),
+    ];
+
+    expect(getSubtreeReorderIds(items, 'A', 'A-child', true)).toBeNull();
+  });
+
+  it('keeps current order when over is the active row itself', () => {
+    const items: FlattenedCategory[] = [
+      flat('A', 0, null, 0),
+      flat('B', 0, null, 1),
+      flat('C', 0, null, 2),
+    ];
+
+    expect(getSubtreeReorderIds(items, 'B', 'B')).toEqual(['A', 'B', 'C']);
   });
 });
 

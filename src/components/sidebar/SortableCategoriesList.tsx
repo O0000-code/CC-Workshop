@@ -36,6 +36,7 @@ import {
   flattenTree,
   getVisibleDropIntoProjection,
   getProjection,
+  getSubtreeReorderIds,
   isPointerBelowRowCenter,
   removeChildrenOf,
   type FlattenedCategory,
@@ -764,6 +765,15 @@ export function SortableCategoriesList({
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
+    let endPointerBelowOver: boolean | undefined;
+    if (over) {
+      const start = pointerStartRef.current;
+      const current = pointerCurrentRef.current;
+      const pointerY = current?.y ?? (start ? start.y + event.delta.y : null);
+      const pointerSide =
+        over.id === active.id ? null : isPointerBelowRowCenter(pointerY, over.rect);
+      endPointerBelowOver = pointerSide ?? undefined;
+    }
 
     // Recompute only the projections that are supposed to be hidden from the
     // blue drop-into contract. Root→child demotion is governed by
@@ -794,13 +804,6 @@ export function SortableCategoriesList({
     // UI snaps back.
     let finalProjection: Projection | null = visibleDropIntoProjectionRef.current;
     if (over && isChildActive) {
-      const activeRect = active.rect.current.translated;
-      let endPointerBelowOver: boolean | undefined;
-      if (activeRect && over.id !== active.id) {
-        const activeCenterY = activeRect.top + activeRect.height / 2;
-        const overCenterY = over.rect.top + over.rect.height / 2;
-        endPointerBelowOver = activeCenterY > overCenterY;
-      }
       finalProjection = getProjection(
         displayFlat,
         active.id,
@@ -872,6 +875,7 @@ export function SortableCategoriesList({
     const localActiveId = active.id;
     const localOverId = over?.id ?? null;
     const localProjected = finalProjection;
+    const localPointerBelowOver = endPointerBelowOver;
 
     setActiveId(null);
     setOverId(null);
@@ -920,36 +924,36 @@ export function SortableCategoriesList({
       }
 
       try {
-        // ============================================================
-        // P0-3 dispatch policy (Bug fix 2026-05-05):
-        // ============================================================
-        // The user-facing drop has exactly two outcomes: "make this
-        // category a child of X" (hierarchy change) OR "rearrange the
-        // sibling order" (same-level reorder). Running BOTH IPCs back to
-        // back was the V2 [P0-ARCH-3] design, but in practice it
-        // produced two failure modes:
-        //
-        //   1. Backend rejects setCategoryParent (e.g. D5 / depth
-        //      violation, race with another mutation), but reorder
-        //      still fires with a payload built against post-rejection
-        //      stale state — categories drift visually.
-        //   2. setCategoryParent succeeds, then reorder dispatches
-        //      ordered_ids that re-position the child away from its
-        //      new parent. The backend Vec ends up hierarchically
-        //      adjacent (parent immediately followed by its children
-        //      via the natural flatten order), so the explicit reorder
-        //      is at best a no-op and at worst undoes the parent move.
-        //
-        // The fix: pick exactly one IPC.
-        //   parentChanged === true  → only setCategoryParent
-        //   parentChanged === false → only reorderCategories
-        //
-        // The frontend `flattenTree` already renders children directly
-        // beneath their parent, so visual ordering is preserved without
-        // an explicit reorder after a parent move.
+        // Parent changes and order changes are intentionally asymmetric:
+        // demote root→child only changes parentId because flattenTree will
+        // render the child under its new parent. Promote child→root must
+        // also preserve the user's vertical drop slot, so after the parent
+        // change succeeds we issue a queued root-level reorder.
         if (parentChanged) {
           if (onSetCategoryParent) {
             await onSetCategoryParent(String(active.id), finalParentId);
+          }
+          if (oldParentId !== null && finalParentId === null && localOverId !== null) {
+            const newOrderedIds = getSubtreeReorderIds(
+              preDragBaseFlat,
+              active.id,
+              localOverId,
+              localPointerBelowOver,
+            );
+            if (newOrderedIds) {
+              const freshCategories = useAppStore.getState().categories;
+              const freshExpanded = computeDefaultExpanded(freshCategories);
+              for (const id of expandedSet) freshExpanded.add(id);
+              const freshBaseFlat = flattenTree(freshCategories, freshExpanded);
+              const currentOrder = freshBaseFlat.map((it) => String(it.id));
+              const orderChanged =
+                currentOrder.length !== newOrderedIds.length ||
+                currentOrder.some((id, i) => id !== newOrderedIds[i]);
+
+              if (orderChanged) {
+                await onReorder(newOrderedIds);
+              }
+            }
           }
         } else if (String(active.id) !== String(over.id)) {
           // Same-level reorder: build the new ordered_ids from a
@@ -960,45 +964,17 @@ export function SortableCategoriesList({
           for (const id of expandedSet) freshExpanded.add(id);
           const freshBaseFlat = flattenTree(freshCategories, freshExpanded);
 
-          const freshActiveIdx = freshBaseFlat.findIndex(
-            (it) => String(it.id) === String(active.id),
+          const newOrderedIds = getSubtreeReorderIds(
+            freshBaseFlat,
+            active.id,
+            localOverId,
+            localPointerBelowOver,
           );
-          const freshOverIdx = freshBaseFlat.findIndex(
-            (it) => String(it.id) === String(localOverId),
-          );
-          if (freshActiveIdx === -1 || freshOverIdx === -1) {
+          if (!newOrderedIds) {
             setJustDroppedId(localActiveId);
             setTimeout(() => setJustDroppedId(null), 50);
             return;
           }
-
-          // Active subtree (active + its immediate children, MAX_DEPTH=1).
-          const activeIdStr = String(active.id);
-          const childIds = freshBaseFlat
-            .filter((it) => it.parentId === activeIdStr)
-            .map((it) => String(it.id));
-          const subtreeIds = new Set<string>([activeIdStr, ...childIds]);
-
-          const withoutSubtree = freshBaseFlat.filter((it) => !subtreeIds.has(String(it.id)));
-          const overIdxAfterRemove = withoutSubtree.findIndex(
-            (it) => String(it.id) === String(localOverId),
-          );
-          if (overIdxAfterRemove === -1) {
-            setJustDroppedId(localActiveId);
-            setTimeout(() => setJustDroppedId(null), 50);
-            return;
-          }
-
-          const insertIdx =
-            freshActiveIdx < freshOverIdx ? overIdxAfterRemove + 1 : overIdxAfterRemove;
-
-          const subtreeInOrder = freshBaseFlat.filter((it) => subtreeIds.has(String(it.id)));
-          const newFlat = [
-            ...withoutSubtree.slice(0, insertIdx),
-            ...subtreeInOrder,
-            ...withoutSubtree.slice(insertIdx),
-          ];
-          const newOrderedIds = newFlat.map((it) => String(it.id));
 
           // No-op guard: skip the reorder IPC if order is unchanged.
           const preDragOrder = freshBaseFlat.map((it) => String(it.id));

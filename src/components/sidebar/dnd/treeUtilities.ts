@@ -327,6 +327,64 @@ export function removeChildrenOf(
 }
 
 // ---------------------------------------------------------------------------
+// getSubtreeReorderIds
+// ---------------------------------------------------------------------------
+
+/**
+ * Build an ordered-id payload by moving the active row plus its immediate
+ * children to the insertion gap around `overId`.
+ *
+ * This is intentionally independent from hierarchy projection: callers use it
+ * after they have already decided whether parentId changes. It preserves the
+ * dragged subtree as a block and resolves before/after from the same
+ * pointer-side contract used by `getProjection`.
+ */
+export function getSubtreeReorderIds(
+  items: FlattenedCategory[],
+  activeId: UniqueIdentifier,
+  overId: UniqueIdentifier | null,
+  pointerBelowOver?: boolean,
+): string[] | null {
+  if (overId == null) return null;
+
+  const activeIdStr = String(activeId);
+  const overIdStr = String(overId);
+  const activeIdx = items.findIndex((it) => String(it.id) === activeIdStr);
+  const overIdx = items.findIndex((it) => String(it.id) === overIdStr);
+  if (activeIdx === -1 || overIdx === -1) return null;
+
+  const childIds = items.filter((it) => it.parentId === activeIdStr).map((it) => String(it.id));
+  const subtreeIds = new Set<string>([activeIdStr, ...childIds]);
+  if (overIdStr !== activeIdStr && subtreeIds.has(overIdStr)) return null;
+
+  const withoutSubtree = items.filter((it) => !subtreeIds.has(String(it.id)));
+  let insertIdx: number;
+
+  if (overIdStr === activeIdStr) {
+    insertIdx = activeIdx;
+  } else {
+    const overIdxAfterRemove = withoutSubtree.findIndex((it) => String(it.id) === overIdStr);
+    if (overIdxAfterRemove === -1) return null;
+
+    insertIdx =
+      pointerBelowOver === undefined
+        ? activeIdx < overIdx
+          ? overIdxAfterRemove + 1
+          : overIdxAfterRemove
+        : overIdxAfterRemove + (pointerBelowOver ? 1 : 0);
+  }
+
+  const subtreeInOrder = items.filter((it) => subtreeIds.has(String(it.id)));
+  const next = [
+    ...withoutSubtree.slice(0, insertIdx),
+    ...subtreeInOrder,
+    ...withoutSubtree.slice(insertIdx),
+  ];
+
+  return next.map((it) => String(it.id));
+}
+
+// ---------------------------------------------------------------------------
 // getProjection
 // ---------------------------------------------------------------------------
 

@@ -25,10 +25,6 @@ on:
     workflows: ["CI"]
     types: [completed]
 
-  # 每日健康检查（UTC 02:00 = 北京时间 10:00，仅工作日，与 Sleep_Debt 错开 1 小时）
-  schedule:
-    - cron: "0 2 * * 1-5"
-
   # 手动触发
   workflow_dispatch:
     inputs:
@@ -47,7 +43,6 @@ jobs:
         github.event.action == 'assigned'
       )) ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure') ||
-      (github.event_name == 'schedule') ||
       (github.event_name == 'workflow_dispatch')
 
     # Tauri 前端测试和 Rust 测试可在 Linux 上运行

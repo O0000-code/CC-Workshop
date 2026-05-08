@@ -70,6 +70,11 @@ export default function MainLayout() {
     // Used by SortableCategoriesList drop-into to commit parent_id changes
     // before the follow-up reorder is computed (per 03 V2 §5.7 / P0-ARCH-3).
     moveCategoryToParent,
+    // V2.2 D4 (2026-05-08): atomic merge of setCategoryParent + reorder.
+    // Used by promote-with-position (child→root) to avoid the intermediate
+    // React frame that violates useSortable's 50 ms cascade window
+    // (sortable.esm.js:565-579) — see _synthesis_decisions D4.
+    moveCategoryToParentAtPosition,
   } = useAppStore();
 
   const { loadSettings, hasCompletedImport } = useSettingsStore();
@@ -566,6 +571,18 @@ export default function MainLayout() {
     [moveCategoryToParent],
   );
 
+  // V2.2 D4: promote-with-position handler. SortableCategoriesList's
+  // handleDragEnd dispatches here when an old child crosses out of its
+  // original parent's subtree AND a target slot is known (localOverId !==
+  // null). Wraps the store action so the outer try/catch in handleDragEnd
+  // can react to rejection (skip downstream work). Atomic optimistic +
+  // queued double-IPC fallback live inside `appStore.moveCategoryToParentAtPosition`.
+  const handleMoveCategoryToParentAtPosition = useCallback(
+    (id: string, newParentId: string | null, newOrderedIds: string[]) =>
+      moveCategoryToParentAtPosition(id, newParentId, newOrderedIds),
+    [moveCategoryToParentAtPosition],
+  );
+
   // V3 R-P0-2: when editing/adding, return early without clearing input state.
   // Read editing flags via getState() so callback identity stays stable across renders.
   const handleDragStart = useCallback(() => {
@@ -662,6 +679,7 @@ export default function MainLayout() {
           onReorderCategories={handleReorderCategories}
           onReorderTags={handleReorderTags}
           onSetCategoryParent={handleSetCategoryParent}
+          onMoveCategoryToParentAtPosition={handleMoveCategoryToParentAtPosition}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
           isDragging={isDragging}

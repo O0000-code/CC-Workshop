@@ -534,20 +534,59 @@ export function getProjection(
   // parent reorder, not a redundant promote-then-demote oscillation.
   if (originalActiveParentId != null && originalActiveParentId !== '') {
     const overItem = items[overItemIndex];
-    const overInOriginalSubtree =
-      // over is the active row itself — drag hasn't moved out of own slot.
-      String(overItem.id) === String(activeId) ||
-      // over is the original parent row — still inside original subtree.
-      String(overItem.id) === originalActiveParentId ||
-      // over is a sibling (= another child of originalParent).
-      overItem.parentId === originalActiveParentId;
+    const overIsSelf = String(overItem.id) === String(activeId);
+    const overIsOriginalParent = String(overItem.id) === originalActiveParentId;
+    const overIsSibling = overItem.parentId === originalActiveParentId;
+    const overInOriginalSubtree = overIsSelf || overIsOriginalParent || overIsSibling;
 
     if (!overInOriginalSubtree) {
       // Outside original subtree → immediate promote, no X / dwell needed.
       return { depth: 0, parentId: null, isInvalid: false };
     }
-    // Inside original subtree → fall through to the standard algorithm
-    // below, which handles same-parent reorder (depth=1, parentId=originalParent).
+
+    // V2.2 D2 midline rule (revised 2026-05-08, user feedback "上面一点点"):
+    //
+    // When `over === originalParent`, split the row by its vertical center
+    // (Apple Notes / sortable list convention):
+    //   - pointer in UPPER half (or above the row entirely) → user intends
+    //     to insert active "before originalParent" → promote to root
+    //   - pointer in LOWER half (or below — sibling area) → user intends
+    //     to stay as a child of originalParent → keep child
+    //
+    // pointerBelowOver === false captures both "above row top" and "in
+    // upper half of row" (isPointerBelowRowCenter uses strict `>`, so at
+    // exactly the center it returns false too — promote wins ties, matching
+    // user mental model "moving up should promote").
+    //
+    // pointerBelowOver === undefined (keyboard drag, no pointer info) →
+    // conservative keep child path (preserves V2.1 spec L17 behavior).
+    //
+    // Earlier "always keep child for over === originalParent" (D2) overshot
+    // the spec — user reported promote required dragging far above the
+    // entire row. Earlier "pointerInsideOverRow=false" variant required
+    // clearing the entire row top edge, which is also too far. Midline
+    // rule matches the standard sortable list semantics.
+    //
+    // Note: this rule is independent of D7 (no cross-parent demote). When
+    // promote fires here we always go to root (parentId=null) regardless of
+    // what's above originalParent — never "demote into the row above". This
+    // is intentional and aligned with V2.1 / D7.
+    if (overIsOriginalParent && pointerBelowOver === false) {
+      return { depth: 0, parentId: null, isInvalid: false };
+    }
+
+    if (overIsOriginalParent) {
+      return {
+        depth: activeItem.depth,
+        parentId: originalActiveParentId,
+        isInvalid: false,
+      };
+    }
+
+    // Inside original subtree but over !== originalParent (i.e. over is a
+    // sibling-of-active or active itself) → fall through to the standard
+    // algorithm (handles same-parent reorder among siblings or no-op when
+    // over === active early in the drag).
   }
 
   // Resolve previousItem / nextItem in one of two modes. The "position-aware"

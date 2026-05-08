@@ -63,3 +63,32 @@ describe('DragOverlayCategoryRow — depth-agnostic naked clone (V2 §2.5 / §2.
     expect(container.textContent).not.toContain('99');
   });
 });
+
+// ---------------------------------------------------------------------------
+// V2.2 D6 — D5-invalid visual feedback
+// ---------------------------------------------------------------------------
+
+describe('DragOverlayCategoryRow — V2.2 D6 isInvalid prop', () => {
+  it('default render (no isInvalid) carries no opacity/cursor inline style', () => {
+    const { container } = render(<DragOverlayCategoryRow category={buildCategory()} />);
+    const overlay = getOverlayElement(container);
+    expect(overlay.style.opacity).toBe('');
+    expect(overlay.style.cursor).toBe('');
+  });
+
+  it('isInvalid=true sets opacity 0.5 and cursor not-allowed', () => {
+    const { container } = render(<DragOverlayCategoryRow category={buildCategory()} isInvalid />);
+    const overlay = getOverlayElement(container);
+    expect(overlay.style.opacity).toBe('0.5');
+    expect(overlay.style.cursor).toBe('not-allowed');
+  });
+
+  it('isInvalid=false renders identically to default (no inline style)', () => {
+    const { container } = render(
+      <DragOverlayCategoryRow category={buildCategory()} isInvalid={false} />,
+    );
+    const overlay = getOverlayElement(container);
+    expect(overlay.style.opacity).toBe('');
+    expect(overlay.style.cursor).toBe('');
+  });
+});

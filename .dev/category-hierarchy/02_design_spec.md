@@ -6,6 +6,45 @@
 
 ## Revision History
 
+**V2.2（2026-05-08；hierarchy drag 系统性修复 — 实施 D1-D8）**
+
+V2.1 落地后 dev mode 实测仍出现 5 类用户报告症状：S1"磁吸不自然/总是误触"、S2"拖二级到父类别上面又闪烁移动下来"、S3"移除子类别失败"、S4"promote 后无动效闪烁"、S5"整体跟手性差"。`.dev/sidebar-hierarchy-fix/` 调研（r1 帧级 trace + r2 dnd-kit v6.3.1 一手源码 + r3 五家产品 UX 对比）证实 3 条根因（详见 `_synthesis_decisions.md`）：
+
+1. **snap → collisionRect → closestCenter 反馈环**（r2 §1.3 `core.esm.js:2984` 一手）：snap 改 transform → collisionRect 偏移 → closestCenter 选 over 锁定原父类 → snap 继续——"over 永远离不开 originalParent"。S1/S2/S3 的最深因。
+2. **pointerBelowOver 在原父类中线抖动驱动 projection 切换**（r1 §1.1 帧级 trace）：违反 V2.1 spec L17 "保持 child 状态"。S2 视觉表现的代码层根因。
+3. **双 IPC await 错过 useSortable 50 ms cascade window**（r2 §3.5 `sortable.esm.js:565-579` 一手）：Tauri IPC ≥ 50 ms 是常态 → drop 后 `wasDragging` 在 IPC 1 完成时已被 setTimeout(50) 清空 → cascade 不触发。S4 的根因。
+
+V2.2 据此实施 8 项决策（D1-D8）：
+
+- **D1（视觉防御）**：`renderDepth` 在 same-parent reorder 时锁定为 `activeOriginalDepth`——防御 inline source row paddingLeft 抖动。实施位置 `SortableCategoriesList.tsx` `renderDepth` useMemo。
+- **D2（projection short-circuit）**：`getProjection` 当 `over === originalActiveParentId` 时直接返回 `{depth: activeItem.depth, parentId: originalActiveParentId, isInvalid: false}`——不再 fall through 标准算法。实施位置 `treeUtilities.ts:535-551`。新单测 5 项覆盖。
+- **D3（混合 collision detection）**：`pointerWithin → closestCenter` fallback。实施位置 `dnd/collisionDetection.ts`（新文件）+ `SortableCategoriesList.tsx` `DndContext.collisionDetection`。**软破 V3 不变量 #22**——保留 closestCenter 作为 fallback（行间 gap / 列表外不变）。新单测 5 项。
+- **D4（store 层合并 IPC）**：`appStore.moveCategoryToParentAtPosition(id, newParentId, newOrderedIds)` 一次 atomic optimistic + fire-and-forget 双 IPC + atomic fallback。实施位置 `appStore.ts` 新方法 + `SortableCategoriesList.tsx:handleDragEnd` promote 路径分发。新单测 11 项覆盖（含 IPC 失败 fallback）。
+- **D5（snap 强度调谐）**：snapModifier 接受 `snapStrengthRef`；ROOT active 保持 1.0（V3 不变），CHILD active 设 0.3（弱化 in-flight 拉力）。实施位置 `dnd/snapModifier.ts` + `SortableCategoriesList.tsx:handleDragStart/End/Cancel`。**软破 V3 不变量 #4 / #8**——modifier 配置不变、按需减弱。新单测 5 项。
+- **D6（D5-invalid 视觉补全）**：`DragOverlayCategoryRow` 加 `isInvalid?: boolean` prop；`isInvalid=true` → opacity 0.5 + cursor not-allowed。实施位置 `DragOverlayCategoryRow.tsx` + `SortableCategoriesList.tsx` 注入。新单测 3 项。
+- **D7（spec 内部冲突解决）**：删除 §2.13 L431 "子类→另一父类的 drop into 区 = change parent"行——与 V2.1 immediate-promote 互斥。**用户失去 cross-parent direct demote 能力**（改两步：先 promote 到 root → 再 demote 到新父类；ContextMenu / 键盘等价路径不变）。详见本 Revision History 末 R-V2.2-1。
+- **D8（acceptance）**：§9 增加 5 项 user-observable acceptance（A1-A5）锁定本次修复的 user-observable 成功标准（按 `fix-must-define-user-observable-success.md` rule）。
+
+落地点：
+
+- 实施仓库变化：`SortableCategoriesList.tsx` / `treeUtilities.ts` / `snapModifier.ts` / `DragOverlayCategoryRow.tsx` / `dnd/collisionDetection.ts`（新）/ `appStore.ts` / `MainLayout.tsx` / `Sidebar.tsx`
+- 新增单测：`treeUtilities.test.ts` +5 / `collisionDetection.test.ts` +5（新文件）/ `snapModifier.test.ts` +5（新文件）/ `appStore.moveCategoryToParentAtPosition.test.ts` +11（新文件）/ `DragOverlayCategoryRow.test.tsx` +3 = **+29 项单测**
+- 调研产物：`.dev/sidebar-hierarchy-fix/00_understanding.md` + `01_research/{r1, r2, r3, _synthesis_decisions, _risk_distillation}.md`
+
+V2.2 软破的 V3 不变量（详见 §6.2）：
+- **#22 closestCenter** → 改为 `pointerWithin → closestCenter` 混合
+- **#4 / #8 snap 物理 / modifiers 配置** → ROOT active 完全保留；CHILD active 强度 × 0.3
+
+V3 不变量主体（V3 spec 文档）保留不变；hierarchy override 仅在 02 V2.2 这层声明。`.dev/sidebar-reorder/02_design_spec.md` V3 §2.5 末追加 1 段指针注释（"hierarchy override 见 02 V2.2 §6.2"），不动正文。
+
+Cascade footprint（V2.1 → V2.2）：
+- §2.13 L431 删除 → 引用 V2.1 cross-parent demote 路径的代码 / 测试 / 文档需 audit grep（`rg 'cross-parent.*demote|drop.*into.*另一父类' src/ src-tauri/ .dev/`）
+- §9 +5 acceptance → 03_tech_plan / 04_implementation_plan 的 acceptance 引用需 patch（如有）
+- §11 +1 风险（R-V2.2-1）
+- 03_tech_plan / 04_implementation_plan 任务卡内容 **不需 patch**（D1-D8 全部是修订级实施）
+
+R-V2.2-1（cross-parent demote 取消的用户感受）：用户原 1 步 demote 工作流改 2 步（promote-then-demote）。dev mode 实测验证；如显著影响，后续 backlog 引入 ContextMenu "Move to Parent..." submenu（V2 §2.20 推迟项的恢复）。
+
 **V2.1（2026-05-05；非对称 promote / demote 语义微订）**
 
 V2 落地 12 px X 阈值 + 80 ms dwell 时，对 promote（child → root）与 demote（root → child）施加了对称的 gate。用户实测后反馈（2026-05-05）："磁吸力太强了，需要稍微调弱一点，让它移动到正上方时就能自然地移除子类别状态"；"无论移动到多远的位置都不行，必须同时向右移动才能解除子类别状态。但正常来说，只要移除出它原本子类别的位置（比如移动到父类别的正上方），就应该能够正常解除"。
@@ -428,8 +467,8 @@ if (delta < 4) {
 | 父类 → 同级根 reorder（dragOffset.x ∈ [-12, +12]） | 合法 | drop indicator 横线（V3 不变） |
 | 父类 → 另一父类的"drop into"区（`dragOffset.x ≥ +12 + dwell`）| **非法**（per D5：父类不可成子；避免子树撕散 + 绕过 max depth=2） | DragOverlay opacity 0.95 → 0.5；cursor `not-allowed`；drop indicator 不渲染 |
 | 子类 → 同级（同父）reorder | 合法 | drop indicator 横线（在子类对齐位置）|
-| 子类 → 另一父类的"drop into"区 | 合法（change parent） | drop indicator 缩进 16 px（§2.7）|
-| 子类 → 根级（reorder 区，`dragOffset.x ≤ -12 + dwell`，被拖项原本是 child） | 合法（promote to root） | drop indicator 顶到根级（§2.7）|
+| 子类 → 另一父类的"drop into"区（V2.2 删除）| **V2.1 immediate-promote 优先**——子类离开原父类即 promote 到 root；不再支持一步 cross-parent demote。用户工作流：先 promote 到 root → 再 demote 到新父类（X≥12+dwell）；ContextMenu / 键盘等价路径不变 | promote 视觉（无 indicator；inline padding-left 26→10）|
+| 子类 → 根级（V2.1 修订：immediate）| 合法（promote to root；无 X、无 dwell）| 无 indicator；inline padding-left 26→10（§2.8 缩进过渡 220ms）|
 | 任何破坏 max depth=2 的尝试 | 非法（前端 prevent） | DragOverlay opacity 0.95 → 0.5；cursor `not-allowed` |
 | 拖到 categories section 之外（如 nav 区、Tags section） | 非法（V3 不变） | DragOverlay opacity 0.95 → 0.5；cursor `not-allowed` |
 
@@ -1004,6 +1043,23 @@ t=16      Confirmation Dialog 出现：
 
 ## 6. 关键行为决策详化
 
+### 6.2 V3 不变量 hierarchy override（**V2.2 新增**）
+
+V2.2 D3 / D5 在 hierarchy 范围内软破 V3 部分不变量。V3 spec 主体（`.dev/sidebar-reorder/02_design_spec.md`）保留不变；以下覆写仅在 categories DndContext + child active 子集生效：
+
+| V3 # | V3 原约束 | V2.2 hierarchy 覆写 |
+|---|---|---|
+| #4 | 12 px Y 轴 quadratic snap 物理（`(1 - dist/12)²`）+ lerp 0.35 | ROOT active 完全保留；CHILD active 强度 × 0.3（`snapStrengthRef.current = 0.3`）。理由：r2 §1.3 一手源码证实 snap → collisionRect → closestCenter 反馈环；r3 §4.1 五家产品全无 in-flight 磁吸。**不影响 V3 flat reorder（Tags / 平级 categories）。** |
+| #8 | DndContext.modifiers = [snapModifier] only | modifier 配置不变；按需衰减强度。**modifier 数量 / 顺序不变**——满足"only [snapModifier]"语义。 |
+| #22 | closestCenter collision detection | 改为 `pointerWithin → closestCenter` fallback（`dnd/collisionDetection.ts`）。pointerWithin 在指针落在 droppable rect 内时返回 hits（基于 `pointerCoordinates`，不受 modifier 影响——`core.esm.js:2977`）；fallback 到 closestCenter 处理行间 gap / 列表外 / null pointer 场景。**保留 closestCenter 语义**——仅在 pointer-truthful 时优先。 |
+
+V2.2 不变量保留状态（V3 不变量编号 1-23）：
+
+- **不变**：#1（4 px 激活）、#2（two-stage lift）、#3（多层 hsl shadow）、#5（220 ms cascade）、#6（距离感知 settle）、#7（280 ms cancel）、#9（DragOverlay modifiers）、#10-21（tokens / DATA_MUTEX / version / DragOverlay 几何）、#23（MeasuringStrategy.Always）
+- **hierarchy override（如上表）**：#4 / #8 / #22
+
+cascade 与 D4 store 合并的关系：D4 让 promote 路径单次 React commit（atomic optimistic）→ useSortable 在 50 ms cascade window 内看到 items 变化（不依赖 IPC 完成）→ #5 cascade transition 真正能触发。**没有改变 #5 本身**，只是把 IPC 序列从 cascade window 外移到 window 内。
+
 ### 6.1 父类 count = 自身 + 所有子级总和（D8 = B）
 
 按 _synthesis_decisions §3 D8 锁定：
@@ -1234,6 +1290,20 @@ A11y：chevron `<button>` 加 `aria-label="Toggle ${categoryName} children"`、`
 37. ☐ V3 ScreenReader：VoiceOver 公告用 category name（不暴露 UUID）。
 38. ☐ V3 Categories Vec append-to-end：autoClassify 创建新分类 → push 到末尾，不破坏既有 reorder 顺序。
 39. ☐ V3 categoriesVersion 协议：autoClassify 进行中拖动 reorder → 入队，autoClassify 完成后正确顺序保留。
+
+### V2.2 D8 user-observable acceptance（dev mode 实测必过；按 fix-must-define-user-observable-success.md）
+
+> 本节定义本次系统性修复的 user-observable 成功标准。每个 commit 在 push 前必须由主 Agent 在 dev mode 实测对应条目。
+
+| # | User action | Observable change | Anti-observation |
+|---|---|---|---|
+| **A1** | 拖 child A-1 在原父类 A 行内上下移动 | inline DOM 不抖动；DragOverlay 跟手；indicator 不显示；`projected.parentId` 始终 = A（DevTools React state 验证） | 无 padding-left 抖动；无 indicator 闪烁；无 projection.parentId 在 null↔A 切换 |
+| **A2** | 拖 child A-1 越过 A 顶端进入根级 gap 区 | over 切换发生在指针离开 A 行时（不是 pointer 跨 A 中线时）；DragOverlay 中心与 pointer y 偏差 < 4 px；asymmetric immediate-promote 触发（projected.parentId = null） | 不会"被拉回 A 行"；DragOverlay 不被 snap 锁在 A 中心 |
+| **A3** | promote 完成（mouseup over root B）→ 视觉 settle | A-1 在单次 React commit 内出现在 B 下方目标位置；padding-left 220 ms cascade transition；无中间帧"先跳错位再跳目标"；最终 store state 与后端一致 | 无两次跳变；无"先跳到 A 后再跳到 B"；DevTools Performance Tab 验证只有 1 次 layout flush 在 promote settle 内 |
+| **A4** | 拖 root A 到 root B 上方 + X≥12 + dwell 80ms | indicator 显示在 B 行下方（depth=1 缩进）；松手 commit demote；A-1 出现在 B 下方为 child；视觉 settle 220 ms cascade（V2 现有行为不变） | 无 V3 flat reorder 行为回归 |
+| **A5** | D5-invalid（拖 root A 有 children 到另一父行 X≥12+dwell drop-into 区） | DragOverlay opacity = 0.5（瞬时切换、无 fade）；cursor = `not-allowed`；indicator 不渲染；松手不更新 parent | 不会"看似 commit 然后 snap-back" |
+
+A1/A2/A3 直接对应用户报告的 S2/S3/S4；A4 是 V2 demote 路径回归 guard；A5 是 D6 视觉补全验证。
 
 ### 用户主观感受兜底（仅作 UX 报告，不阻塞）
 

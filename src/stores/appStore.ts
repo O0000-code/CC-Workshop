@@ -52,6 +52,37 @@ const applyReorder = <T extends { id: string }>(items: T[], orderedIds: string[]
   return result;
 };
 
+// ============================================================
+// Hierarchy pre-validation — shared by `moveCategoryToParent` and
+// `moveCategoryToParentAtPosition`. Mirrors backend `validate_hierarchy`
+// (`src-tauri/src/commands/data.rs`):
+//   Rule 1: promote-to-root is always valid.
+//   Rule 2: self-as-parent → reject.
+//   Rule 3: new parent must itself be a root (depth ≤ 1).
+//   Rule 4: new parent must exist.
+//   Rule 5: cycle — checked via `isAncestorOf`.
+//   Rule 6: target must not have children (demote-with-children).
+// Returns `null` on success or an error message string on rejection. We
+// surface the message verbatim to `set({ error })` so existing tests that
+// match on /depth limit/i, /demote a category that has children/i etc.
+// continue to pass.
+// ============================================================
+const validateMoveToParent = (
+  id: string,
+  newParentId: string | null,
+  categories: Category[],
+): string | null => {
+  if (newParentId === null) return null;
+  if (newParentId === id) return 'Cannot set category as its own parent';
+  const newParent = categories.find((c) => c.id === newParentId);
+  if (!newParent) return 'Parent category not found';
+  if (newParent.parentId !== undefined) return 'Hierarchy depth limit exceeded (max 2)';
+  if (isAncestorOf(id, newParentId, categories)) return 'Setting parent would create a cycle';
+  const targetHasChildren = categories.some((c) => c.parentId === id);
+  if (targetHasChildren) return 'Cannot demote a category that has children';
+  return null;
+};
+
 interface AppState {
   // Navigation state (frontend-only)
   activeCategory: string | null;
@@ -120,6 +151,37 @@ interface AppState {
    * payload — see 03_tech_plan V2 §4.3 / P0-ARCH-3.
    */
   moveCategoryToParent: (id: string, newParentId: string | null) => Promise<void>;
+  /**
+   * V2.2 D4 (2026-05-08): atomic optimistic merge of `setCategoryParent` +
+   * `reorder` into a SINGLE React commit. Used by promote-with-position
+   * (child → root with explicit drop slot). The dual-await pattern in
+   * `handleDragEnd` (setParent IPC then reorder IPC) produced two React
+   * renders — the intermediate frame shows the row at its old slot under a
+   * different parent, which violates `useSortable`'s 50 ms cascade window
+   * (`sortable.esm.js:565-579`) and produces the S4 "no animation" jump.
+   *
+   * Stage 1 (synchronous, atomic): apply parentId AND order in one `set`
+   * call so React commits a single frame. Pre-validation runs first (same
+   * 6 rules as `moveCategoryToParent`) — invalid moves reject without
+   * touching state.
+   *
+   * Stage 2 (queued, async): two IPCs awaited in series inside the same
+   * `enqueueReorder` task — `set_category_parent` first, then
+   * `reorder_categories`. Either failure path → atomic fallback via
+   * `get_categories` (snapshot revert as last resort). Importantly this is
+   * NOT a partial commit: a Stage-1-success / Stage-2-IPC-2-failure leaves
+   * the canonical backend in the post-IPC-1 state but the store ends up at
+   * whatever `get_categories` returns, so the frontend cannot drift from
+   * canonical.
+   *
+   * Refs: 02 V2.2 §6.2 / r1 §1.3 / r2 §3.5 / _synthesis_decisions D4 /
+   * _risk_distillation R-impl-1 + R-arch-2 + R-arch-4.
+   */
+  moveCategoryToParentAtPosition: (
+    id: string,
+    newParentId: string | null,
+    newOrderedIds: string[],
+  ) => Promise<void>;
   initApp: () => Promise<void>;
 
   // Editing state Actions
@@ -546,40 +608,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     // backend's invariants here so the optimistic update is *only* applied
     // when the move would actually succeed.
     //
-    // Mirrors `src-tauri/src/commands/data.rs::validate_hierarchy`:
-    //   Rule 1: promote-to-root is always valid.
-    //   Rule 2: self-as-parent → reject.
-    //   Rule 3: new parent must itself be a root (depth ≤ 1).
-    //   Rule 4: new parent must exist.
-    //   Rule 5: cycle — checked via `isAncestorOf`.
-    //   Rule 6: target must not have children (demote-with-children).
-    if (newParentId !== null) {
-      if (newParentId === id) {
-        const message = 'Cannot set category as its own parent';
-        set({ error: message });
-        return Promise.reject(new Error(message));
-      }
-      const newParent = snapshotForFallback.find((c) => c.id === newParentId);
-      if (!newParent) {
-        const message = 'Parent category not found';
-        set({ error: message });
-        return Promise.reject(new Error(message));
-      }
-      if (newParent.parentId !== undefined) {
-        const message = 'Hierarchy depth limit exceeded (max 2)';
-        set({ error: message });
-        return Promise.reject(new Error(message));
-      }
-      if (isAncestorOf(id, newParentId, snapshotForFallback)) {
-        const message = 'Setting parent would create a cycle';
-        set({ error: message });
-        return Promise.reject(new Error(message));
-      }
-      const targetHasChildren = snapshotForFallback.some((c) => c.parentId === id);
-      if (targetHasChildren) {
-        const message = 'Cannot demote a category that has children';
-        set({ error: message });
-        return Promise.reject(new Error(message));
+    // Validation rules live in module-level `validateMoveToParent` so the
+    // V2.2 D4 `moveCategoryToParentAtPosition` can reuse the exact same
+    // contract — see _synthesis_decisions D4 / r1 §1.3 / 02 V2.2 §6.2.
+    {
+      const validationError = validateMoveToParent(id, newParentId, snapshotForFallback);
+      if (validationError !== null) {
+        set({ error: validationError });
+        return Promise.reject(new Error(validationError));
       }
     }
 
@@ -641,6 +677,139 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
 
         // Last resort: revert to snapshot taken at call time
+        set((state) => ({
+          categories: snapshotForFallback,
+          categoriesVersion: state.categoriesVersion + 1,
+          error: message,
+        }));
+      }
+    });
+  },
+
+  // ============================================================
+  // Move category to parent AT POSITION — V2.2 D4 atomic merge
+  // ============================================================
+  // Refs: 02 V2.2 §6.2 / r1 §1.3 (intermediate-frame trace) / r2 §3.5
+  // (sortable.esm.js cascade 50 ms window) / _synthesis_decisions D4 /
+  // _risk_distillation R-impl-1 + R-arch-2 + R-arch-4.
+  //
+  // Why this exists: the dual-await chain in handleDragEnd (setParent IPC
+  // then reorder IPC) commits two React frames. Frame 1 shows the row with
+  // new parentId but its OLD position — violating useSortable's
+  // `defaultAnimateLayoutChanges` window (closes 50 ms after drop). Result:
+  // S4 "promote 后无动效闪烁".
+  //
+  // Stage 1 (synchronous, ATOMIC): single `set` mutates parentId AND order
+  // in one React commit. Cannot split into two `set` calls — that re-
+  // introduces the intermediate frame this method exists to eliminate.
+  //
+  // Stage 2 (queued, async): two IPCs awaited in series within ONE
+  // `enqueueReorder` task. set_category_parent first; then
+  // reorder_categories with `newOrderedIds`. Both must succeed for the
+  // optimistic state to be considered confirmed.
+  //
+  // Atomic fallback (R-impl-1): any IPC failure → catch → get_categories
+  // (preferred — picks up legitimate concurrent changes) → snapshot
+  // revert (last resort if get_categories also fails). NEVER partial-
+  // commit: even if IPC 1 succeeded and IPC 2 failed, the store is rebuilt
+  // from canonical `get_categories`, not left in a half-applied state.
+  // ============================================================
+  moveCategoryToParentAtPosition: (
+    id: string,
+    newParentId: string | null,
+    newOrderedIds: string[],
+  ) => {
+    if (!isTauri()) return Promise.resolve();
+
+    const snapshotForFallback = get().categories;
+
+    // Pre-validation (same 6 rules as `moveCategoryToParent`).
+    {
+      const validationError = validateMoveToParent(id, newParentId, snapshotForFallback);
+      if (validationError !== null) {
+        set({ error: validationError });
+        return Promise.reject(new Error(validationError));
+      }
+    }
+
+    // Stage 1: atomic optimistic — parentId + order in ONE set call.
+    // We first map parentId, then applyReorder (V3 P3 helper, mirrors
+    // backend `apply_reorder`). Critically this is one `set`, not two —
+    // splitting into two would commit two React frames and reintroduce
+    // the bug this whole method exists to fix.
+    const withNewParent = snapshotForFallback.map((c) =>
+      c.id === id ? { ...c, parentId: newParentId ?? undefined } : c,
+    );
+    const optimistic = applyReorder(withNewParent, newOrderedIds);
+
+    set((state) => ({
+      categories: optimistic,
+      categoriesVersion: state.categoriesVersion + 1,
+    }));
+
+    // Stage 2: queued task that awaits BOTH IPCs in series. Either failure
+    // → catch → atomic fallback. The `enqueueReorder` queue keeps this
+    // task ordered relative to other concurrent reorder/setParent calls
+    // (P0-ARCH-3 user-intent ordering preserved).
+    return enqueueReorder(async () => {
+      try {
+        // IPC 1: setCategoryParent. If this throws, IPC 2 is never sent
+        // and we fall through to the catch below — atomic.
+        await safeInvoke<Category[]>('set_category_parent', { id, newParentId });
+
+        // IPC 2: reorder_categories. Failure here means the canonical
+        // backend has new parentId but old order. We do NOT partial-
+        // commit; the catch below pulls canonical state via
+        // `get_categories` so the frontend re-syncs to whatever the
+        // backend actually has.
+        const updated = await safeInvoke<Category[]>('reorder_categories', {
+          orderedIds: newOrderedIds,
+        });
+
+        if (updated) {
+          // V3 P1-2 + V2 hierarchy: only set when canonical differs from
+          // local state. Compare both id ORDER and parentId because we
+          // mutated both. Stage 1 produces an optimistic-equal Vec in the
+          // common case → this no-ops.
+          const current = get().categories;
+          const sameOrderAndHierarchy =
+            current.length === updated.length &&
+            current.every(
+              (c, i) =>
+                c.id === updated[i].id && (c.parentId ?? null) === (updated[i].parentId ?? null),
+            );
+          if (!sameOrderAndHierarchy) {
+            set((state) => ({
+              categories: updated,
+              categoriesVersion: state.categoriesVersion + 1,
+            }));
+          }
+        }
+      } catch (error) {
+        console.error('Failed to move category to parent at position:', error);
+        const message = typeof error === 'string' ? error : String(error);
+
+        // Atomic fallback (R-impl-1): pull canonical first; snapshot revert
+        // is the last resort. Either branch fully replaces the store —
+        // never partial. If IPC 1 succeeded and IPC 2 failed, canonical
+        // reflects the post-IPC-1 state, which the frontend will adopt
+        // verbatim — that's correct: the parent change persisted, the
+        // ordering did not.
+        try {
+          const real = await safeInvoke<Category[]>('get_categories');
+          if (real) {
+            set((state) => ({
+              categories: real,
+              categoriesVersion: state.categoriesVersion + 1,
+              error: message,
+            }));
+            return;
+          }
+        } catch (recoverError) {
+          console.error('Failed to recover canonical categories:', recoverError);
+        }
+
+        // Last resort: revert to snapshot taken at call time.
         set((state) => ({
           categories: snapshotForFallback,
           categoriesVersion: state.categoriesVersion + 1,

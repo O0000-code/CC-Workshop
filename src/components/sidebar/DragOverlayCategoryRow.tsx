@@ -30,11 +30,28 @@ import { CategoryRowContent } from './CategoryRowContent';
  */
 interface DragOverlayCategoryRowProps {
   category: Category;
+  /**
+   * V2.2 D6 (2026-05-08, src=02 V2.2 §2.13 / §2.14 / _synthesis_decisions D6):
+   * When `true`, the drop is currently in a D5-invalid configuration
+   * (a parent-with-children would become a child of another root). The
+   * overlay drops to `opacity: 0.5` and the cursor switches to `not-allowed`,
+   * matching V3 cancel-state visual semantics. Switching is instantaneous —
+   * no fade transition (per 02 V2 §2.14 + §2.22 anti-pattern).
+   *
+   * Default `false` keeps every other call site visually identical to V3.
+   */
+  isInvalid?: boolean;
 }
 
-export function DragOverlayCategoryRow({ category }: DragOverlayCategoryRowProps) {
+export function DragOverlayCategoryRow({
+  category,
+  isInvalid = false,
+}: DragOverlayCategoryRowProps) {
   return (
-    <div className="drag-overlay-row h-8 px-2.5 flex items-center gap-2.5">
+    <div
+      className="drag-overlay-row h-8 px-2.5 flex items-center gap-2.5"
+      style={isInvalid ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
+    >
       <CategoryRowContent category={category} showCount={false} />
     </div>
   );

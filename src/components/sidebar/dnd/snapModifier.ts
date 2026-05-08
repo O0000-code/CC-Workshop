@@ -28,9 +28,46 @@ import { SNAP_DISTANCE_PX } from './animations';
  *   snap offset within ~7 frames (~120ms @ 60fps) — fast enough to feel
  *   responsive, slow enough to avoid frame-level pops.
  *
+ * V2.2 D5 (2026-05-08, src=02 V2.2 §2.9 / r2 §5.2 / r3 §6.2 /
+ * _synthesis_decisions D5):
+ *   The `strengthRef` parameter lets the host tune snap strength per-drag.
+ *   `strengthRef.current = 1.0` is V3 baseline behavior (default for ROOT
+ *   active drags). When the host drags a CHILD row (V2.1 promote / same-parent
+ *   reorder context), it sets `strengthRef.current = 0.3` in onDragStart,
+ *   weakening the in-flight pull so the snap doesn't lock the active rect to
+ *   the originalParent's slot center. The pulled rect feeds collisionRect
+ *   (`core.esm.js:2984`) which feeds closestCenter, so a strong in-flight snap
+ *   creates a feedback loop that locks `over` to originalParent — preventing
+ *   V2.1's immediate-promote from triggering when the user drags upward
+ *   (S3 root cause; r1 §1.2). 0.3 is a calibration default; dev-mode tuning
+ *   per acceptance A2 may adjust it.
+ *
+ *   Reference set (Finder / Linear / Things 3 / Notion / Apple Notes — r3 §4.1)
+ *   uses **no** in-flight magnetic snap in their hierarchy sidebars. Setting
+ *   strength to 0 for child active would align fully with the reference set;
+ *   0.3 keeps a faint pull at the lift/drop endpoints to preserve V3's macOS
+ *   gestalt — the trade-off documented in 02 V2.2 §2.9.
+ *
  * @see `.dev/sidebar-reorder/06_snap_research.md` for derivation, alternative
  *      approaches, and tuning guidance.
  */
+
+/**
+ * V2.2 D5 — Module-level mutable ref consumed by the singleton modifier.
+ * The host (SortableCategoriesList.tsx) writes to `current` in onDragStart /
+ * onDragEnd / onDragCancel. `1.0` is V3 baseline; `0.3` is the child-active
+ * weakening. Other values are reserved for future tuning.
+ */
+export interface SnapStrengthRef {
+  current: number;
+}
+
+export const snapStrengthRef: SnapStrengthRef = { current: 1.0 };
+
+/** Reset to V3 baseline. Called from onDragEnd / onDragCancel. */
+export function resetSnapStrength(): void {
+  snapStrengthRef.current = 1.0;
+}
 
 // Tuning constants. Adjust SNAP_DISTANCE_PX in animations.ts only — keep
 // EXPONENT/LERP_FACTOR proportional. See 06_snap_research.md §5.
@@ -96,10 +133,11 @@ function createMagneticSnapModifier(): Modifier {
 
     // Continuous gravity well: 1 at dist=0, 0 at dist≥SNAP_RANGE_PX.
     // Smooth in between — no binary entry/exit pop.
+    // V2.2 D5: scaled by `snapStrengthRef.current` (host-tunable per drag).
     let strength = 0;
     if (dist < SNAP_RANGE_PX) {
       const t = 1 - dist / SNAP_RANGE_PX; // 0..1, 1 at center
-      strength = Math.pow(t, EXPONENT);
+      strength = Math.pow(t, EXPONENT) * snapStrengthRef.current;
     }
 
     // Target snap offset this frame (ideally apply this much).

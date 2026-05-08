@@ -95,6 +95,21 @@ export interface SidebarProps {
    *  Production wiring lives in MainLayout (`handleSetCategoryParent` →
    *  `appStore.moveCategoryToParent`). */
   onSetCategoryParent?: (id: string, newParentId: string | null) => Promise<void>;
+  /**
+   * V2.2 D4 (2026-05-08): atomic merge of setCategoryParent + reorder for
+   * the promote-with-position path. SortableCategoriesList prefers this
+   * when both a parent change AND a target position are known (child → root
+   * with explicit drop slot), avoiding the dual-await intermediate React
+   * frame. Optional — when omitted, the dual-await fallback (existing
+   * `onSetCategoryParent` then `onReorder`) is used. Production wiring:
+   * MainLayout → `appStore.moveCategoryToParentAtPosition`. See
+   * _synthesis_decisions D4 / 02 V2.2 §6.2.
+   */
+  onMoveCategoryToParentAtPosition?: (
+    id: string,
+    newParentId: string | null,
+    newOrderedIds: string[],
+  ) => Promise<void>;
   onDragStart: () => void;
   onDragEnd: () => void;
   isDragging: boolean;
@@ -149,6 +164,7 @@ export function Sidebar({
   onReorderCategories,
   onReorderTags,
   onSetCategoryParent,
+  onMoveCategoryToParentAtPosition,
   onDragStart,
   onDragEnd,
   isDragging,
@@ -329,6 +345,7 @@ export function Sidebar({
             maxVisible={MAX_VISIBLE_CATEGORIES}
             onReorder={onReorderCategories}
             onSetCategoryParent={onSetCategoryParent}
+            onMoveCategoryToParentAtPosition={onMoveCategoryToParentAtPosition}
             onDragStart={onDragStart}
             onDragEnd={onDragEnd}
             onCategoryClick={handleCategoryRowClick}

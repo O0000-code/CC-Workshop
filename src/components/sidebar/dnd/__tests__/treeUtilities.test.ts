@@ -912,6 +912,81 @@ describe('getProjection', () => {
       expect(result.parentId).toBe('Q');
     });
   });
+
+  // -------------------------------------------------------------------------
+  // V2.2 D2 midline rule (revised 2026-05-08): user feedback "上面一点点"
+  //
+  // When `over === originalParent`, split the row by vertical center
+  // (sortable list / Apple Notes convention):
+  //   - pointer in upper half / above row → promote to root
+  //   - pointer in lower half → keep child
+  //   - pointer-side unknown → conservative keep child
+  //
+  // sibling-of-active falls through to the standard algorithm regardless
+  // of pointerBelowOver — same-parent reorder needs the standard insertion
+  // computation.
+  // -------------------------------------------------------------------------
+  describe('V2.2 D2 midline rule — over === originalParent', () => {
+    const fx: FlattenedCategory[] = [
+      flat('P', 0, null, 0, true),
+      flat('c1', 1, 'P', 1),
+      flat('c2', 1, 'P', 2),
+      flat('Q', 0, null, 3),
+    ];
+
+    it('over === originalParent + pointerBelowOver=false (upper half) → promote', () => {
+      // User scenario: drag child upward, pointer crosses originalParent
+      // center going up → user has expressed "above parent" intent →
+      // promote to root.
+      const result = getProjection(fx, 'c1', 'P', 0, INDENT_STEP_PX, false, fx, 'P');
+      expect(result).toEqual({ depth: 0, parentId: null, isInvalid: false });
+    });
+
+    it('over === originalParent + pointerBelowOver=true (lower half) → keep child', () => {
+      // Pointer below center → user is hovering near sibling boundary →
+      // keep child (same-parent reorder zone).
+      const result = getProjection(fx, 'c1', 'P', 0, INDENT_STEP_PX, true, fx, 'P');
+      expect(result).toEqual({ depth: 1, parentId: 'P', isInvalid: false });
+    });
+
+    it('over === originalParent + pointerBelowOver=undefined → keep child (keyboard drag / back-compat)', () => {
+      // No pointer info → conservative keep-child path.
+      const result = getProjection(fx, 'c1', 'P', 0, INDENT_STEP_PX, undefined, fx, 'P');
+      expect(result).toEqual({ depth: 1, parentId: 'P', isInvalid: false });
+    });
+
+    it('over === sibling falls through to standard algorithm regardless of pointerBelowOver', () => {
+      // Sibling case is unchanged — standard algorithm computes insertion
+      // position above/below the sibling for same-parent reorder.
+      const above = getProjection(fx, 'c1', 'c2', 0, INDENT_STEP_PX, false, fx, 'P');
+      const below = getProjection(fx, 'c1', 'c2', 0, INDENT_STEP_PX, true, fx, 'P');
+      // Both stay as P's child (sibling reorder); only the projected slot
+      // differs (the SubtreeReorderIds path uses pointerBelowOver to pick
+      // before/after the sibling).
+      expect(above.depth).toBe(1);
+      expect(above.parentId).toBe('P');
+      expect(below.depth).toBe(1);
+      expect(below.parentId).toBe('P');
+    });
+
+    it('over outside originalSubtree → immediate promote regardless of pointerBelowOver', () => {
+      // Top-level "outside subtree" check fires first; midline rule on
+      // originalParent only applies inside the subtree.
+      const result = getProjection(fx, 'c1', 'Q', 0, INDENT_STEP_PX, true, fx, 'P');
+      expect(result).toEqual({ depth: 0, parentId: null, isInvalid: false });
+    });
+
+    it('promote always lands at root (parentId=null), never demotes into row above originalParent', () => {
+      // V2.2 D7: midline rule promotes to root regardless of what's above
+      // originalParent. This test fixture has nothing above P (P is index 0)
+      // so previousItem=undefined naturally yields parentId=null; the assert
+      // here documents the contract — any future fixture with rows above P
+      // must still yield parentId=null on midline promote.
+      const result = getProjection(fx, 'c1', 'P', 0, INDENT_STEP_PX, false, fx, 'P');
+      expect(result.parentId).toBeNull();
+      expect(result.depth).toBe(0);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

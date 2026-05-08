@@ -158,6 +158,8 @@ V2 复评结果：design 8.7、animation 6.0。V3 处理：
 
 **调参表**：详见 `.dev/sidebar-reorder/06_snap_research.md` §5
 
+> **Hierarchy override（2026-05-08，V2.2 D5）**：当 categories DndContext 内拖动一个 pre-drag CHILD 行时，snap 强度按 `snapStrengthRef.current = 0.3` 衰减（保留 lift/drop 端点感、去除 in-flight 锁定力）。ROOT active 完全保留 V3 baseline 1.0。**modifier 配置不变（仍 `[snapModifier]`）**，仅闭包内乘以 strength。详见 `.dev/category-hierarchy/02_design_spec.md` V2.2 Revision History + §6.2 V3 不变量 hierarchy override 表。原因：r2 §1.3 一手源码（`core.esm.js:2984`）证实 snap → collisionRect → closestCenter 反馈环；r3 §4.1 Finder/Linear/Things 3/Notion/Apple Notes 五家产品全无 in-flight 磁吸。本注记不修改 V3 spec 主体规则。
+
 ### 2.6 Settle（落定）—— drop 完成（V3 加距离感知 + 磁吸衔接）
 
 > **D-P1-4 + D-NEW-P0-B 修复**：  

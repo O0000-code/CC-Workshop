@@ -5,7 +5,6 @@ import {
   DragOverlay,
   KeyboardSensor,
   MeasuringStrategy,
-  closestCenter,
   useSensor,
   useSensors,
 } from '@dnd-kit/core';
@@ -27,7 +26,8 @@ import { CategoryInlineInput } from './CategoryInlineInput';
 import { SortableCategoryRow } from './SortableCategoryRow';
 import { DragOverlayCategoryRow } from './DragOverlayCategoryRow';
 import { CustomMouseSensor } from './dnd/CustomMouseSensor';
-import { snapModifier } from './dnd/snapModifier';
+import { sidebarCollisionDetection } from './dnd/collisionDetection';
+import { resetSnapStrength, snapModifier, snapStrengthRef } from './dnd/snapModifier';
 import { makeAnnouncements, sidebarScreenReaderInstructions } from './dnd/announcements';
 import { CATEGORY_DROP_ANIMATION } from './dnd/animations';
 import {
@@ -65,11 +65,15 @@ import { makeTreeKeyboardCoordinates, type TreeSensorContext } from './dnd/treeK
  *  1. 4 px CustomMouseSensor activation distance — `:115`
  *  2. Two-stage lift (80ms + 120ms) — driven by SortableCategoryRow
  *  3. Multi-layer hsl shadow — `.drag-overlay-row` class (unchanged)
- *  4. 12px Y-axis quadratic snap — `snapModifier` in DndContext modifiers
+ *  4. 12px Y-axis quadratic snap — `snapModifier` in DndContext modifiers.
+ *      **V2.2 D5 hierarchy override**: child active strength × 0.3
+ *      (root active full strength). See 02 V2.2 §6.2 + snapModifier.ts.
  *  5. 220ms cascade — `useSortable.transition` in SortableCategoryRow
  *  6. Distance-aware settle — handleDragEnd dropAnimationConfig logic
  *  7. 280ms cancel snap-back — handleDragCancel resets dropAnimationConfig
- *  8. DndContext.modifiers = [snapModifier] only — no restrictToVerticalAxis
+ *  8. DndContext.modifiers = [snapModifier] only — no restrictToVerticalAxis.
+ *      **V2.2 D5 hierarchy override**: modifier set unchanged; strength
+ *      tuned in-closure. See 02 V2.2 §6.2.
  *  9. DragOverlay.modifiers = [restrictToWindowEdges] only
  * 10. CSS tokens reused (--ease-drag, --duration-drag-*); only added --indent-step
  * 11. DATA_MUTEX serialised by backend (frontend just dispatches)
@@ -85,7 +89,9 @@ import { makeTreeKeyboardCoordinates, type TreeSensorContext } from './dnd/treeK
  * 20. Refresh button disabled — owned by MainLayout (out of scope here)
  * 21. DragOverlay does not carry inline-row padding — owned by
  *     DragOverlayCategoryRow's hard-coded `px-2.5`
- * 22. closestCenter collision detection — preserved
+ * 22. closestCenter collision detection — preserved as fallback.
+ *      **V2.2 D3 hierarchy override**: pointerWithin → closestCenter
+ *      hybrid. See 02 V2.2 §6.2 + dnd/collisionDetection.ts.
  * 23. MeasuringStrategy.Always — preserved
  */
 interface SortableCategoriesListProps {
@@ -117,6 +123,22 @@ interface SortableCategoriesListProps {
    * `appStore.moveCategoryToParent`).
    */
   onSetCategoryParent?: (id: string, newParentId: string | null) => Promise<void> | void;
+  /**
+   * V2.2 D4 (2026-05-08): atomic merge of setCategoryParent + reorder for
+   * the promote-with-position path (child → root with explicit drop slot).
+   * When provided AND the drop is a promote with a known target position,
+   * handleDragEnd dispatches here instead of the dual-await
+   * `onSetCategoryParent` + `onReorder` chain — avoiding the intermediate
+   * React frame that violates useSortable's 50 ms cascade window
+   * (sortable.esm.js:565-579). Optional — falls back to the dual-await
+   * path if not wired. See _synthesis_decisions D4 / 02 V2.2 §6.2 /
+   * R-impl-1 atomic fallback.
+   */
+  onMoveCategoryToParentAtPosition?: (
+    id: string,
+    newParentId: string | null,
+    newOrderedIds: string[],
+  ) => Promise<void> | void;
   onDragStart: () => void;
   onDragEnd: () => void;
   onCategoryClick: (categoryId: string) => void;
@@ -193,6 +215,7 @@ export function SortableCategoriesList({
   maxVisible,
   onReorder,
   onSetCategoryParent,
+  onMoveCategoryToParentAtPosition,
   onDragStart,
   onDragEnd,
   onCategoryClick,
@@ -634,6 +657,22 @@ export function SortableCategoriesList({
     setIsKeyboardDrag(startedByKeyboard);
     pointerStartRef.current = startedByKeyboard ? null : getEventCoordinates(event.activatorEvent);
     pointerCurrentRef.current = pointerStartRef.current;
+    // V2.2 D5 (2026-05-08, src=02 V2.2 §2.9 / r2 §5.2 / r3 §6.2 /
+    // _synthesis_decisions D5):
+    // Weaken snap strength when the active row was a child pre-drag. The
+    // `activeOriginalParentId` useMemo only updates next render after
+    // `setActiveId` here, so we read parentId synchronously from `categories`
+    // to pick the strength for THIS drag. ROOT active keeps V3 baseline 1.0;
+    // child active is fully disabled (0.0) — user explicitly authorized
+    // (2026-05-08): "如果磁吸有问题就直接删了". This aligns hierarchy drag
+    // with the reference set (Finder list / Linear / Things 3 / Notion /
+    // Apple Notes — r3 §4.1: none use in-flight magnetic snap in their
+    // hierarchy sidebars). DragOverlay tracks pointer 1:1 — no in-flight
+    // pull, no feedback loop with closestCenter. Lift / drop endpoint snap
+    // is already absent (snap only acts during in-flight drag).
+    const activeCategoryAtStart = categories.find((c) => c.id === String(event.active.id));
+    const isChildAtStart = activeCategoryAtStart?.parentId != null;
+    snapStrengthRef.current = isChildAtStart ? 0 : 1.0;
     // Bug fix 2026-05-05 (P0-1): keep ref + state in lockstep at start.
     dwellStateRef.current = 'OUT';
     // V2 [P1-4]: clear projection ref so the announcer doesn't read a stale
@@ -885,6 +924,9 @@ export function SortableCategoriesList({
     setIsKeyboardDrag(false);
     pointerStartRef.current = null;
     pointerCurrentRef.current = null;
+    // V2.2 D5: reset snap strength to V3 baseline so the next drag — which
+    // may be a root reorder — gets the full magnetic feel back.
+    resetSnapStrength();
     visibleDropIntoProjectionRef.current = null;
     onDragEnd();
 
@@ -930,10 +972,27 @@ export function SortableCategoriesList({
         // also preserve the user's vertical drop slot, so after the parent
         // change succeeds we issue a queued root-level reorder.
         if (parentChanged) {
-          if (onSetCategoryParent) {
-            await onSetCategoryParent(String(active.id), finalParentId);
-          }
-          if (oldParentId !== null && finalParentId === null && localOverId !== null) {
+          // V2.2 D4 (2026-05-08): promote-with-position fast path —
+          // atomic merge of setCategoryParent + reorder into one React
+          // commit, avoiding the dual-await intermediate frame that
+          // violates useSortable's 50 ms cascade window
+          // (sortable.esm.js:565-579). Conditions for the merged path:
+          //   - oldParentId !== null AND finalParentId === null
+          //     (i.e. promote, not demote)
+          //   - localOverId !== null (we have a target slot)
+          //   - onMoveCategoryToParentAtPosition wired (production path)
+          //   - getSubtreeReorderIds returns a non-null payload
+          // Any condition unmet → fall through to the historical
+          // dual-await path (preserves existing demote / no-position
+          // behaviour and provides defensive degradation when the new
+          // prop is not wired). See _synthesis_decisions D4 + 02 V2.2 §6.2.
+          let mergedDispatched = false;
+          if (
+            oldParentId !== null &&
+            finalParentId === null &&
+            localOverId !== null &&
+            onMoveCategoryToParentAtPosition
+          ) {
             const newOrderedIds = getSubtreeReorderIds(
               preDragBaseFlat,
               active.id,
@@ -941,17 +1000,44 @@ export function SortableCategoriesList({
               localPointerBelowOver,
             );
             if (newOrderedIds) {
-              const freshCategories = useAppStore.getState().categories;
-              const freshExpanded = computeDefaultExpanded(freshCategories);
-              for (const id of expandedSet) freshExpanded.add(id);
-              const freshBaseFlat = flattenTree(freshCategories, freshExpanded);
-              const currentOrder = freshBaseFlat.map((it) => String(it.id));
-              const orderChanged =
-                currentOrder.length !== newOrderedIds.length ||
-                currentOrder.some((id, i) => id !== newOrderedIds[i]);
+              await onMoveCategoryToParentAtPosition(
+                String(active.id),
+                finalParentId,
+                newOrderedIds,
+              );
+              mergedDispatched = true;
+            }
+          }
 
-              if (orderChanged) {
-                await onReorder(newOrderedIds);
+          // Historical dual-await path: demote (oldParentId === null AND
+          // finalParentId !== null), promote without target position
+          // (localOverId === null), or fallback when the merged prop is
+          // not wired or getSubtreeReorderIds bailed out. R-reg-1: this
+          // path's behaviour is unchanged from the pre-D4 implementation.
+          if (!mergedDispatched) {
+            if (onSetCategoryParent) {
+              await onSetCategoryParent(String(active.id), finalParentId);
+            }
+            if (oldParentId !== null && finalParentId === null && localOverId !== null) {
+              const newOrderedIds = getSubtreeReorderIds(
+                preDragBaseFlat,
+                active.id,
+                localOverId,
+                localPointerBelowOver,
+              );
+              if (newOrderedIds) {
+                const freshCategories = useAppStore.getState().categories;
+                const freshExpanded = computeDefaultExpanded(freshCategories);
+                for (const id of expandedSet) freshExpanded.add(id);
+                const freshBaseFlat = flattenTree(freshCategories, freshExpanded);
+                const currentOrder = freshBaseFlat.map((it) => String(it.id));
+                const orderChanged =
+                  currentOrder.length !== newOrderedIds.length ||
+                  currentOrder.some((id, i) => id !== newOrderedIds[i]);
+
+                if (orderChanged) {
+                  await onReorder(newOrderedIds);
+                }
               }
             }
           }
@@ -1019,6 +1105,9 @@ export function SortableCategoriesList({
     setIsKeyboardDrag(false);
     pointerStartRef.current = null;
     pointerCurrentRef.current = null;
+    // V2.2 D5: reset snap strength to V3 baseline so the next drag — which
+    // may be a root reorder — gets the full magnetic feel back.
+    resetSnapStrength();
     // V2 [P1-4]: clear projection ref so the announcer's onDragCancel
     // doesn't accidentally read a stale value from a prior drag-end.
     dropProjectionRef.current = null;
@@ -1057,7 +1146,12 @@ export function SortableCategoriesList({
   return (
     <DndContext
       sensors={sensors}
-      collisionDetection={closestCenter}
+      // V2.2 D3 (2026-05-08): hybrid collision detection — see
+      // `dnd/collisionDetection.ts` for the snap-feedback rationale.
+      // V3 invariant #22 (closestCenter) is hierarchy-overridden here:
+      // pointerWithin first, closestCenter as fallback when pointer is in
+      // inter-row gap or outside the list.
+      collisionDetection={sidebarCollisionDetection}
       // V3 §7 invariant #8: snap-only here. The DragOverlay declares its own
       // restrictToWindowEdges below; do NOT add restrictToVerticalAxis (the
       // V2 P0 bug that clamped the overlay to X=0).
@@ -1119,8 +1213,21 @@ export function SortableCategoriesList({
             // (under opacity 0) keeps its DOM padding-left in sync with
             // where the indicator says it'll land. For non-active rows,
             // depth comes straight from the flatten output.
+            //
+            // V2.2 D1 (2026-05-08, src=02 V2.2 §2.7 / r1 §1.1 / _synthesis_decisions D1):
+            // Same-parent reorder (child active + projected.parentId equals the
+            // active's pre-drag parent) must NOT follow projected.depth.
+            // Although `getProjection`'s D2 short-circuit now keeps the projection
+            // stable when over === originalParent, sibling-of-active still falls
+            // through to the standard algorithm — and any residual depth swing
+            // there would propagate into inline padding-left. Locking renderDepth
+            // to the row's original depth removes the visual jitter root cause
+            // even if the projection wobbles. This is a belt-and-suspenders guard
+            // aligned with V2.1 spec L17 ("保持 child 状态").
+            const sameParentReorder =
+              projected !== null && projected.parentId === activeOriginalParentId;
             const renderDepth =
-              localStringEq(item.id, activeId) && projected
+              localStringEq(item.id, activeId) && projected && !sameParentReorder
                 ? (Math.max(0, Math.min(1, projected.depth)) as 0 | 1)
                 : (item.depth as 0 | 1);
 
@@ -1209,7 +1316,16 @@ export function SortableCategoriesList({
           paddingLeft (see `renderDepth` below) and the drop-indicator
           wrapper, not via the floating clone. */}
       <DragOverlay modifiers={[restrictToWindowEdges]} dropAnimation={dropAnimationConfig}>
-        {activeCategory && <DragOverlayCategoryRow category={activeCategory} />}
+        {activeCategory && (
+          <DragOverlayCategoryRow
+            category={activeCategory}
+            // V2.2 D6: project the D5-invalid signal into the overlay so the
+            // user gets the documented cancel-state visual (opacity 0.5 +
+            // cursor not-allowed) when trying to drop a parent-with-children
+            // into another root's drop-into zone. See 02 V2.2 §2.13 / §2.14.
+            isInvalid={projected?.isInvalid ?? false}
+          />
+        )}
       </DragOverlay>
     </DndContext>
   );

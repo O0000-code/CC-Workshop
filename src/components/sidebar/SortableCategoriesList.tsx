@@ -19,7 +19,7 @@ import type {
 } from '@dnd-kit/core';
 import { restrictToWindowEdges } from '@dnd-kit/modifiers';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import { getEventCoordinates } from '@dnd-kit/utilities';
+import { CSS, getEventCoordinates } from '@dnd-kit/utilities';
 import type { Category } from '@/types';
 import { useAppStore } from '@/stores/appStore';
 import { CategoryInlineInput } from './CategoryInlineInput';
@@ -29,7 +29,12 @@ import { CustomMouseSensor } from './dnd/CustomMouseSensor';
 import { sidebarCollisionDetection } from './dnd/collisionDetection';
 import { resetSnapStrength, snapModifier, snapStrengthRef } from './dnd/snapModifier';
 import { makeAnnouncements, sidebarScreenReaderInstructions } from './dnd/announcements';
-import { CATEGORY_DROP_ANIMATION } from './dnd/animations';
+import {
+  CATEGORY_DROP_ANIMATION,
+  CATEGORY_DROP_SIDE_EFFECTS,
+  DROP_EASING,
+  computeDropAnimationDuration,
+} from './dnd/animations';
 import {
   ABS_X_THRESHOLD_PX,
   INDENT_STEP_PX,
@@ -87,8 +92,12 @@ import { makeTreeKeyboardCoordinates, type TreeSensorContext } from './dnd/treeK
  * 18. "Show X more" auto-expand on drag start — preserved
  * 19. justDroppedRef 50ms guard — preserved
  * 20. Refresh button disabled — owned by MainLayout (out of scope here)
- * 21. DragOverlay does not carry inline-row padding — owned by
- *     DragOverlayCategoryRow's hard-coded `px-2.5`
+ * 21. DragOverlay reflects the picked-up row's *current form* (V3 strict
+ *     hand-tracking — equals current form, not future form).
+ *     **V2.3 D9 hierarchy override**: pre-drag depth padding IS current
+ *     form, so DragOverlayCategoryRow accepts a `paddingLeft` prop that
+ *     mirrors the active row's pre-drag depth. Projected depth padding
+ *     remains the V2 §2.22 anti-pattern. See 02 V2.3 §2.5.
  * 22. closestCenter collision detection — preserved as fallback.
  *      **V2.2 D3 hierarchy override**: pointerWithin → closestCenter
  *      hybrid. See 02 V2.2 §6.2 + dnd/collisionDetection.ts.
@@ -890,21 +899,55 @@ export function SortableCategoriesList({
     dwellStateRef.current = 'OUT';
     setDwellState('OUT');
 
-    // V3 §2.6 distance-aware dropAnimation — same logic as V3.
+    // V3 §2.6 distance-aware dropAnimation, V2.3 D10/D11/D12 (2026-05-09):
+    // duration capped at 220 ms with std ease-out + sideEffects fades the
+    // overlay shadow/opacity. D12 (this block): when the drop crosses a
+    // depth boundary (promote: 26 → 10, demote: 10 → 26), keyframes
+    // interpolate the overlay's `paddingLeft` synchronously with
+    // `transform` so the dot/text glide to the final inline padding rather
+    // than jumping 16 px on the unmount frame. Same-depth drops use
+    // dnd-kit's default keyframes (transform-only) to keep root reorder
+    // identical to V3 baseline — bypassing WAAPI's explicit paddingLeft
+    // takeover when no padding change is needed.
     if (active.rect.current.translated && over) {
       const a = active.rect.current.translated;
       const o = over.rect;
       const dx = o.left + o.width / 2 - (a.left + a.width / 2);
       const dy = o.top + o.height / 2 - (a.top + a.height / 2);
       const dist = Math.sqrt(dx * dx + dy * dy);
-      setDropAnimationConfig(
-        dist < 4
-          ? null
-          : {
-              duration: Math.min(280, 120 + dist * 0.5),
-              easing: 'cubic-bezier(0.16, 1, 0.3, 1)',
+      // D12 inputs: pre-drag depth comes from the active row's pre-drag
+      // parentId (mirrors D9 paddingLeft prop wiring); final depth comes
+      // from `finalProjection` (computed earlier in this handler) — null
+      // means "no projection / no parent change" so final equals pre-drag.
+      const preDragDepth = activeOriginalParentId !== null ? 1 : 0;
+      const preDragPaddingLeft = preDragDepth * INDENT_STEP_PX + 10;
+      const finalDepth = finalProjection
+        ? Math.max(0, Math.min(1, finalProjection.depth))
+        : preDragDepth;
+      const finalPaddingLeft = finalDepth * INDENT_STEP_PX + 10;
+      const isCrossDepthDrop = preDragPaddingLeft !== finalPaddingLeft;
+      if (dist < 4) {
+        setDropAnimationConfig(null);
+      } else {
+        const config: DropAnimation = {
+          duration: computeDropAnimationDuration(dist),
+          easing: DROP_EASING,
+          sideEffects: CATEGORY_DROP_SIDE_EFFECTS,
+        };
+        if (isCrossDepthDrop) {
+          config.keyframes = ({ transform }) => [
+            {
+              transform: CSS.Transform.toString(transform.initial),
+              paddingLeft: `${preDragPaddingLeft}px`,
             },
-      );
+            {
+              transform: CSS.Transform.toString(transform.final),
+              paddingLeft: `${finalPaddingLeft}px`,
+            },
+          ];
+        }
+        setDropAnimationConfig(config);
+      }
     }
 
     // Capture local snapshots before clearing — needed by the IPC dispatch
@@ -1311,10 +1354,12 @@ export function SortableCategoriesList({
           (already snapped to slot).
 
           V2 hierarchy invariant #21 (02 V2 §2.5 + §2.22 + §11): the overlay
-          is depth-agnostic — it does NOT receive depth / hasChildren props.
-          Hierarchy depth is expressed via the inline source row's projected
-          paddingLeft (see `renderDepth` below) and the drop-indicator
-          wrapper, not via the floating clone. */}
+          tracks the picked-up row's *current form* (NOT projected/future
+          form). V2.3 D9 (2026-05-09) clarifies: pre-drag depth padding
+          IS current form (it never changes during a drag); projected depth
+          padding remains the §2.22 anti-pattern. We pass the pre-drag
+          depth's padding so child active drops do not 16-px-jump on the
+          unmount frame (r4 §3.4 scenario B). */}
       <DragOverlay modifiers={[restrictToWindowEdges]} dropAnimation={dropAnimationConfig}>
         {activeCategory && (
           <DragOverlayCategoryRow
@@ -1324,6 +1369,11 @@ export function SortableCategoriesList({
             // cursor not-allowed) when trying to drop a parent-with-children
             // into another root's drop-into zone. See 02 V2.2 §2.13 / §2.14.
             isInvalid={projected?.isInvalid ?? false}
+            // V2.3 D9: pre-drag depth padding. activeOriginalParentId is
+            // null for ROOT active (depth 0 → padding 10) and a parent id
+            // for CHILD active (depth 1 → padding 26). This stays constant
+            // for the entire drag — the overlay never tracks projection.
+            paddingLeft={(activeOriginalParentId !== null ? 1 : 0) * INDENT_STEP_PX + 10}
           />
         )}
       </DragOverlay>

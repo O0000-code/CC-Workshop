@@ -92,3 +92,49 @@ describe('DragOverlayCategoryRow — V2.2 D6 isInvalid prop', () => {
     expect(overlay.style.cursor).toBe('');
   });
 });
+
+// ---------------------------------------------------------------------------
+// V2.3 D9 — pre-drag depth padding
+// ---------------------------------------------------------------------------
+
+describe('DragOverlayCategoryRow — V2.3 D9 paddingLeft prop', () => {
+  it('paddingLeft undefined (default): keeps the V3 px-2.5 baseline className', () => {
+    const { container } = render(<DragOverlayCategoryRow category={buildCategory()} />);
+    const overlay = getOverlayElement(container);
+    // Tailwind px-2.5 className still applies (V3 invariant #21 baseline).
+    expect(overlay.className).toContain('px-2.5');
+    expect(overlay.style.paddingLeft).toBe('');
+  });
+
+  it('paddingLeft=10 (root active): inline paddingLeft 10 px, pr-2.5 only', () => {
+    const { container } = render(
+      <DragOverlayCategoryRow category={buildCategory()} paddingLeft={10} />,
+    );
+    const overlay = getOverlayElement(container);
+    expect(overlay.style.paddingLeft).toBe('10px');
+    expect(overlay.className).toContain('pr-2.5');
+    expect(overlay.className).not.toContain('px-2.5');
+  });
+
+  it('paddingLeft=26 (child active): inline paddingLeft 26 px so dot/text align with inline depth=1 row', () => {
+    // The bug this fixes: pre-V2.3 the overlay was always px-2.5 (10 px),
+    // so dropping a child active showed a 16 px right-jump after unmount.
+    const { container } = render(
+      <DragOverlayCategoryRow category={buildCategory({ parentId: 'p' })} paddingLeft={26} />,
+    );
+    const overlay = getOverlayElement(container);
+    expect(overlay.style.paddingLeft).toBe('26px');
+    expect(overlay.className).toContain('pr-2.5');
+    expect(overlay.className).not.toContain('px-2.5');
+  });
+
+  it('paddingLeft + isInvalid combine without conflict', () => {
+    const { container } = render(
+      <DragOverlayCategoryRow category={buildCategory()} paddingLeft={26} isInvalid />,
+    );
+    const overlay = getOverlayElement(container);
+    expect(overlay.style.paddingLeft).toBe('26px');
+    expect(overlay.style.opacity).toBe('0.5');
+    expect(overlay.style.cursor).toBe('not-allowed');
+  });
+});

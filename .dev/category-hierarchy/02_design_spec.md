@@ -6,6 +6,43 @@
 
 ## Revision History
 
+**V2.3（2026-05-09；drop animation 精修 — 实施 D9-D11）**
+
+V2.2 落地后用户实测 drop 阶段仍报 3 个体感问题（详 r4 调研产物 `01_research/02_research/r4_drop_animation.md`）：
+
+- A. **"悬浮 0.5 秒"**：DragOverlay 归位后视觉停滞。一手数值评估（r4 §2.1）：当前 `cubic-bezier(0.16, 1, 0.3, 1)` @ 220 ms 在前 42.6 % 时间已完成 95 % 进度，**后 38 % 时长（84 ms）仅完成 1 % 位移**——这就是用户感知的"悬浮"。
+- B. **"阴影生硬消失"**：DragOverlay 在 `setClonedChildren(null)` 单帧 unmount（r4 §1.3 一手 cite `core.esm.js:3578-3611`），dnd-kit 默认 keyframes 仅插值 `transform`，**不 fade `opacity` / `box-shadow`**（r4 §1.2 cite `core.esm.js:3729-3741`），所以三层 hsl 阴影在 unmount 那帧整个消失。
+- C. **"色圈/文字向右跳变 16 px"**：child active 拖动后归位时 DragOverlay 是 `px-2.5` (10 px) vs inline 行 depth=1 padding (26 px)，unmount 后 inline 显示导致 16 px 右移视觉跳变（r4 §3.4 场景 B）。
+
+V2.3 据此实施 3 项决策（D9-D11）：
+
+- **D9（DragOverlay pre-drag depth padding）**：`DragOverlayCategoryRow` 接受 `paddingLeft?: number`，由 `SortableCategoriesList` 按 active 行的 **pre-drag depth** 注入（root → 10 px / child → 26 px）。pre-drag depth 在整个 drag session 恒定——它是被拖项**当前形态**而不是 projection 预测，与 V3 §2.5 strict-hand-tracking 精神一致。修复用户报告 C 的 16 px 跳变。
+- **D10（drop 曲线优化）**：duration cap 从 280 ms 缩到 220 ms；公式 `min(220, 100 + dist × 0.4)`；曲线由 `cubic-bezier(0.16, 1, 0.3, 1)` 改为 `cubic-bezier(0, 0, 0.2, 1)` std ease-out。新曲线末段 95→100 % 占总时长 29.2 %（vs 原 57.4 %，r4 §2.2 数值），消除"末段拖沓 84 ms"。设计语言 allowed easing list（design-language.md §Constraints）已包含 `cubic-bezier(0, 0, 0.2, 1)`，无需新 token。
+- **D11（DragOverlay drop fade）**：`CATEGORY_DROP_ANIMATION.sideEffects` 给 `dragOverlay.node` 添加 `is-dropping` className（dnd-kit 在 `core.esm.js:3700-3708` 同步执行），CSS `.drag-overlay-row.is-dropping` 在 120 ms 内 transition `opacity: 0` + `box-shadow: none`。120 ms 完成于 dropAnimation 任意 distance-aware duration（100-220 ms）窗口内，所以 `setClonedChildren(null)` unmount 时 dragOverlay.node 已是透明壳，"阴影生硬消失"消除。
+- **D12（cross-depth padding 同步动画）**：D9 让 DragOverlay 在 drag 期间携带 pre-drag depth padding，但 cross-depth drop（promote / demote）下 final inline padding ≠ pre-drag padding，仍有 16 px unmount 跳变。D12 给 `dropAnimation.keyframes` 自定义 keyframe 序列，让 `paddingLeft` 与 `transform` 在同一 distance-aware duration 内同曲线（std ease-out）插值——promote 26→10 / demote 10→26 / same-depth 两端相同（无插值）。Web Animations API 的 keyframes 接受任意 CSS property（r4 §1.6 cite `useDropAnimation.d.ts:26-32`）。修复用户实测的 cross-depth"闪动"——使位移过程像 spring 一样丝滑，而不是 unmount 那帧的 16 px 跳变。
+
+落地点：
+
+- 实施仓库变化：`src/components/sidebar/dnd/animations.ts`（D10/D11 常量与 sideEffects helper 抽取）/ `src/components/sidebar/DragOverlayCategoryRow.tsx`（D9 paddingLeft prop）/ `src/components/sidebar/SortableCategoriesList.tsx`（D9 注入 + D10/D11 distance-aware override）/ `src/index.css`（D11 `.is-dropping` 规则 + reduced-motion override）
+- 新单测：`DragOverlayCategoryRow.test.tsx` +4（覆盖 paddingLeft 默认 / root / child / 与 isInvalid 组合）
+- 调研产物：`.dev/sidebar-hierarchy-fix/02_research/r4_drop_animation.md`
+
+V2.3 软破的 V3 不变量：
+
+- **V3 #21 字面措辞** "DragOverlay does not carry inline-row padding" → 保留**精神**（DragOverlay = 当前形态、不跟 projection），扩展为"pre-drag depth padding 是当前形态的合法表达"。详见 §2.5 / §2.22 V2.3 修订段。
+
+V3 不变量主体（V3 spec 文档）保留不变；hierarchy override 仅在 02 V2.3 这层声明。`.dev/sidebar-reorder/02_design_spec.md` V3 §2.6 末追加 1 段指针注释（settle 公式按 V2.3 D10 调整，指向 02 V2.3）。
+
+Cascade footprint（V2.2 → V2.3）：
+
+- §2.5 DragOverlay padding 论据更新（pre-drag vs projected 显式区分） + §2.22 anti-pattern 表澄清"DragOverlay component 增加 depth/paddingLeft prop" 仅禁止 projected depth，pre-drag depth 是允许的
+- §2.10 / §2.6 引用 settle 公式更新（D10 公式 + 曲线 + sideEffects D11）
+- §6.2 V3 invariant override 表追加 #21
+- §9 acceptance 增加 3 项（A6-A8 user-observable）
+- §11 风险登记追加 R-V2.3-1（D9 跨深度 drop 边界 case）
+
+R-V2.3-1（D9 跨深度 drop 边界 case）：场景 C/E（child active promote 到 root / root active demote 成 child）下 DragOverlay padding 与 final inline padding 跨深度（10 ↔ 26）不一致，但 settle 距离在 X 方向已经包含 16 px → settle 滑动遮蔽跳变（r4 §5.4）。dev mode 实测验证；如果跨深度 drop 仍有可感知跳变，再做二阶处理。
+
 **V2.2（2026-05-08；hierarchy drag 系统性修复 — 实施 D1-D8）**
 
 V2.1 落地后 dev mode 实测仍出现 5 类用户报告症状：S1"磁吸不自然/总是误触"、S2"拖二级到父类别上面又闪烁移动下来"、S3"移除子类别失败"、S4"promote 后无动效闪烁"、S5"整体跟手性差"。`.dev/sidebar-hierarchy-fix/` 调研（r1 帧级 trace + r2 dnd-kit v6.3.1 一手源码 + r3 五家产品 UX 对比）证实 3 条根因（详见 `_synthesis_decisions.md`）：
@@ -20,7 +57,7 @@ V2.2 据此实施 8 项决策（D1-D8）：
 - **D2（projection short-circuit）**：`getProjection` 当 `over === originalActiveParentId` 时直接返回 `{depth: activeItem.depth, parentId: originalActiveParentId, isInvalid: false}`——不再 fall through 标准算法。实施位置 `treeUtilities.ts:535-551`。新单测 5 项覆盖。
 - **D3（混合 collision detection）**：`pointerWithin → closestCenter` fallback。实施位置 `dnd/collisionDetection.ts`（新文件）+ `SortableCategoriesList.tsx` `DndContext.collisionDetection`。**软破 V3 不变量 #22**——保留 closestCenter 作为 fallback（行间 gap / 列表外不变）。新单测 5 项。
 - **D4（store 层合并 IPC）**：`appStore.moveCategoryToParentAtPosition(id, newParentId, newOrderedIds)` 一次 atomic optimistic + fire-and-forget 双 IPC + atomic fallback。实施位置 `appStore.ts` 新方法 + `SortableCategoriesList.tsx:handleDragEnd` promote 路径分发。新单测 11 项覆盖（含 IPC 失败 fallback）。
-- **D5（snap 强度调谐）**：snapModifier 接受 `snapStrengthRef`；ROOT active 保持 1.0（V3 不变），CHILD active 设 0.3（弱化 in-flight 拉力）。实施位置 `dnd/snapModifier.ts` + `SortableCategoriesList.tsx:handleDragStart/End/Cancel`。**软破 V3 不变量 #4 / #8**——modifier 配置不变、按需减弱。新单测 5 项。
+- **D5（snap 强度调谐）**：snapModifier 接受 `snapStrengthRef`；ROOT active 保持 1.0（V3 不变），CHILD active 设 0（用户授权"如果磁吸有问题就直接删了" — DragOverlay 严格跟手 pointer，与 Finder/Linear/Things 3/Notion/Apple Notes 一致；初稿 0.3 在用户实测后调整）。实施位置 `dnd/snapModifier.ts` + `SortableCategoriesList.tsx:handleDragStart/End/Cancel`。**软破 V3 不变量 #4 / #8**——modifier 配置不变、按需禁用。新单测 5 项。
 - **D6（D5-invalid 视觉补全）**：`DragOverlayCategoryRow` 加 `isInvalid?: boolean` prop；`isInvalid=true` → opacity 0.5 + cursor not-allowed。实施位置 `DragOverlayCategoryRow.tsx` + `SortableCategoriesList.tsx` 注入。新单测 3 项。
 - **D7（spec 内部冲突解决）**：删除 §2.13 L431 "子类→另一父类的 drop into 区 = change parent"行——与 V2.1 immediate-promote 互斥。**用户失去 cross-parent direct demote 能力**（改两步：先 promote 到 root → 再 demote 到新父类；ContextMenu / 键盘等价路径不变）。详见本 Revision History 末 R-V2.2-1。
 - **D8（acceptance）**：§9 增加 5 项 user-observable acceptance（A1-A5）锁定本次修复的 user-observable 成功标准（按 `fix-must-define-user-observable-success.md` rule）。
@@ -33,7 +70,7 @@ V2.2 据此实施 8 项决策（D1-D8）：
 
 V2.2 软破的 V3 不变量（详见 §6.2）：
 - **#22 closestCenter** → 改为 `pointerWithin → closestCenter` 混合
-- **#4 / #8 snap 物理 / modifiers 配置** → ROOT active 完全保留；CHILD active 强度 × 0.3
+- **#4 / #8 snap 物理 / modifiers 配置** → ROOT active 完全保留；CHILD active 强度 × 0
 
 V3 不变量主体（V3 spec 文档）保留不变；hierarchy override 仅在 02 V2.2 这层声明。`.dev/sidebar-reorder/02_design_spec.md` V3 §2.5 末追加 1 段指针注释（"hierarchy override 见 02 V2.2 §6.2"），不动正文。
 
@@ -1043,20 +1080,21 @@ t=16      Confirmation Dialog 出现：
 
 ## 6. 关键行为决策详化
 
-### 6.2 V3 不变量 hierarchy override（**V2.2 新增**）
+### 6.2 V3 不变量 hierarchy override（**V2.2 新增；V2.3 扩展**）
 
-V2.2 D3 / D5 在 hierarchy 范围内软破 V3 部分不变量。V3 spec 主体（`.dev/sidebar-reorder/02_design_spec.md`）保留不变；以下覆写仅在 categories DndContext + child active 子集生效：
+V2.x D3 / D5 / D9 在 hierarchy 范围内软破 V3 部分不变量。V3 spec 主体（`.dev/sidebar-reorder/02_design_spec.md`）保留不变；以下覆写仅在 categories DndContext 子集生效：
 
-| V3 # | V3 原约束 | V2.2 hierarchy 覆写 |
+| V3 # | V3 原约束 | V2.x hierarchy 覆写 |
 |---|---|---|
-| #4 | 12 px Y 轴 quadratic snap 物理（`(1 - dist/12)²`）+ lerp 0.35 | ROOT active 完全保留；CHILD active 强度 × 0.3（`snapStrengthRef.current = 0.3`）。理由：r2 §1.3 一手源码证实 snap → collisionRect → closestCenter 反馈环；r3 §4.1 五家产品全无 in-flight 磁吸。**不影响 V3 flat reorder（Tags / 平级 categories）。** |
+| #4 | 12 px Y 轴 quadratic snap 物理（`(1 - dist/12)²`）+ lerp 0.35 | ROOT active 完全保留；**CHILD active 强度 × 0**（V2.2 D5；用户授权"如果磁吸有问题就直接删了"——DragOverlay 严格跟手 pointer，与 Finder/Linear/Things 3/Notion/Apple Notes 一致）。理由：r2 §1.3 一手源码证实 snap → collisionRect → closestCenter 反馈环；r3 §4.1 五家产品全无 in-flight 磁吸。**不影响 V3 flat reorder（Tags / 平级 categories）。** |
 | #8 | DndContext.modifiers = [snapModifier] only | modifier 配置不变；按需衰减强度。**modifier 数量 / 顺序不变**——满足"only [snapModifier]"语义。 |
+| **#21** | DragOverlay does not carry inline-row padding | **V2.3 D9**：`DragOverlayCategoryRow.paddingLeft` 接 active 行的 pre-drag depth padding（root → 10 / child → 26）；pre-drag depth 在整个 drag session 恒定，**保留 V3 §2.5 strict-hand-tracking 精神**（DragOverlay = 当前形态、不跟 projection），与 §2.22 "DragOverlay 跟随 child 缩进" anti-pattern（指 projected depth 的逐帧切换）正交。理由：r4 §3.4 场景 B 实测，child active drop 后 DragOverlay (10 px) 与 inline (26 px) padding 不一致 → unmount 后 dot/text 16 px 右移视觉跳变。 |
 | #22 | closestCenter collision detection | 改为 `pointerWithin → closestCenter` fallback（`dnd/collisionDetection.ts`）。pointerWithin 在指针落在 droppable rect 内时返回 hits（基于 `pointerCoordinates`，不受 modifier 影响——`core.esm.js:2977`）；fallback 到 closestCenter 处理行间 gap / 列表外 / null pointer 场景。**保留 closestCenter 语义**——仅在 pointer-truthful 时优先。 |
 
-V2.2 不变量保留状态（V3 不变量编号 1-23）：
+V2.x 不变量保留状态（V3 不变量编号 1-23）：
 
-- **不变**：#1（4 px 激活）、#2（two-stage lift）、#3（多层 hsl shadow）、#5（220 ms cascade）、#6（距离感知 settle）、#7（280 ms cancel）、#9（DragOverlay modifiers）、#10-21（tokens / DATA_MUTEX / version / DragOverlay 几何）、#23（MeasuringStrategy.Always）
-- **hierarchy override（如上表）**：#4 / #8 / #22
+- **不变**：#1（4 px 激活）、#2（two-stage lift）、#3（多层 hsl shadow）、#5（220 ms cascade）、#6（距离感知 settle — V2.3 D10 公式微调，曲线/形态保留）、#7（280 ms cancel）、#9（DragOverlay modifiers）、#10-20（tokens / DATA_MUTEX / version / DragOverlay 几何）、#23（MeasuringStrategy.Always）
+- **hierarchy override（如上表）**：#4 / #8 / #21 / #22
 
 cascade 与 D4 store 合并的关系：D4 让 promote 路径单次 React commit（atomic optimistic）→ useSortable 在 50 ms cascade window 内看到 items 变化（不依赖 IPC 完成）→ #5 cascade transition 真正能触发。**没有改变 #5 本身**，只是把 IPC 序列从 cascade window 外移到 window 内。
 
@@ -1271,7 +1309,8 @@ A11y：chevron `<button>` 加 `aria-label="Toggle ${categoryName} children"`、`
 21. ☐ **D5 父类不可成子**：拖动父类到另一父类的"drop into"区（X 偏移 ≥ +12 + dwell 80）→ DragOverlay opacity = 0.5（**瞬时切换、无 fade**）；cursor = `not-allowed`；onDragEnd 不更新 parent；A11y 不发"moved"公告。
 22. ☐ **D7 父类聚合视图**：CategoryPage（`/category/<父id>`）下显示父类自身 + 所有子级的 skills + mcps + claudeMd（手工 fixture：父=Development、子=Frontend (3 项) + Backend (5 项) + 自身 (2 项)，预期 CategoryPage 显示 10 项）。
 23. ☐ **D8 父类聚合 count**：sidebar 父类 row 显示 count = self + Σ children.self（同上 fixture：sidebar 显示 `10`）。
-24. ☐ **D14 autoClassify 落根**：autoClassify 创建新分类后，新 category 在 `data.categories` 末尾、`parent_id === null`；不会建议父类。
+24. ☐ **D14 autoClassify 父级感知（V2.4 升级 D14=A → D14=B）**：autoClassify 可对 result 设 `suggested_parent_category` 提议子分类。父类已存在（且本身是根） → 复用其 `parent_id` 创建子；父类是新名 → 先建根、再建子（同一次 autoClassify 内顺序）。父类指向已存在的子分类（depth=2 违规） → 静默回落根级，不中断整批；子=父名等异常 → 同样回落根级。
+
 25. ☐ **Dwell retreat 路径**（V2 新增）：在 DROP_INTO_READY 状态下用户横向回退 X 至 < 12 → 立即转移到 HOVER_NEAR；视觉立即恢复 reorder 状态（drop indicator wrapper paddingLeft: 16 → 0，150ms transition；DragOverlay opacity 0.5 → 0.95 瞬时；cursor not-allowed → grabbing 瞬时）；不重启 dwell timer。
 26. ☐ **父类删除 confirmation**（V2 新增）：右键有 children 的父类 → Delete → 弹 confirmation dialog；含子类数量 + "This cannot be undone" 提示；点 Cancel 不变；点 Delete 触发 cascade-promote + A11y 公告。
 27. ☐ **父类无 children 删除直接执行**（V2 新增）：右键无 children 的父类 → Delete → 直接删除（无 dialog；与 V3 现状一致）。
@@ -1302,8 +1341,13 @@ A11y：chevron `<button>` 加 `aria-label="Toggle ${categoryName} children"`、`
 | **A3** | promote 完成（mouseup over root B）→ 视觉 settle | A-1 在单次 React commit 内出现在 B 下方目标位置；padding-left 220 ms cascade transition；无中间帧"先跳错位再跳目标"；最终 store state 与后端一致 | 无两次跳变；无"先跳到 A 后再跳到 B"；DevTools Performance Tab 验证只有 1 次 layout flush 在 promote settle 内 |
 | **A4** | 拖 root A 到 root B 上方 + X≥12 + dwell 80ms | indicator 显示在 B 行下方（depth=1 缩进）；松手 commit demote；A-1 出现在 B 下方为 child；视觉 settle 220 ms cascade（V2 现有行为不变） | 无 V3 flat reorder 行为回归 |
 | **A5** | D5-invalid（拖 root A 有 children 到另一父行 X≥12+dwell drop-into 区） | DragOverlay opacity = 0.5（瞬时切换、无 fade）；cursor = `not-allowed`；indicator 不渲染；松手不更新 parent | 不会"看似 commit 然后 snap-back" |
+| **A6**（V2.3 D9） | 拖 child A-1 远离父类后松手回弹（无 commit 的 same-parent reorder） | drop 完成、阴影消失瞬间 inline 显示——dot 与 text 在原位置，**无 16 px 右移视觉跳变** | 不会"色圈/文字突然向右移动"（用户报告 C） |
+| **A7**（V2.3 D10）| 拖 root / child 远距离（dist ≥ 200 px）后松手 | DragOverlay 在 ≤ 220 ms 内归位；末段无可感知"悬浮"停顿 | 不会"归位后看起来悬浮 0.5 秒"（用户报告 A） |
+| **A8**（V2.3 D11）| drop 完成的最后一帧 | DragOverlay 阴影 + opacity 在 120 ms 内 transition 到 0 / none，**视觉上 fade 消失**（DevTools Animations panel 验证 `opacity` + `box-shadow` 双 transition），unmount 时已是透明壳 | 不会"阴影生硬消失"（单帧 unmount，用户报告 B） |
+| **A9**（V2.3 D12）| 拖 child 远后松手 promote 到 root（cross-depth drop） | DragOverlay paddingLeft 在 dropAnimation 同曲线、同时长内从 26 → 10 平滑过渡（DevTools Animations 看到 `paddingLeft` 在 keyframes 中），unmount 时落点 padding 与 inline final padding 像素对齐 | 不会"DragOverlay 落到 root 位置后 inline 显示突然 16 px 偏移"（用户实测的 cross-depth 闪动） |
+| **A10**（V2.3 D12）| 拖 root 远后松手 demote 成 child（cross-depth drop 反向） | 同 A9 但 padding 10 → 26 方向反向，仍丝滑过渡 | 不会"DragOverlay 落到 root 位置后 inline 显示 dot/text 突然向右移 16 px"（用户实测） |
 
-A1/A2/A3 直接对应用户报告的 S2/S3/S4；A4 是 V2 demote 路径回归 guard；A5 是 D6 视觉补全验证。
+A1/A2/A3 对应 V2.2 用户报告 S2/S3/S4；A4 是 V2 demote 路径回归 guard；A5 是 D6 视觉补全验证；A6/A7/A8 对应 V2.3 D9/D10/D11 用户报告 C/A/B；A9/A10 对应 V2.3 D12 用户实测的 cross-depth 闪动。
 
 ### 用户主观感受兜底（仅作 UX 报告，不阻塞）
 
@@ -1321,7 +1365,7 @@ A1/A2/A3 直接对应用户报告的 S2/S3/S4；A4 是 V2 demote 路径回归 gu
 
 - **三级及更深嵌套**（max depth = 2 硬约束，per HIG Sidebars 页"show no more than two levels of hierarchy in a sidebar" + Apple HIG Outline Views 标准 + 用户原话"二级"+ D2 / D13 锁定）
 - **拖拽时整个子树跟随**（per D5：父类拖动只允许同级 reorder，不可成子；DragOverlay 仅渲染 row 自身不渲染子树）
-- **autoClassify 智能建议父类**（per D14 = A 落根；后续候选）
+- ~~**autoClassify 智能建议父类**（per D14 = A 落根；后续候选）~~ → **V2.4 已实施**：D14 升级为 B，prompt 增量加 Step 3 "Sub-categories (Optional)"；schema 增 `parent_category` 可选字段；前端按 parent 名解析、parent 先建子再建。详见 `src-tauri/src/commands/classify.rs` + `src/utils/classifyHelpers.ts`。
 - **Force Touch / 三指拖 / haptic feedback**（与 sidebar-reorder V3 一致，不实现）
 - **拖到 nav 区"Skills/MCP/..." 形成跨 section 移动**（V3 不变，hierarchy 不开放）
 - **跨设备 sync / 协作 reorder**（项目无云同步）

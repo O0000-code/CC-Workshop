@@ -200,6 +200,8 @@ const dropAnimation: DropAnimation = {
 // 通过 React state 传入 DragOverlay 实际 props
 ```
 
+> **Hierarchy override（2026-05-09，V2.3 D10/D11）**：实测验证 V3 公式 `min(280, 120 + dist × 0.5)` + `cubic-bezier(0.16, 1, 0.3, 1)` 在 220 ms 末段 38 % 时长仅完成 1 % 进度（"悬浮"感），同时 dnd-kit 默认 keyframes 不 fade DragOverlay 的 `opacity` / `box-shadow`，导致 unmount 单帧"阴影生硬消失"（详见 `.dev/sidebar-hierarchy-fix/02_research/r4_drop_animation.md` §1.10 / §2.1）。Categories DndContext 调整为：duration 公式 `min(220, 100 + dist × 0.4)`、曲线 `cubic-bezier(0, 0, 0.2, 1)` std ease-out、sideEffects 给 dragOverlay 加 `is-dropping` className（CSS 在 120 ms 内 fade `opacity` + `box-shadow`）。`distance < 4` 跳过路径不变。详见 `.dev/category-hierarchy/02_design_spec.md` V2.3 Revision History + §6.2 V3 invariant override。本注记不修改 V3 spec 主体规则。
+
 ### 2.7 Cancel（取消）（V3 撤销虚假 spring overshoot 声称）
 
 > **A-P1 修订**：V2 声称 spring `{280, 32}` 有 ~0.5% overshoot 实测仅 0.0035%（不可感知）。  

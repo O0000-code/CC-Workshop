@@ -647,6 +647,26 @@ body {
   cursor: grabbing;
 }
 
+/*
+  V2.3 D11 (2026-05-09): drop fade. dnd-kit's sideEffects writes the
+  `is-dropping` className to `dragOverlay.node` synchronously at drop
+  start (core.esm.js:3700-3708), then unmounts the subtree on
+  `animation.onfinish` (core.esm.js:3582 setClonedChildren(null)). Without
+  the transition below, the multi-layer hsl shadow vanishes in a single
+  frame — users described it as "阴影生硬消失". The 120 ms transition
+  fades opacity + box-shadow well within any distance-aware drop duration
+  (100-220 ms per `animations.ts:DROP_DURATION_*`), so the overlay reaches
+  fully-transparent before unmount.
+*/
+.drag-overlay-row.is-dropping,
+.drag-overlay-pill.is-dropping {
+  opacity: 0;
+  box-shadow: none;
+  transition:
+    opacity 120ms ease-out,
+    box-shadow 120ms ease-out;
+}
+
 /* Drop indicators (token color) */
 .drop-indicator-h {
   height: 2px;
@@ -687,6 +707,16 @@ body {
   .drop-indicator-wrapper {
     transition: none !important;
     animation: none !important;
+  }
+  /* V2.3 D11: when the user prefers reduced motion, the drop-fade rule
+     above must not animate. The dnd-kit dropAnimation itself uses the
+     Web Animations API (out of CSS animation scope, r4 §5.6); the host
+     should pass `dropAnimation={null}` from `handleDragEnd` for full
+     reduced-motion compliance. The override here ensures that even if
+     a stray `is-dropping` className lingers, no transition plays. */
+  .drag-overlay-row.is-dropping,
+  .drag-overlay-pill.is-dropping {
+    transition: none !important;
   }
 }
 

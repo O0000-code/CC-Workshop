@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import type { Category } from '@/types';
 import { CategoryRowContent } from './CategoryRowContent';
 
@@ -41,17 +42,50 @@ interface DragOverlayCategoryRowProps {
    * Default `false` keeps every other call site visually identical to V3.
    */
   isInvalid?: boolean;
+  /**
+   * V2.3 D9 (2026-05-09, src=02 V2.3 §2.5 / r4 §3 /
+   * _synthesis_decisions D9):
+   *
+   * Pre-drag depth padding. When omitted the overlay falls back to the
+   * V3 `px-2.5` baseline (10 px, root depth). When supplied, the overlay
+   * mirrors the picked-up row's depth-derived padding so the dot/text
+   * line up with the inline source row's geometry — without this, child
+   * active drops show a 16 px jump at unmount (DragOverlay px-2.5 = 10
+   * vs inline `depth * 16 + 10` = 26 → user perceives "色圈/文字
+   * 突然向右移动 16 px" right after the shadow disappears, r4 §3.4
+   * scenario B).
+   *
+   * **Constraint** (V2.3 spec §2.5 / §2.22 amendment): callers pass the
+   * row's *pre-drag* depth padding only — never the *projected* depth.
+   * Pre-drag depth is fixed for the full drag session (it is the picked-
+   * up row's CURRENT form per V3 strict-hand-tracking), while projected
+   * depth changes frame-by-frame as the projection updates; tracking
+   * projection here would re-introduce the V2.2 §2.22 "DragOverlay 跟随
+   * child 缩进" anti-pattern.
+   */
+  paddingLeft?: number;
 }
 
 export function DragOverlayCategoryRow({
   category,
   isInvalid = false,
+  paddingLeft,
 }: DragOverlayCategoryRowProps) {
+  // When `paddingLeft` is unset we keep the V3 px-2.5 baseline via Tailwind;
+  // when set we drop the className so it doesn't fight the inline value.
+  const className =
+    paddingLeft === undefined
+      ? 'drag-overlay-row h-8 px-2.5 flex items-center gap-2.5'
+      : 'drag-overlay-row h-8 pr-2.5 flex items-center gap-2.5';
+  const style: CSSProperties | undefined =
+    paddingLeft !== undefined || isInvalid
+      ? {
+          ...(paddingLeft !== undefined ? { paddingLeft } : {}),
+          ...(isInvalid ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
+        }
+      : undefined;
   return (
-    <div
-      className="drag-overlay-row h-8 px-2.5 flex items-center gap-2.5"
-      style={isInvalid ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
-    >
+    <div className={className} style={style}>
       <CategoryRowContent category={category} showCount={false} />
     </div>
   );

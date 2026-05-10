@@ -1,6 +1,17 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Sparkles, Plug, FileText, Layers, Folder, Plus, Settings, Repeat } from 'lucide-react';
+import {
+  Sparkles,
+  Plug,
+  FileText,
+  Layers,
+  Folder,
+  Plus,
+  Settings,
+  Repeat,
+  Store,
+  Package,
+} from 'lucide-react';
 import { Category, Tag } from '@/types';
 import { SortableCategoriesList, SortableTagsList } from '@/components/sidebar';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -40,7 +51,16 @@ const startDrag = async (e: React.MouseEvent) => {
 };
 
 export interface SidebarProps {
-  activeNav: 'skills' | 'mcp-servers' | 'claude-md' | 'scenes' | 'projects' | 'settings' | null;
+  activeNav:
+    | 'skills'
+    | 'mcp-servers'
+    | 'claude-md'
+    | 'scenes'
+    | 'projects'
+    | 'settings'
+    | 'marketplace-skills'
+    | 'marketplace-mcps'
+    | null;
   activeCategory?: string | null;
   activeTags?: string[];
   categories: Category[];
@@ -122,6 +142,16 @@ const navItems = [
   { id: 'claude-md', label: 'CLAUDE.md', icon: FileText, countKey: 'claudeMd' as const },
   { id: 'scenes', label: 'Scenes', icon: Layers, countKey: 'scenes' as const },
   { id: 'projects', label: 'Projects', icon: Folder, countKey: 'projects' as const },
+];
+
+// Marketplace nav items (V2.0): independent group above NAVIGATION. PRD §5.1
+// + design-language Rule constrain these to mirror existing nav-button visual
+// language (h-9 / px-2.5 / gap-2.5 / rounded-[6px] / 13px label) but without a
+// count badge — marketplace catalog size is upstream-driven and not meaningful
+// in the sidebar.
+const marketplaceItems = [
+  { id: 'marketplace-skills', label: 'Skill Marketplace', icon: Store },
+  { id: 'marketplace-mcps', label: 'MCP Marketplace', icon: Package },
 ];
 
 // Maximum categories to display before showing "Show X more"
@@ -274,6 +304,63 @@ export function Sidebar({
 
       {/* Sidebar Content */}
       <div className="flex-1 flex flex-col p-4 pb-2 overflow-hidden">
+        {/* Marketplace Section - 固定，不滚动。
+            V2.0 PRD §5.1: independent top group above NAVIGATION. Top
+            separator is provided by the Header `border-b border-[#E5E5E5]`
+            above; this section ends with a divider (#E4E4E7) mirroring
+            NAV→CATEGORIES at line :314 below. */}
+        <nav
+          aria-label="Marketplace"
+          aria-labelledby="marketplace-section-label"
+          className="flex flex-col flex-shrink-0"
+        >
+          <div className="flex items-center justify-between flex-shrink-0 mb-3">
+            <h3
+              id="marketplace-section-label"
+              className="text-[10px] font-semibold text-[#A1A1AA] uppercase tracking-[0.8px]"
+            >
+              Marketplace
+            </h3>
+          </div>
+          <div className="flex flex-col gap-0.5 flex-shrink-0">
+            {marketplaceItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = activeNav === item.id;
+
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => handleNavClick(item.id)}
+                  className={`
+                      h-9 px-2.5 flex items-center gap-2.5 rounded-[6px] cursor-pointer
+                      transition-colors duration-150 border
+                      ${
+                        isActive
+                          ? 'bg-white border-[#E5E5E5]'
+                          : 'border-transparent hover:bg-[#F4F4F5]'
+                      }
+                    `}
+                >
+                  <Icon size={16} className={isActive ? 'text-[#18181B]' : 'text-[#71717A]'} />
+                  <span
+                    className={`
+                        text-[13px] flex-1 text-left
+                        ${isActive ? 'font-medium text-[#18181B]' : 'font-normal text-[#71717A]'}
+                      `}
+                  >
+                    {item.label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </nav>
+
+        {/* Divider — Marketplace → Navigation. Mirror of NAV→CATEGORIES
+            at :314 below; uses divider token (#E4E4E7), not the page-chrome
+            border token (#E5E5E5). */}
+        <div className="h-px bg-[#E4E4E7] my-4 flex-shrink-0" />
+
         {/* Navigation Section - 固定，不滚动 */}
         <nav className="flex flex-col gap-0.5 flex-shrink-0">
           {navItems.map((item) => {

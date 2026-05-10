@@ -202,20 +202,48 @@ fn parse_skill_file(
             datetime.to_rfc3339()
         });
 
-    // Check if this is a symlink pointing to plugin cache
+    // Determine install source — three-state ("local" | "plugin" | "marketplace").
+    //
+    // Marketplace items are real copies on disk (D-7) and therefore look
+    // identical to local items at the symlink level. We must consult the
+    // persisted `SkillMetadata.install_source` first; only when metadata
+    // is absent (e.g. legacy entries before A1 landed) do we fall back to
+    // runtime symlink probing for the plugin/local distinction.
+    let metadata_install_source = metadata.and_then(|m| m.install_source.clone());
     let (install_source, plugin_id, plugin_name, marketplace, plugin_enabled) =
-        if let Ok(real_path) = fs::read_link(skill_dir) {
-            // It's a symlink - check if it points to plugin cache
-            if let Some((pid, pname, mkt)) = extract_plugin_info_from_path(&real_path) {
-                let enabled = is_plugin_enabled(&pid);
-                (Some("plugin".to_string()), Some(pid), Some(pname), Some(mkt), Some(enabled))
-            } else {
-                (Some("local".to_string()), None, None, None, None)
+        match metadata_install_source.as_deref() {
+            Some("marketplace") => (
+                Some("marketplace".to_string()),
+                None,
+                None,
+                None,
+                None,
+            ),
+            // For "plugin" we still re-derive the live pluginId/marketplace
+            // by probing the symlink, because the metadata only carries
+            // `install_source` (not the plugin triple). For "local" we just
+            // accept the metadata answer.
+            _ => {
+                if let Ok(real_path) = fs::read_link(skill_dir) {
+                    if let Some((pid, pname, mkt)) = extract_plugin_info_from_path(&real_path) {
+                        let enabled = is_plugin_enabled(&pid);
+                        (
+                            Some("plugin".to_string()),
+                            Some(pid),
+                            Some(pname),
+                            Some(mkt),
+                            Some(enabled),
+                        )
+                    } else {
+                        (Some("local".to_string()), None, None, None, None)
+                    }
+                } else {
+                    (Some("local".to_string()), None, None, None, None)
+                }
             }
-        } else {
-            // Not a symlink - local skill
-            (Some("local".to_string()), None, None, None, None)
         };
+
+    let marketplace_source = metadata.and_then(|m| m.marketplace_source.clone());
 
     let skill = Skill {
         id: id.clone(),
@@ -240,6 +268,7 @@ fn parse_skill_file(
         plugin_name,
         marketplace,
         plugin_enabled,
+        marketplace_source,
     };
 
     Ok(skill)
@@ -288,6 +317,13 @@ pub fn delete_skill(skill_id: String, ensemble_dir: String) -> Result<(), String
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
         dest_path = trash_dir.join(format!("{}_{}", skill_name, timestamp));
     }
+
+    // B-P0-7 (E3-3 / E4-1): snapshot current metadata into the live skill
+    // dir BEFORE the rename so it travels with the move and a future
+    // `RestoreFromTrash` (via marketplace's collision modal) can recover
+    // the user's category / tags / icon. Failure is non-fatal — we'd
+    // rather complete the delete with no snapshot than block the user.
+    let _ = crate::commands::marketplace::snapshot_skill_metadata_into(skill_path, &skill_id);
 
     // Move skill to trash
     fs::rename(skill_path, &dest_path)

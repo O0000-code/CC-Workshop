@@ -27,6 +27,7 @@ import Badge from '../components/common/Badge';
 import Button from '../components/common/Button';
 import EmptyState from '../components/common/EmptyState';
 import { IconPicker, ICON_MAP, ScopeSelector } from '@/components/common';
+import { MarketplaceSourceBadge } from '@/components/marketplace/MarketplaceSourceBadge';
 import SkillItem from '../components/skills/SkillItem';
 import { useSkillsStore } from '../stores/skillsStore';
 import { useScenesStore } from '../stores/scenesStore';
@@ -451,6 +452,8 @@ export function SkillDetailPage() {
                 <span className="rounded bg-[#EFF6FF] px-2 py-0.5 text-[11px] font-medium text-[#3B82F6]">
                   Plugin
                 </span>
+              ) : selectedSkill.installSource === 'marketplace' ? (
+                <MarketplaceSourceBadge source={selectedSkill.marketplaceSource} />
               ) : (
                 <ScopeSelector
                   value={selectedSkill.scope as 'global' | 'project'}

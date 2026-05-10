@@ -21,3 +21,7 @@ target/
 
 # Tauri
 src-tauri/target/
+
+# Claude Code project-level MCP config — contains user-specific paths
+# and API keys (e.g. SEMANTIC_SCHOLAR_API_KEY); do not commit.
+.mcp.json

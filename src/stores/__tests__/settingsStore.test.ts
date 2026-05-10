@@ -3,13 +3,15 @@ import { useSettingsStore } from '../settingsStore';
 
 describe('settingsStore - utility methods and state', () => {
   beforeEach(() => {
-    // Reset store to defaults
+    // Reset store to defaults. V2 (D-Imp-12) flips `autoClassifyNewItems`
+    // default to `true` so Marketplace installs auto-classify without the
+    // user having to opt in.
     useSettingsStore.setState({
       skillSourceDir: '~/.ensemble/skills',
       mcpSourceDir: '~/.ensemble/mcps',
       claudeConfigDir: '~/.claude',
       anthropicApiKey: '',
-      autoClassifyNewItems: false,
+      autoClassifyNewItems: true,
       terminalApp: 'Terminal',
       claudeCommand: 'claude',
       warpOpenMode: 'window',
@@ -28,7 +30,8 @@ describe('settingsStore - utility methods and state', () => {
       expect(state.mcpSourceDir).toBe('~/.ensemble/mcps');
       expect(state.claudeConfigDir).toBe('~/.claude');
       expect(state.anthropicApiKey).toBe('');
-      expect(state.autoClassifyNewItems).toBe(false);
+      // V2 (D-Imp-12): default flipped from false → true.
+      expect(state.autoClassifyNewItems).toBe(true);
       expect(state.terminalApp).toBe('Terminal');
       expect(state.claudeCommand).toBe('claude');
       expect(state.warpOpenMode).toBe('window');

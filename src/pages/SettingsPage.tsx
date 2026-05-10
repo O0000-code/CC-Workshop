@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Github, BookOpen, FileText, ChevronDown, Check } from 'lucide-react';
 import { TrashRecoveryModal } from '@/components/modals';
 import { PageHeader } from '@/components/layout/PageHeader';
+import Toggle from '@/components/common/Toggle';
 import { useSettingsStore, useSkillsStore, useMcpsStore } from '@/stores';
 import { useClaudeMdStore } from '@/stores/claudeMdStore';
 import { safeInvoke } from '@/utils/tauri';
@@ -26,9 +27,7 @@ function SectionHeader({ title, description }: SectionHeaderProps) {
   return (
     <div className="flex flex-col gap-1 mb-4">
       <h2 className="text-sm font-semibold text-[#18181B]">{title}</h2>
-      {description && (
-        <p className="text-xs text-[#71717A]">{description}</p>
-      )}
+      {description && <p className="text-xs text-[#71717A]">{description}</p>}
     </div>
   );
 }
@@ -84,7 +83,7 @@ function CustomSelect({ value, options, onChange, className = '' }: CustomSelect
   const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0, width: 0 });
   const triggerRef = useRef<HTMLButtonElement>(null);
 
-  const selectedOption = options.find(opt => opt.value === value);
+  const selectedOption = options.find((opt) => opt.value === value);
 
   // Calculate dropdown position when opening
   useEffect(() => {
@@ -112,62 +111,58 @@ function CustomSelect({ value, options, onChange, className = '' }: CustomSelect
         className="flex items-center justify-between gap-2 h-9 px-3 min-w-[140px] rounded-md border border-[#E5E5E5] hover:bg-[#FAFAFA] transition-colors cursor-pointer"
       >
         <span className="text-[13px] text-[#18181B]">{selectedOption?.label || value}</span>
-        <ChevronDown className={`w-3.5 h-3.5 text-[#A1A1AA] transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+        <ChevronDown
+          className={`w-3.5 h-3.5 text-[#A1A1AA] transition-transform ${isOpen ? 'rotate-180' : ''}`}
+        />
       </button>
 
       {/* Dropdown Menu - Rendered via Portal */}
-      {isOpen && createPortal(
-        <>
-          {/* Backdrop */}
-          <div
-            className="fixed inset-0 z-[100]"
-            onClick={() => setIsOpen(false)}
-          />
+      {isOpen &&
+        createPortal(
+          <>
+            {/* Backdrop */}
+            <div className="fixed inset-0 z-[100]" onClick={() => setIsOpen(false)} />
 
-          {/* Menu */}
-          <div
-            className="fixed bg-white rounded-lg border border-[#E5E5E5] shadow-[0_4px_12px_rgba(0,0,0,0.06)] z-[101]"
-            style={{
-              top: dropdownPosition.top,
-              left: dropdownPosition.left,
-              minWidth: dropdownPosition.width,
-            }}
-          >
-            {options.map((option, index) => {
-              const isSelected = option.value === value;
-              const isFirst = index === 0;
-              const isLast = index === options.length - 1;
+            {/* Menu */}
+            <div
+              className="fixed bg-white rounded-lg border border-[#E5E5E5] shadow-[0_4px_12px_rgba(0,0,0,0.06)] z-[101]"
+              style={{
+                top: dropdownPosition.top,
+                left: dropdownPosition.left,
+                minWidth: dropdownPosition.width,
+              }}
+            >
+              {options.map((option, index) => {
+                const isSelected = option.value === value;
+                const isFirst = index === 0;
+                const isLast = index === options.length - 1;
 
-              const roundedClass = isFirst
-                ? 'rounded-t-md'
-                : isLast
-                ? 'rounded-b-md'
-                : '';
+                const roundedClass = isFirst ? 'rounded-t-md' : isLast ? 'rounded-b-md' : '';
 
-              return (
-                <button
-                  key={option.value}
-                  onClick={() => handleSelect(option.value)}
-                  className={`
+                return (
+                  <button
+                    key={option.value}
+                    onClick={() => handleSelect(option.value)}
+                    className={`
                     w-full flex items-center justify-between gap-2.5 py-2.5 px-3 text-left
                     transition-colors cursor-pointer
                     ${roundedClass}
                     ${isSelected ? 'bg-[#F4F4F5]' : 'hover:bg-[#FAFAFA]'}
                   `}
-                >
-                  <span className={`text-[13px] text-[#18181B] ${isSelected ? 'font-semibold' : 'font-medium'}`}>
-                    {option.label}
-                  </span>
-                  {isSelected && (
-                    <Check className="w-3.5 h-3.5 text-[#18181B]" />
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </>,
-        document.body
-      )}
+                  >
+                    <span
+                      className={`text-[13px] text-[#18181B] ${isSelected ? 'font-semibold' : 'font-medium'}`}
+                    >
+                      {option.label}
+                    </span>
+                    {isSelected && <Check className="w-3.5 h-3.5 text-[#18181B]" />}
+                  </button>
+                );
+              })}
+            </div>
+          </>,
+          document.body,
+        )}
     </div>
   );
 }
@@ -194,7 +189,9 @@ function ActionButton({ onClick, children }: ActionButtonProps) {
 }
 
 export function SettingsPage() {
-  const [quickActionStatus, setQuickActionStatus] = useState<'idle' | 'installing' | 'success' | 'error'>('idle');
+  const [quickActionStatus, setQuickActionStatus] = useState<
+    'idle' | 'installing' | 'success' | 'error'
+  >('idle');
   const [_quickActionMessage, setQuickActionMessage] = useState('');
   const [showTrashModal, setShowTrashModal] = useState(false);
 
@@ -203,10 +200,12 @@ export function SettingsPage() {
     claudeCommand,
     warpOpenMode,
     claudeMdDistributionPath,
+    autoClassifyNewItems,
     setTerminalApp,
     setClaudeCommand,
     setWarpOpenMode,
     setClaudeMdDistributionPath,
+    setAutoClassifyNewItems,
   } = useSettingsStore();
 
   // Get reload functions from stores to refresh data after recovery
@@ -220,11 +219,7 @@ export function SettingsPage() {
   const handleRestoreComplete = useCallback(async () => {
     // Reload all data stores in parallel for better performance
     // This ensures sidebar counts and lists update without page refresh
-    await Promise.all([
-      loadSkills(),
-      loadMcps(),
-      loadClaudeMdFiles(),
-    ]);
+    await Promise.all([loadSkills(), loadMcps(), loadClaudeMdFiles()]);
   }, [loadSkills, loadMcps, loadClaudeMdFiles]);
 
   const handleInstallQuickAction = async () => {
@@ -237,7 +232,9 @@ export function SettingsPage() {
       if (result === null) {
         // safeInvoke returns null when not in Tauri environment
         setQuickActionStatus('error');
-        setQuickActionMessage('Please run this app using "npm run tauri dev" for full functionality');
+        setQuickActionMessage(
+          'Please run this app using "npm run tauri dev" for full functionality',
+        );
         return;
       }
 
@@ -285,7 +282,11 @@ export function SettingsPage() {
                 </div>
                 <CustomSelect
                   value={claudeMdDistributionPath}
-                  onChange={(value) => setClaudeMdDistributionPath(value as '.claude/CLAUDE.md' | 'CLAUDE.md' | 'CLAUDE.local.md')}
+                  onChange={(value) =>
+                    setClaudeMdDistributionPath(
+                      value as '.claude/CLAUDE.md' | 'CLAUDE.md' | 'CLAUDE.local.md',
+                    )
+                  }
                   options={[
                     { value: '.claude/CLAUDE.md', label: './.claude/CLAUDE.md' },
                     { value: 'CLAUDE.md', label: './CLAUDE.md' },
@@ -296,26 +297,45 @@ export function SettingsPage() {
             </Card>
           </section>
 
-          {/* Storage Section */}
+          {/* Marketplace Section — V2.0 (D-Imp-12, spec §3.5).
+              Single Toggle controlling whether installs from Skill /
+              MCP Marketplace trigger a single-item auto-classify on
+              completion. Default ON; persisted via settingsStore →
+              backend `write_settings`. */}
           <section>
             <SectionHeader
-              title="Storage"
-              description="Manage application data and storage"
+              title="Marketplace"
+              description="Configure Marketplace install behavior"
             />
+            <Card>
+              <Row noBorder>
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[13px] font-medium text-[#18181B]">
+                    Auto-classify newly installed items
+                  </span>
+                  <span className="text-xs text-[#71717A]">
+                    When enabled, items installed from the Marketplace will be automatically
+                    categorized.
+                  </span>
+                </div>
+                <Toggle checked={autoClassifyNewItems} onChange={setAutoClassifyNewItems} />
+              </Row>
+            </Card>
+          </section>
+
+          {/* Storage Section */}
+          <section>
+            <SectionHeader title="Storage" description="Manage application data and storage" />
             <Card>
               {/* Deleted Items */}
               <Row noBorder>
                 <div className="flex flex-col gap-0.5">
-                  <span className="text-[13px] font-medium text-[#18181B]">
-                    Deleted Items
-                  </span>
+                  <span className="text-[13px] font-medium text-[#18181B]">Deleted Items</span>
                   <span className="text-xs text-[#71717A]">
                     Skills, MCPs, and CLAUDE.md files you've removed
                   </span>
                 </div>
-                <ActionButton onClick={() => setShowTrashModal(true)}>
-                  Recover
-                </ActionButton>
+                <ActionButton onClick={() => setShowTrashModal(true)}>Recover</ActionButton>
               </Row>
             </Card>
           </section>
@@ -333,9 +353,7 @@ export function SettingsPage() {
                   <span className="text-[13px] font-medium text-[#18181B]">
                     Terminal Application
                   </span>
-                  <span className="text-xs text-[#71717A]">
-                    Select your preferred terminal app
-                  </span>
+                  <span className="text-xs text-[#71717A]">Select your preferred terminal app</span>
                 </div>
                 <CustomSelect
                   value={terminalApp}
@@ -375,12 +393,8 @@ export function SettingsPage() {
               {/* Launch Command */}
               <Row>
                 <div className="flex flex-col gap-0.5">
-                  <span className="text-[13px] font-medium text-[#18181B]">
-                    Launch Command
-                  </span>
-                  <span className="text-xs text-[#71717A]">
-                    Command to execute in the terminal
-                  </span>
+                  <span className="text-[13px] font-medium text-[#18181B]">Launch Command</span>
+                  <span className="text-xs text-[#71717A]">Command to execute in the terminal</span>
                 </div>
                 <input
                   type="text"
@@ -394,9 +408,7 @@ export function SettingsPage() {
               {/* Finder Integration */}
               <Row noBorder>
                 <div className="flex flex-col gap-0.5">
-                  <span className="text-[13px] font-medium text-[#18181B]">
-                    Finder Integration
-                  </span>
+                  <span className="text-[13px] font-medium text-[#18181B]">Finder Integration</span>
                   <span className="text-xs text-[#71717A]">
                     Right-click 'Open with Ensemble' in Finder
                   </span>
@@ -438,7 +450,7 @@ export function SettingsPage() {
                   className="w-12 h-12 rounded-[10px] flex-shrink-0 relative overflow-hidden"
                   style={{
                     background: 'linear-gradient(145deg, #27272A 0%, #18181B 40%, #09090B 100%)',
-                    boxShadow: 'inset 0 0.6px 0 rgba(255,255,255,0.06)'
+                    boxShadow: 'inset 0 0.6px 0 rgba(255,255,255,0.06)',
                   }}
                 >
                   <svg
@@ -461,7 +473,13 @@ export function SettingsPage() {
                       </linearGradient>
                       {/* 图形阴影滤镜 */}
                       <filter id="iconShapeShadow" x="-50%" y="-50%" width="200%" height="200%">
-                        <feDropShadow dx="0" dy="1.8" stdDeviation="1.8" floodColor="#000000" floodOpacity="0.25" />
+                        <feDropShadow
+                          dx="0"
+                          dy="1.8"
+                          stdDeviation="1.8"
+                          floodColor="#000000"
+                          floodOpacity="0.25"
+                        />
                       </filter>
                     </defs>
 
@@ -503,12 +521,8 @@ export function SettingsPage() {
                 </div>
                 {/* Info Text */}
                 <div className="flex flex-col gap-0.5">
-                  <span className="text-sm font-semibold text-[#18181B]">
-                    Ensemble
-                  </span>
-                  <span className="text-xs text-[#71717A]">
-                    Version 0.0.1 (Build 1)
-                  </span>
+                  <span className="text-sm font-semibold text-[#18181B]">Ensemble</span>
+                  <span className="text-xs text-[#71717A]">Version 0.0.1 (Build 1)</span>
                 </div>
               </div>
 

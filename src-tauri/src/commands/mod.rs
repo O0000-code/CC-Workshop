@@ -4,6 +4,8 @@ pub mod config;
 pub mod data;
 pub mod dialog;
 pub mod import;
+pub mod marketplace;
+pub mod marketplace_seed;
 pub mod mcps;
 pub mod plugins;
 pub mod skills;

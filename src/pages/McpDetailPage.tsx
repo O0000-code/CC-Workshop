@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { ListDetailLayout } from '@/components/layout/ListDetailLayout';
 import { SearchInput, Badge, Button, EmptyState, IconPicker, ICON_MAP } from '@/components/common';
+import { MarketplaceSourceBadge } from '@/components/marketplace/MarketplaceSourceBadge';
 import { McpItemCompact } from '@/components/mcps/McpItem';
 import { useMcpsStore } from '@/stores/mcpsStore';
 import { useScenesStore } from '@/stores/scenesStore';
@@ -362,6 +363,8 @@ export const McpDetailPage: React.FC = () => {
                 <span className="rounded bg-[#EFF6FF] px-2 py-0.5 text-[11px] font-medium text-[#3B82F6]">
                   Plugin
                 </span>
+              ) : selectedMcp.installSource === 'marketplace' ? (
+                <MarketplaceSourceBadge source={selectedMcp.marketplaceSource} />
               ) : (
                 <span className="rounded bg-[#EEF2FF] px-2 py-1 text-[10px] font-semibold text-[#4F46E5]">
                   User

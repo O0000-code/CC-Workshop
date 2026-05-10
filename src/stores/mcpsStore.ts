@@ -11,6 +11,10 @@ import { useSettingsStore } from './settingsStore';
 import { usePluginsStore } from './pluginsStore';
 import { useAppStore } from './appStore';
 import { isTauri, safeInvoke } from '@/utils/tauri';
+import {
+  applyClassifyResultsToCategories,
+  buildExistingCategoriesPayload,
+} from '@/utils/classifyHelpers';
 import { ICON_NAMES } from '@/components/common/IconPicker';
 
 interface McpsFilter {
@@ -401,7 +405,10 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
         tools: m.providedTools.map((t) => t.name),
       }));
 
-      const existingCategories = categories.map((c) => c.name);
+      // Existing categories carry hierarchy (parentName) so the model
+      // can see which roots already have sub-categories and propose new
+      // ones intelligently — see classify.rs build_classification_prompt.
+      const existingCategories = buildExistingCategoriesPayload(categories);
       const existingTags = tags.map((t) => t.name);
 
       const results = await safeInvoke<ClassifyResult[]>('auto_classify', {
@@ -416,60 +423,17 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
         return;
       }
 
-      // Collect new categories and tags that need to be created
+      // Create the new categories and tags the results imply. Sub-cats
+      // (results with `suggested_parent_category`) are created with the
+      // proper parentId so they appear nested in the sidebar without
+      // any manual move. Returns name → id map for the dual-write below.
       const { addCategory, addTag, loadCategories, loadTags } = useAppStore.getState();
-      const existingCategoryNames = new Set(categories.map((c) => c.name));
-      const existingTagNames = new Set(tags.map((t) => t.name));
-
-      const newCategories = new Set<string>();
-      const newTags = new Set<string>();
-
-      for (const result of results) {
-        if (result.suggested_category && !existingCategoryNames.has(result.suggested_category)) {
-          newCategories.add(result.suggested_category);
-        }
-        for (const tag of result.suggested_tags) {
-          if (!existingTagNames.has(tag)) {
-            newTags.add(tag);
-          }
-        }
-      }
-
-      // Create new categories (using predefined colors)
-      const categoryColors = [
-        '#3B82F6',
-        '#10B981',
-        '#F59E0B',
-        '#EF4444',
-        '#8B5CF6',
-        '#EC4899',
-        '#14B8A6',
-        '#F97316',
-      ];
-      let colorIndex = categories.length;
-      for (const categoryName of newCategories) {
-        await addCategory(
-          categoryName,
-          categoryColors[colorIndex % categoryColors.length],
-          undefined, // D14=A: new categories from autoClassify always land at root
-        );
-        colorIndex++;
-      }
-
-      // Create new tags
-      for (const tagName of newTags) {
-        await addTag(tagName);
-      }
-
-      // P1-2: dual-write `categoryId` alongside `category` so the entry is
-      // canonical post-migration. Snapshot the latest categories AFTER
-      // addCategory above so we can resolve the freshly-created category's
-      // id by name. Without this, autoClassify-created entries stay
-      // "orphaned" forever (category_id stays None even after the migration
-      // flag advances) — see final_audit P1-2.
-      const updatedCategories = useAppStore.getState().categories;
-      const categoryIdByName = new Map<string, string>(
-        updatedCategories.map((c) => [c.name, c.id]),
+      const categoryIdByName = await applyClassifyResultsToCategories(
+        results,
+        categories,
+        tags,
+        addCategory,
+        addTag,
       );
 
       // Apply results

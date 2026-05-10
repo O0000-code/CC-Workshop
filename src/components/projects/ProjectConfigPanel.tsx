@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useMemo, useRef } from 'react';
 import {
   Folder,
   FolderOpen,
@@ -8,10 +8,12 @@ import {
   X,
   Minus,
   Layers,
+  AlertTriangle,
 } from 'lucide-react';
 import { Button, Input, Dropdown, ICON_MAP } from '../common';
 import type { DropdownOption } from '../common/Dropdown';
 import type { Project, Scene } from '../../types';
+import { useMcpsStore } from '../../stores/mcpsStore';
 
 // ============================================================================
 // Types
@@ -52,8 +54,36 @@ function ViewModePanel({
   onSync,
   onClearConfig,
   onIconClick,
-}: Omit<ProjectConfigPanelProps, 'isEditing' | 'formData' | 'onFormChange' | 'onSave' | 'onCancel' | 'onBrowse'>) {
+}: Omit<
+  ProjectConfigPanelProps,
+  'isEditing' | 'formData' | 'onFormChange' | 'onSave' | 'onCancel' | 'onBrowse'
+>) {
   const iconRef = useRef<HTMLDivElement>(null);
+
+  // SSoT — pull the local MCP catalog so we can detect stdio MCPs whose
+  // required env vars are still empty. Surfaces the issue at the project
+  // level before Sync writes an unusable `.mcp.json` (F-P0-4 / E3-2).
+  const mcpServers = useMcpsStore((s) => s.mcpServers);
+
+  // Build the list of MCPs in the active scene that are missing required
+  // env values. We rely on the per-MCP `requiredEnvVars` snapshot persisted
+  // by the marketplace install (F-Back P0) — when undefined the MCP did not
+  // declare requirements, so it's never "missing".
+  const mcpsWithMissingEnv = useMemo(() => {
+    if (!scene) return [];
+    return scene.mcpIds
+      .map((id) => mcpServers.find((m) => m.id === id))
+      .filter((mcp): mcp is NonNullable<typeof mcp> => Boolean(mcp))
+      .map((mcp) => {
+        const required = mcp.requiredEnvVars ?? [];
+        const env = mcp.env ?? {};
+        const missing = required.filter((spec) => !env[spec.name] || env[spec.name].trim() === '');
+        return missing.length > 0
+          ? { id: mcp.id, name: mcp.name, missing: missing.map((s) => s.name) }
+          : null;
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+  }, [scene, mcpServers]);
 
   if (!project) return null;
 
@@ -95,9 +125,7 @@ function ViewModePanel({
         {/* Project Details */}
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <h2 className="text-lg font-semibold text-[#18181B]">{project.name}</h2>
-          <p className="truncate text-[13px] font-normal text-[#71717A]">
-            {project.path}
-          </p>
+          <p className="truncate text-[13px] font-normal text-[#71717A]">{project.path}</p>
         </div>
       </div>
 
@@ -115,7 +143,8 @@ function ViewModePanel({
             </span>
             {scene && (
               <span className="text-[12px] font-normal text-[#71717A]">
-                {skillsCount} Skills · {mcpsCount} MCPs{claudeMdCount > 0 ? ` · ${claudeMdCount} Docs` : ''}
+                {skillsCount} Skills · {mcpsCount} MCPs
+                {claudeMdCount > 0 ? ` · ${claudeMdCount} Docs` : ''}
               </span>
             )}
           </div>
@@ -168,6 +197,38 @@ function ViewModePanel({
           )}
         </div>
       </div>
+
+      {/* MCP Missing Env Vars warning section — only renders when at least
+          one MCP in the assigned Scene is missing required environment
+          variables (F-P0-4 / E3-2 / PRD §8.4). Without this the user only
+          finds out via Claude Code stderr after Sync; surfacing it here
+          turns a cryptic runtime failure into a visible product-layer
+          warning. */}
+      {mcpsWithMissingEnv.length > 0 && (
+        <div className="flex flex-col gap-2.5">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.8px] text-[#A1A1AA]">
+            MCP CONFIGURATION ISSUES
+          </span>
+          <div className="flex flex-col gap-1.5 rounded-lg border border-[#FECACA] bg-[#FEF2F2] px-4 py-3">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 flex-shrink-0 text-[#DC2626]" />
+              <span className="text-[13px] font-medium text-[#DC2626]">
+                {mcpsWithMissingEnv.length === 1
+                  ? '1 MCP needs setup before Sync'
+                  : `${mcpsWithMissingEnv.length} MCPs need setup before Sync`}
+              </span>
+            </div>
+            <div className="flex flex-col gap-1 pl-6">
+              {mcpsWithMissingEnv.map((mcp) => (
+                <span key={mcp.id} className="text-[11px] text-[#DC2626]">
+                  <span className="font-medium">{mcp.name}</span> — Missing required env vars:{' '}
+                  {mcp.missing.join(', ')}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Action Buttons */}
       <div className="flex gap-2.5">
@@ -239,7 +300,10 @@ function EditModePanel({
   formData,
   onFormChange,
   onBrowse,
-}: Omit<ProjectConfigPanelProps, 'project' | 'scene' | 'isEditing' | 'onOpenFolder' | 'onChangeScene' | 'onSync' | 'onClearConfig'>) {
+}: Omit<
+  ProjectConfigPanelProps,
+  'project' | 'scene' | 'isEditing' | 'onOpenFolder' | 'onChangeScene' | 'onSync' | 'onClearConfig'
+>) {
   if (!formData || !onFormChange) return null;
 
   // Validation state
@@ -262,16 +326,12 @@ function EditModePanel({
     <div className="flex flex-col gap-7">
       {/* Project Information Section */}
       <div className="flex flex-col gap-4">
-        <h3 className="text-[14px] font-semibold text-[#18181B]">
-          Project Information
-        </h3>
+        <h3 className="text-[14px] font-semibold text-[#18181B]">Project Information</h3>
 
         <div className="flex flex-col gap-4">
           {/* Name Field */}
           <div className="flex flex-col gap-1.5">
-            <label className="text-[12px] font-medium text-[#52525B]">
-              Project Name
-            </label>
+            <label className="text-[12px] font-medium text-[#52525B]">Project Name</label>
             <Input
               value={formData.name}
               onChange={(e) => onFormChange({ name: e.target.value })}
@@ -282,9 +342,7 @@ function EditModePanel({
 
           {/* Path Field */}
           <div className="flex flex-col gap-1.5">
-            <label className="text-[12px] font-medium text-[#52525B]">
-              Project Path
-            </label>
+            <label className="text-[12px] font-medium text-[#52525B]">Project Path</label>
             <div className="relative">
               <Input
                 value={formData.path}
@@ -314,9 +372,7 @@ function EditModePanel({
       {/* Scene Configuration Section */}
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-1">
-          <h3 className="text-[14px] font-semibold text-[#18181B]">
-            Scene Configuration
-          </h3>
+          <h3 className="text-[14px] font-semibold text-[#18181B]">Scene Configuration</h3>
           <p className="text-[12px] font-normal text-[#71717A]">
             Select which scene to use for this project
           </p>
@@ -338,9 +394,7 @@ function EditModePanel({
 
       {/* Configuration Status Section */}
       <div className="flex flex-col gap-3">
-        <h3 className="text-[14px] font-semibold text-[#18181B]">
-          Configuration Status
-        </h3>
+        <h3 className="text-[14px] font-semibold text-[#18181B]">Configuration Status</h3>
 
         <div className="flex flex-col gap-2">
           <StatusItem
@@ -390,11 +444,7 @@ function StatusItem({ status, text }: StatusItemProps) {
 
   return (
     <div className="flex items-center gap-2.5">
-      <div
-        className={`flex h-5 w-5 items-center justify-center rounded-full ${bg}`}
-      >
-        {icon}
-      </div>
+      <div className={`flex h-5 w-5 items-center justify-center rounded-full ${bg}`}>{icon}</div>
       <span className="text-[12px] font-normal text-[#52525B]">{text}</span>
     </div>
   );

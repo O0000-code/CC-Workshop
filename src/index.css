@@ -648,23 +648,31 @@ body {
 }
 
 /*
-  V2.3 D11 (2026-05-09): drop fade. dnd-kit's sideEffects writes the
-  `is-dropping` className to `dragOverlay.node` synchronously at drop
-  start (core.esm.js:3700-3708), then unmounts the subtree on
-  `animation.onfinish` (core.esm.js:3582 setClonedChildren(null)). Without
-  the transition below, the multi-layer hsl shadow vanishes in a single
-  frame — users described it as "阴影生硬消失". The 120 ms transition
-  fades opacity + box-shadow well within any distance-aware drop duration
-  (100-220 ms per `animations.ts:DROP_DURATION_*`), so the overlay reaches
-  fully-transparent before unmount.
+  V2.3 D11 (2026-05-09; revised D11.5 same-day): drop fade.
+
+  The `is-dropping` className is added by dnd-kit's sideEffects on drop
+  start (core.esm.js:3700-3708). Originally we faded both `opacity` and
+  `box-shadow` here over 120 ms, but the opacity-via-CSS approach went
+  out of sync with the drop's transform animation: with a 220 ms drop
+  duration the overlay would hit opacity 0 at t=120 ms while transform
+  was still ~13 % away from `final`, leaving a 100 ms gap before inline
+  re-appeared at the true final rect — perceived as "向左闪动" (the
+  inline showed up ~Δ to the left of where the overlay last paint was).
+
+  Revised D11.5: opacity now lives in dropAnimation `keyframes`
+  (`SortableCategoriesList.tsx:handleDragEnd`) so it interpolates synced
+  to the actual drop duration via WAAPI. Box-shadow stays here on a CSS
+  transition because it has no spatial component — fading the shadow
+  doesn't change where the row content lives, so a slight timing
+  mismatch with transform is invisible. Within the min drop duration
+  (100 ms) the 120 ms shadow fade may finish slightly past unmount, but
+  by then the overlay's WAAPI opacity has already gone to 0 so the
+  un-faded tail of the shadow is invisible anyway.
 */
 .drag-overlay-row.is-dropping,
 .drag-overlay-pill.is-dropping {
-  opacity: 0;
   box-shadow: none;
-  transition:
-    opacity 120ms ease-out,
-    box-shadow 120ms ease-out;
+  transition: box-shadow 120ms ease-out;
 }
 
 /* Drop indicators (token color) */
@@ -729,4 +737,27 @@ body {
      (single new token; chevron rotation, padding-left transition, and
      reduced-motion all reuse V3 tokens / wildcard coverage above). */
   --indent-step: 16px;
+}
+
+/* === Marketplace (V2.0) reduced-motion fallback === */
+/* Covers every Marketplace-introduced surface that carries inline transitions
+   (list-item right-section / icon container / name font-weight, onboarding
+   banner close button, AddToScenePopover hover, ShortcutBanner). Mirrors the
+   selector approach used by sidebar drag motion: every Marketplace surface
+   tagged with a `data-marketplace-*` attribute degrades to instant when the
+   user prefers reduced motion (design-language Rule + spec §10.3 / F-P0-3 /
+   E2-3). Modal-overlay-animate / modal-dialog-animate are historical and not
+   covered here per the V1 trade-off (E2-3 P2 backlog). */
+@media (prefers-reduced-motion: reduce) {
+  [data-marketplace-shortcut-banner],
+  [data-marketplace-shortcut-banner] *,
+  [data-marketplace-list-item],
+  [data-marketplace-list-item] *,
+  [data-marketplace-onboarding-banner],
+  [data-marketplace-onboarding-banner] *,
+  [data-marketplace-popover],
+  [data-marketplace-popover] * {
+    transition: none !important;
+    animation: none !important;
+  }
 }

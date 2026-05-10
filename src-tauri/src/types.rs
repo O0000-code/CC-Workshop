@@ -4,6 +4,15 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Skill {
+    /// Canonical id. **Invariant: `id == source_path`** — the absolute
+    /// filesystem path to the skill directory (also used as the key into
+    /// `data.json::skill_metadata`). Marketplace short-cuts (banner,
+    /// `?selected=` query, AddToScene popover) and the `InstallOutcome`
+    /// IPC field rely on this identity. If `scan_skills` ever switches
+    /// to hashed / UUID ids, every consumer of this field must be
+    /// audited because the marketplace install flow depends on
+    /// `outcome.skillId` matching `useSkillsStore.skills.find(s => s.id == ...)`
+    /// in zero-trip fashion (B-P0-5 / E1-5).
     pub id: String,
     pub name: String,
     pub description: String,
@@ -31,7 +40,7 @@ pub struct Skill {
     pub installed_at: Option<String>,
     // Plugin source fields
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub install_source: Option<String>, // "local" | "plugin"
+    pub install_source: Option<String>, // "local" | "plugin" | "marketplace"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugin_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -40,11 +49,23 @@ pub struct Skill {
     pub marketplace: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugin_enabled: Option<bool>,
+    /// Marketplace upstream provenance (only present when
+    /// `install_source == Some("marketplace")`). Captures the upstream
+    /// owner/repo/name triple plus the sync timestamp so detail panels can
+    /// display "Source" and the SSoT helper can match installed items by
+    /// upstream identity rather than by local name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marketplace_source: Option<MarketplaceSource>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServer {
+    /// Canonical id. **Invariant: `id == source_path`** — the absolute
+    /// filesystem path to the MCP `.json` config (also used as the key
+    /// into `data.json::mcp_metadata`). See `Skill::id` for the full
+    /// rationale; the marketplace install short-cut (`InstallOutcome`,
+    /// banner, AddToScene popover) depends on this identity.
     pub id: String,
     pub name: String,
     pub description: String,
@@ -78,7 +99,7 @@ pub struct McpServer {
     pub mcp_type: Option<String>,
     // Plugin source fields
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub install_source: Option<String>, // "local" | "plugin"
+    pub install_source: Option<String>, // "local" | "plugin" | "marketplace"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugin_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -87,6 +108,18 @@ pub struct McpServer {
     pub marketplace: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugin_enabled: Option<bool>,
+    /// Marketplace upstream provenance (only present when
+    /// `install_source == Some("marketplace")`). See [`Skill::marketplace_source`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marketplace_source: Option<MarketplaceSource>,
+    /// Required environment-variable specs declared by the upstream
+    /// marketplace catalog item (stdio MCPs only). Mirrored from
+    /// `McpMetadata.required_env_vars` by `scan_mcps`. UI surfaces such as
+    /// the Project detail panel use this to detect "missing required env"
+    /// states without re-fetching the marketplace catalog (B-P0-9 / E3-2).
+    /// `None` for HTTP MCPs and for MCPs not installed via the marketplace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_env_vars: Option<Vec<EnvVarSpec>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,6 +240,19 @@ pub struct AppData {
     /// next startup.
     #[serde(default)]
     pub has_completed_category_id_migration: bool,
+    /// Most recently created or edited Scene id. Drives the Marketplace
+    /// "Add to active Scene" short-cut (D-Imp-6) so the user does not need
+    /// to pick from a list every install. `None` until the user creates or
+    /// updates a Scene at least once. `delete_scene` resets this to `None`
+    /// when the deleted Scene was the active one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_edited_scene_id: Option<String>,
+    /// Triple-hash ids (`{owner}-{repo}-{name}`) of every Skill ever installed
+    /// via the Ensemble Marketplace. Survives uninstall + Trash recovery to
+    /// give the catalog a "you have installed this before" hint. V1 records
+    /// only; not yet read by any UI surface (R-36 keeps top-level lists lean).
+    #[serde(default)]
+    pub imported_marketplace_skills: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -225,6 +271,17 @@ pub struct SkillMetadata {
     pub last_used: Option<String>,
     pub icon: Option<String>,
     pub scope: String, // "global" | "project"
+    /// Persisted install source. `None` for legacy entries (which fall back to
+    /// runtime symlink detection in `scan_skills`); `Some("local"|"plugin"|"marketplace")`
+    /// for entries written by the new IPCs that capture provenance.
+    /// (D-Imp-4: marketplace真实拷贝时 scan_skills 无法靠 symlink 区分,所以
+    /// metadata 必须持久化此字段)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_source: Option<String>,
+    /// Marketplace upstream provenance triple plus sync timestamp. Only populated
+    /// when `install_source == Some("marketplace")`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marketplace_source: Option<MarketplaceSource>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -242,6 +299,22 @@ pub struct McpMetadata {
     pub usage_count: u32,
     pub last_used: Option<String>,
     pub scope: String, // "global" | "project"
+    /// Persisted install source mirror of [`SkillMetadata::install_source`]. The
+    /// existing `McpConfigFile.install_source` JSON field already carries this
+    /// for MCPs at the file level; mirroring it here keeps the SSoT helper code
+    /// uniform across Skill and MCP code paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_source: Option<String>,
+    /// Marketplace upstream provenance. See [`SkillMetadata::marketplace_source`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marketplace_source: Option<MarketplaceSource>,
+    /// Required environment variable specs from the upstream catalog item
+    /// (stdio MCPs only). Persisted so the Project detail panel can later
+    /// detect "missing required env" without rehydrating the full catalog
+    /// (B-P0-9 / E3-2 backend half). `None` for HTTP MCPs and for MCPs not
+    /// installed via the marketplace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_env_vars: Option<Vec<EnvVarSpec>>,
 }
 
 /// Result of running [`migrate_category_id_for_skills_mcps`].
@@ -314,7 +387,14 @@ impl Default for AppSettings {
             mcp_source_dir: "~/.ensemble/mcps".to_string(),
             claude_config_dir: "~/.claude".to_string(),
             anthropic_api_key: None,
-            auto_classify_new_items: false,
+            // V2 marketplace contract (D-Imp-12 / 02_tech_spec L193): default
+            // ON for fresh users so the marketplace install → auto-classify
+            // closed loop works without the user having to flip a toggle.
+            // Pre-V2 users have an explicit `false`/`true` already serialised in
+            // `settings.json`, so flipping the default does not retroactively
+            // change their stored preference. Existing test
+            // `test_app_settings_default` is updated in lockstep.
+            auto_classify_new_items: true,
             terminal_app: "Terminal".to_string(),
             claude_command: "claude".to_string(),
             warp_open_mode: "window".to_string(),
@@ -344,13 +424,18 @@ pub struct McpConfigFile {
     pub mcp_type: Option<String>,
     // Plugin source fields
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub install_source: Option<String>, // "local" | "plugin"
+    pub install_source: Option<String>, // "local" | "plugin" | "marketplace"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugin_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugin_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub marketplace: Option<String>,
+    /// Marketplace upstream provenance (persisted on the JSON file when this
+    /// MCP was installed from the Ensemble Marketplace). See
+    /// [`Skill::marketplace_source`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marketplace_source: Option<MarketplaceSource>,
 }
 
 /// Claude settings.json / .claude.json MCP configuration format
@@ -953,6 +1038,223 @@ pub struct TrashedItems {
     pub claude_md_files: Vec<TrashedClaudeMd>,
 }
 
+// ============================================================================
+// Marketplace types (V2.0 — Skill Marketplace + MCP Marketplace)
+// ============================================================================
+//
+// Shared upstream provenance + catalog item shapes returned by the
+// `marketplace::*` IPCs. Mirrored to TypeScript at `src/types/marketplace.ts`
+// (see spec §5.3). All fields use `#[serde(rename_all = "camelCase")]` so
+// the wire format is consistent with the rest of the IPC boundary.
+
+/// Upstream provenance written into `SkillMetadata` / `McpMetadata` when an
+/// item is installed from the Marketplace. `source` is one of
+/// `"skills_sh"` / `"mcp_registry"`.
+///
+/// The `{owner, repo, name}` triple is the SSoT identity (D-Imp-8): the
+/// frontend selector matches a Marketplace catalog item against installed
+/// items by this triple first, falling back to plain name matching only when
+/// the local metadata predates marketplace tracking.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceSource {
+    /// Upstream catalog identifier. `"skills_sh"` for the Skill Marketplace
+    /// (skills.sh seed + scrape) and `"mcp_registry"` for the Official MCP
+    /// Registry (`registry.modelcontextprotocol.io`).
+    pub source: String,
+    /// GitHub-style owner. For skills.sh entries this is the repository
+    /// owner; for MCP Registry entries this is parsed from `repository.url`
+    /// when available, falling back to the package author name otherwise.
+    pub owner: String,
+    /// Repository name. Same fallback rule as `owner`.
+    pub repo: String,
+    /// Upstream catalog `name` field — for Skills this is the SKILL.md
+    /// frontmatter name; for MCPs it is the MCP Registry server name.
+    /// Combined with `owner` + `repo` to form the SSoT identity triple.
+    pub name: String,
+    /// ISO 8601 timestamp of the last successful upstream sync at the time
+    /// of install. V1.5 may use this to surface "update available" hints.
+    pub last_synced_at: String,
+}
+
+/// Catalog item returned by `list_marketplace_skills`. Combines GitHub repo
+/// metadata (stars, last update, license) with the parsed SKILL.md frontmatter
+/// and a slice of README content used by the SlidePanel detail view.
+///
+/// Verified against the GitHub Contents API response shape — see
+/// <https://docs.github.com/en/rest/repos/contents#get-repository-content>
+/// (response is base64-encoded for blob requests; we decode in `marketplace.rs`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceSkillItem {
+    /// Triple-hash id `"{owner}-{repo}-{name}"` — stable across catalog
+    /// refreshes and used as the React key + retry/install state key.
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// SKILL.md body (frontmatter stripped) plus an optional repo README
+    /// header concatenated for the detail panel. Capped to ~3000 chars at
+    /// fetch time to keep cache files small.
+    pub readme_markdown: String,
+    /// Display author — typically equal to `owner` but kept separate to
+    /// allow future "real name" enrichment without breaking the triple.
+    pub author: String,
+    pub owner: String,
+    pub repo: String,
+    /// Path within the repository to the skill directory. `""` when the
+    /// repo is itself a single skill at the root.
+    pub skill_path: String,
+    pub homepage_url: String,
+    pub last_updated_at: String,
+    /// Popularity proxy (GitHub stars). skills.sh weekly install counts are
+    /// not exposed via REST — D-Imp-5 uses stars as the V1 sort key.
+    pub stars: u32,
+    /// Upstream-declared categories (for display only; not merged into the
+    /// Ensemble Categories taxonomy per D-15).
+    pub categories: Vec<String>,
+    pub tags: Vec<String>,
+    pub license: Option<String>,
+}
+
+/// Catalog item returned by `list_marketplace_mcps`. The `mcp_type` field
+/// drives the stdio-vs-HTTP branch in the detail panel (D-12). Verified
+/// against `registry.modelcontextprotocol.io/v0.1/servers` schema —
+/// see <https://github.com/modelcontextprotocol/registry/blob/main/docs/openapi.yaml>.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceMcpItem {
+    /// Upstream server id (e.g. `io.modelcontextprotocol/everything`). Used
+    /// as the React key + retry state key.
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub readme_markdown: String,
+    pub author: String,
+    pub repository_url: String,
+    /// GitHub `repo` segment parsed from `repository_url` at fetch time. Empty
+    /// when the upstream provides no parseable GitHub URL. Persisted into
+    /// `MarketplaceSource.repo` at install (B-P0-3) so the on-disk
+    /// `marketplace_source` triple is genuinely `(owner, repo, name)` rather
+    /// than the legacy `(author, author, name)` placeholder.
+    /// Backward compat: missing key in old cache JSON deserialises to `""`
+    /// via `serde(default)`, which `install_marketplace_mcp` treats the same
+    /// as a fresh fetch with no parseable URL (best-effort only).
+    #[serde(default)]
+    pub repo: String,
+    pub last_updated_at: String,
+    pub stars: u32,
+    pub categories: Vec<String>,
+    pub tags: Vec<String>,
+    pub license: Option<String>,
+    /// `"stdio"` or `"http"`. The MCP Registry distinguishes these at the
+    /// schema level via `packages` vs `remotes`; we collapse that into a
+    /// single string for the UI to branch on (C §3 / D-12).
+    pub mcp_type: String,
+    pub stdio_config: Option<StdioMcpConfig>,
+    pub http_config: Option<HttpMcpConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StdioMcpConfig {
+    pub command: String,
+    pub args: Vec<String>,
+    pub required_env_vars: Vec<EnvVarSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvVarSpec {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Optional upstream pointer ("Where to find this") — surfaced as a
+    /// helper hint under the input field. From the MCP Registry's
+    /// `package_environment_variables[].description` when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub where_to_find: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpMcpConfig {
+    pub url: String,
+    /// Transport variant — typical values are `"sse"` and `"streamable-http"`.
+    pub transport: String,
+    /// Present only for OAuth servers (e.g. Linear, Sentry). The detail
+    /// panel surfaces a "Copy command" affordance pointing the user to
+    /// `/mcp` inside Claude Code (D-12 / R-29).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_authorization_url: Option<String>,
+}
+
+/// Same-name collision resolution requested by the user via
+/// `MarketplaceCollisionModal`. Mirrors the TypeScript discriminated union
+/// `ConflictAction` (spec §5.3) exactly via `tag = "kind"` + camelCase
+/// rename so the IPC sees `{ "kind": "replace" }` or
+/// `{ "kind": "restoreFromTrash", "trashPath": "..." }`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ConflictAction {
+    /// Move the existing item into Trash (same path used by `delete_skill`
+    /// / `delete_mcp`) and write the new version. Metadata does **not**
+    /// carry over — the user explicitly opted to discard the old version.
+    Replace,
+    /// Move the Trash entry back to the live path and skip the new install.
+    /// Metadata is reconstructed from the Marketplace upstream rather than
+    /// inherited (Trash never persists `SkillMetadata` — see R3 §7.3).
+    RestoreFromTrash { trash_path: String },
+}
+
+/// Outcome of `install_marketplace_skill` / `install_marketplace_mcp`. Mirrors
+/// the TypeScript discriminated union `InstallOutcome` (spec §5.3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum InstallOutcome {
+    /// Install completed. `skill_id` (a.k.a. mcp_id for the MCP variant) is
+    /// the path-based id used everywhere else in the data model.
+    Installed { skill_id: String },
+    /// Same-name collision detected. The frontend opens the Collision
+    /// Modal; the user picks an action that the next call passes via
+    /// `conflict_action`.
+    NameCollision {
+        has_local: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        has_trashed: Option<TrashedItemBrief>,
+    },
+    /// Install failed at network or filesystem layer. The user-facing
+    /// retry button reuses this `reason` as the tooltip (R3-P0-3 / D-14).
+    Failed { reason: String },
+}
+
+/// Trash entry summary returned alongside `InstallOutcome::NameCollision`
+/// so the modal can show "deleted Y days ago" without a second IPC.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashedItemBrief {
+    pub name: String,
+    /// Absolute path to the Trash entry. Passed back unchanged inside
+    /// `ConflictAction::RestoreFromTrash` so the backend can `fs::rename`
+    /// it without re-scanning the Trash directory.
+    pub path: String,
+    pub deleted_at: String,
+}
+
+/// Cache-on-disk envelope for `~/.ensemble/marketplace-cache/{skills,mcps}-catalog.json`.
+/// Generic over the catalog item type so the same code path serves Skills
+/// and MCPs (D-Imp-3 flat schema).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceCatalog<T> {
+    pub items: Vec<T>,
+    /// ISO 8601 timestamp of the last successful refresh. Used for the 24h
+    /// TTL gate and for the "Last synced N hours ago" hint in the page header.
+    pub last_synced_at: String,
+    /// Free-form provenance label, e.g. `"skills.sh-seed-v1"` or
+    /// `"mcp-registry-v0.1"`. Surfaced in dev logs only (no UI dependence).
+    pub source: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -992,7 +1294,10 @@ mod tests {
         assert_eq!(settings.terminal_app, "Terminal");
         assert_eq!(settings.claude_command, "claude");
         assert_eq!(settings.warp_open_mode, "window");
-        assert!(!settings.auto_classify_new_items);
+        // V2 (B-P0-2 / D-Imp-12): default flipped to ON for fresh users so
+        // marketplace install → auto-classify closed loop is the out-of-the-box
+        // experience.
+        assert!(settings.auto_classify_new_items);
         assert!(!settings.has_completed_import);
         assert!(settings.anthropic_api_key.is_none());
         assert_eq!(settings.claude_md_distribution_path, ClaudeMdDistributionPath::ClaudeDir);
@@ -1158,6 +1463,7 @@ mod tests {
             plugin_name: None,
             marketplace: None,
             plugin_enabled: None,
+            marketplace_source: None,
         };
         let json = serde_json::to_string(&skill).unwrap();
         assert!(json.contains("\"categoryId\":\"dev-cat-id\""));
@@ -1225,6 +1531,8 @@ mod tests {
             plugin_name: None,
             marketplace: None,
             plugin_enabled: None,
+            marketplace_source: None,
+            required_env_vars: None,
         };
         let json = serde_json::to_string(&mcp).unwrap();
         assert!(json.contains("\"categoryId\":\"tools-cat-id\""));
@@ -1296,6 +1604,8 @@ mod tests {
             last_used: None,
             icon: None,
             scope: "global".to_string(),
+            install_source: None,
+            marketplace_source: None,
         };
         let json = serde_json::to_string(&metadata).unwrap();
         assert!(json.contains("\"categoryId\":\"prod-cat-id\""));
@@ -1333,6 +1643,9 @@ mod tests {
             usage_count: 0,
             last_used: None,
             scope: "global".to_string(),
+            install_source: None,
+            marketplace_source: None,
+            required_env_vars: None,
         };
         let json = serde_json::to_string(&metadata).unwrap();
         assert!(json.contains("\"categoryId\":\"tools-cat-id\""));

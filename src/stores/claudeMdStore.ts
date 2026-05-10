@@ -14,6 +14,10 @@ import {
 import { ClassifyItem, ClassifyResult } from '@/types';
 import { ICON_NAMES } from '@/components/common/IconPicker';
 import { isTauri, safeInvoke } from '@/utils/tauri';
+import {
+  applyClassifyResultsToCategories,
+  buildExistingCategoriesPayload,
+} from '@/utils/classifyHelpers';
 import { useAppStore } from './appStore';
 
 // ============================================================================
@@ -432,7 +436,10 @@ export const useClaudeMdStore = create<ClaudeMdState>((set, get) => ({
         content: f.content.substring(0, 500),
       }));
 
-      const existingCategories = categories.map((c) => c.name);
+      // Existing categories carry hierarchy (parentName) so the model
+      // can see which roots already have sub-categories and propose new
+      // ones intelligently — see classify.rs build_classification_prompt.
+      const existingCategories = buildExistingCategoriesPayload(categories);
       const existingTags = tags.map((t) => t.name);
 
       const results = await safeInvoke<ClassifyResult[]>('auto_classify', {
@@ -447,70 +454,31 @@ export const useClaudeMdStore = create<ClaudeMdState>((set, get) => ({
         return;
       }
 
-      // Collect new categories and tags that need to be created
-      const { addCategory, addTag, loadCategories, loadTags } = useAppStore.getState();
-      const existingCategoryNames = new Set(categories.map((c) => c.name));
-      const existingTagNames = new Set(tags.map((t) => t.name));
+      // Create the new categories and tags the results imply. Sub-cats
+      // (results with `suggested_parent_category`) are created with the
+      // proper parentId so they appear nested in the sidebar without
+      // any manual move. Returns name → id map for category resolution
+      // below; tag IDs are read from the updated appStore state.
+      const { addCategory, addTag } = useAppStore.getState();
+      const categoryIdByName = await applyClassifyResultsToCategories(
+        results,
+        categories,
+        tags,
+        addCategory,
+        addTag,
+      );
+      const tagIdByName = new Map<string, string>(
+        useAppStore.getState().tags.map((t) => [t.name, t.id]),
+      );
 
-      const newCategories = new Set<string>();
-      const newTags = new Set<string>();
-
-      for (const result of results) {
-        if (!existingCategoryNames.has(result.suggested_category)) {
-          newCategories.add(result.suggested_category);
-        }
-        for (const tag of result.suggested_tags) {
-          if (!existingTagNames.has(tag)) {
-            newTags.add(tag);
-          }
-        }
-      }
-
-      // Create new categories
-      const categoryColors = [
-        '#3B82F6',
-        '#10B981',
-        '#F59E0B',
-        '#EF4444',
-        '#8B5CF6',
-        '#EC4899',
-        '#14B8A6',
-        '#F97316',
-      ];
-      let colorIndex = categories.length;
-      for (const categoryName of newCategories) {
-        await addCategory(
-          categoryName,
-          categoryColors[colorIndex % categoryColors.length],
-          undefined, // D14=A: new categories from autoClassify always land at root
-        );
-        colorIndex++;
-      }
-
-      // Create new tags
-      for (const tagName of newTags) {
-        await addTag(tagName);
-      }
-
-      // Reload categories and tags to get the newly created entities
-      await loadCategories();
-      await loadTags();
-      const updatedState = useAppStore.getState();
-      const updatedCategories = updatedState.categories;
-      const updatedTags = updatedState.tags;
-
-      // Apply results - use updated categories/tags to find IDs
+      // Apply results - use the helper-produced map for category id and
+      // updated tag state for tag ids.
       for (const result of results) {
         const file = files.find((f) => f.id === result.id);
         if (file) {
-          // Find category ID by name
-          const categoryId = updatedCategories.find(
-            (c) => c.name === result.suggested_category,
-          )?.id;
-
-          // Find tag IDs by names
+          const categoryId = categoryIdByName.get(result.suggested_category);
           const tagIds = result.suggested_tags
-            .map((tagName) => updatedTags.find((t) => t.name === tagName)?.id)
+            .map((tagName) => tagIdByName.get(tagName))
             .filter((id): id is string => id !== undefined);
 
           await safeInvoke('update_claude_md', {

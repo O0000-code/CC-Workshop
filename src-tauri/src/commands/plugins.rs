@@ -845,6 +845,7 @@ pub fn import_plugin_mcps(items: Vec<PluginImportItem>, dest_dir: String) -> Res
             plugin_id: Some(item.plugin_id.clone()),
             plugin_name: Some(item.plugin_name.clone()),
             marketplace: Some(item.marketplace.clone()),
+            marketplace_source: None,
         };
 
         let json = match serde_json::to_string_pretty(&mcp_config_file) {

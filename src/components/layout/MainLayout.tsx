@@ -3,6 +3,8 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import ContextMenu from '../common/ContextMenu';
 import { LauncherModal } from '../launcher';
+import { MarketplaceShortcutBanner } from '../marketplace/MarketplaceShortcutBanner';
+import { AddToScenePopover } from '../marketplace/AddToScenePopover';
 import { useAppStore } from '@/stores/appStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useSkillsStore } from '@/stores/skillsStore';
@@ -12,6 +14,7 @@ import { useScenesStore } from '@/stores/scenesStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useImportStore } from '@/stores/importStore';
 import { useLauncherStore } from '@/stores/launcherStore';
+import { useMarketplaceStore } from '@/stores/marketplaceStore';
 import { Pencil, Trash2, Loader2, ArrowUp } from 'lucide-react';
 import { isTauri, safeInvoke } from '@/utils/tauri';
 import { ErrorBoundary } from '../common/ErrorBoundary';
@@ -89,6 +92,12 @@ export default function MainLayout() {
     folderPath: launcherFolderPath,
     closeLauncher,
   } = useLauncherStore();
+
+  // Track banner visibility at the layout level so we can conditionally
+  // render the padded wrapper. Subscribing here only re-renders MainLayout
+  // when the boolean flips — much cheaper than subscribing inside the
+  // banner component and re-rendering the layout for unrelated state.
+  const isShortcutBannerVisible = useMarketplaceStore((s) => s.shortcutBannerState.visible);
 
   // Dynamically calculate navigation counts
   const navCounts = useMemo(
@@ -330,6 +339,36 @@ export default function MainLayout() {
     };
   }, [handleLaunchPath]);
 
+  // Register Marketplace Tauri event listeners exactly once. The store's
+  // `initEventListeners` returns a single composite unlisten which we hold
+  // across the lifecycle; on unmount the registered backend listeners are
+  // released (subsequent mounts re-register, which is correct under
+  // StrictMode because the in-flight Promise short-circuits to a no-op).
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    useMarketplaceStore
+      .getState()
+      .initEventListeners()
+      .then((fn) => {
+        if (cancelled) {
+          // Already unmounted — invoke the unlisten immediately so we
+          // don't leave orphan listeners registered.
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch((err) => {
+        console.error('Failed to register marketplace event listeners:', err);
+      });
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   // Context menu state - Category
   const [contextMenu, setContextMenu] = useState<{
     category: Category;
@@ -358,10 +397,18 @@ export default function MainLayout() {
     | 'scenes'
     | 'projects'
     | 'settings'
+    | 'marketplace-skills'
+    | 'marketplace-mcps'
     | null => {
     const path = location.pathname;
     // Category/Tag pages - don't highlight main nav
     if (path.startsWith('/category/') || path.startsWith('/tag/')) return null;
+    // Marketplace pages — match BEFORE the generic skills / mcp-servers
+    // checks below, since their paths share no overlap but the ordering
+    // here mirrors the Sidebar's own visual ordering (Marketplace above
+    // Navigation, Navigation above Settings).
+    if (path.startsWith('/marketplace-skills')) return 'marketplace-skills';
+    if (path.startsWith('/marketplace-mcps')) return 'marketplace-mcps';
     if (path.startsWith('/skills')) return 'skills';
     if (path.startsWith('/mcp-servers')) return 'mcp-servers';
     if (path.startsWith('/claude-md')) return 'claude-md';
@@ -687,11 +734,31 @@ export default function MainLayout() {
 
         {/* Main Content */}
         <main className="flex-1 overflow-hidden flex flex-col">
+          {/* Marketplace install short-cut banner (task card C6 + C8 / D-Imp-6).
+              Visibility is driven entirely by `marketplaceStore.shortcutBannerState.visible`,
+              which the install actions raise after a successful install and
+              `dismissShortcutBanner` / navigation tear down. Rendering at the
+              MainLayout level (rather than inside individual pages) keeps the
+              banner visible across the navigation triggered by its own
+              "View in Skills →" link.
+              The wrapper <div> only mounts when the banner is visible so the
+              padding doesn't sit above page content unnecessarily. */}
+          {isShortcutBannerVisible && (
+            <div className="px-7 pt-4 flex-shrink-0">
+              <MarketplaceShortcutBanner />
+            </div>
+          )}
           <ErrorBoundary>
             <Outlet />
           </ErrorBoundary>
         </main>
       </div>
+
+      {/* Add-to-Scene popover — portal-rendered, anchored to its triggerRect.
+          Lives at the layout level so the popover survives mid-flow page
+          navigation that originates inside it (currently none, but future
+          additions inside the popover would benefit). */}
+      <AddToScenePopover />
 
       {/* Category Context Menu — per 02 V2 §2.20: child rows additionally
           show "Promote to root" between Rename and Delete. Root rows

@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Server,
   Database,
@@ -30,6 +31,7 @@ import {
   ScopeSelector,
   Button,
 } from '@/components/common';
+import { MarketplaceSourceBadge } from '@/components/marketplace/MarketplaceSourceBadge';
 import { McpListItem } from '@/components/mcps/McpListItem';
 import { ImportMcpModal } from '@/components/modals/ImportMcpModal';
 import { useMcpsStore } from '@/stores/mcpsStore';
@@ -177,6 +179,21 @@ export const McpServersPage: React.FC = () => {
 
   // Selected MCP ID state (replaces route navigation)
   const [selectedMcpId, setSelectedMcpId] = useState<string | null>(null);
+
+  // Marketplace short-cut deep link (task card C6). The ShortcutBanner's
+  // "View in MCP Servers →" link drops the user at `/mcp-servers?selected=<id>`;
+  // we honor the param on mount, then strip it so refresh-after-close doesn't
+  // re-open the panel.
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    const selected = searchParams.get('selected');
+    if (selected) {
+      setSelectedMcpId(selected);
+      const next = new URLSearchParams(searchParams);
+      next.delete('selected');
+      setSearchParams(next, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   const { loadInstalledPlugins } = usePluginsStore();
 
@@ -612,6 +629,8 @@ export const McpServersPage: React.FC = () => {
                 <span className="rounded bg-[#EFF6FF] px-2 py-0.5 text-[11px] font-medium text-[#3B82F6]">
                   Plugin
                 </span>
+              ) : selectedMcp.installSource === 'marketplace' ? (
+                <MarketplaceSourceBadge source={selectedMcp.marketplaceSource} />
               ) : (
                 <ScopeSelector
                   value={selectedMcp.scope}

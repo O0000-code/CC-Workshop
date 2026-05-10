@@ -1,7 +1,13 @@
-// 安装来源类型
-export type InstallSource = 'manual' | 'import' | 'npx' | 'plugin';
+import type { EnvVarSpec, MarketplaceSource } from './marketplace';
 
 export interface Skill {
+  /**
+   * Canonical id. **Invariant: `id === sourcePath`** — the absolute filesystem
+   * path to the skill directory (mirror of Rust `Skill::id`). Marketplace
+   * shortcut paths (`InstallOutcome.skillId`, `?selected=` query, AddToScene
+   * popover) rely on this identity. See `Skill::id` doc in `types.rs` for the
+   * full audit list (B-P0-5 / E1-5).
+   */
   id: string;
   name: string;
   description: string;
@@ -29,14 +35,36 @@ export interface Skill {
   icon?: string; // 自定义图标名称
   installedAt?: string; // 安装时间 (文件创建时间)
   // 插件相关字段 - 从 Rust 后端返回
-  installSource?: 'local' | 'plugin'; // 安装来源
+  /**
+   * Provenance of the resource. V2 expanded the historical two-state union
+   * (`'local' | 'plugin'`) to three states with the addition of
+   * `'marketplace'` (D-9 / R-2). UI conditionals over `=== 'plugin'` keep
+   * their existing semantics; marketplace items take the implicit
+   * non-plugin branch and rank equally with local resources (no sort
+   * sink-to-bottom; see skillsStore.ts:469-478 / mcpsStore.ts:503-513).
+   */
+  installSource?: 'local' | 'plugin' | 'marketplace';
   pluginId?: string; // 插件 ID，如 "nanobanana-skill@claude-code-settings"
   pluginName?: string; // 插件显示名称
-  marketplace?: string; // marketplace 名称
+  marketplace?: string; // plugin 来源里的 marketplace 名称（与 V2 marketplace 概念无关，保留以避免破坏 plugin 路径）
   pluginEnabled?: boolean; // 插件在 Claude Code 中是否启用
+  /**
+   * Marketplace upstream provenance. Populated only when
+   * `installSource === 'marketplace'` (D-Imp-4). Carries the
+   * `(owner, repo, name)` triple plus a sync timestamp; the SSoT
+   * selector matches on this triple before falling back to name match
+   * (D-Imp-8 / spec §6.3).
+   */
+  marketplaceSource?: MarketplaceSource;
 }
 
 export interface McpServer {
+  /**
+   * Canonical id. **Invariant: `id === sourcePath`** — the absolute filesystem
+   * path to the MCP `.json` config (mirror of Rust `McpServer::id`). The
+   * marketplace install short-cut depends on this identity; see
+   * `Skill.id` for the full audit list.
+   */
   id: string;
   name: string;
   description: string;
@@ -67,11 +95,30 @@ export interface McpServer {
   url?: string;
   mcpType?: string;
   // 插件相关字段 - 从 Rust 后端返回
-  installSource?: 'local' | 'plugin'; // 安装来源
+  /**
+   * Provenance of the resource. V2 expanded the historical two-state union
+   * (`'local' | 'plugin'`) to three states with the addition of
+   * `'marketplace'` (D-9 / R-2). See {@link Skill.installSource}.
+   */
+  installSource?: 'local' | 'plugin' | 'marketplace';
   pluginId?: string; // 插件 ID，如 "nanobanana-skill@claude-code-settings"
   pluginName?: string; // 插件显示名称
-  marketplace?: string; // marketplace 名称
+  marketplace?: string; // plugin 来源里的 marketplace 名称（与 V2 marketplace 概念无关，保留以避免破坏 plugin 路径）
   pluginEnabled?: boolean; // 插件在 Claude Code 中是否启用
+  /**
+   * Marketplace upstream provenance. Populated only when
+   * `installSource === 'marketplace'` (D-Imp-4). See {@link Skill.marketplaceSource}.
+   */
+  marketplaceSource?: MarketplaceSource;
+  /**
+   * Required environment-variable specs declared by the upstream marketplace
+   * catalog item (stdio MCPs only). Mirror of Rust `McpServer.required_env_vars`.
+   * UI surfaces such as the Project detail panel use this to detect "missing
+   * required env" states without rehydrating the marketplace catalog
+   * (B-P0-9 / E3-2). `undefined` for HTTP MCPs and for MCPs not installed
+   * via the marketplace.
+   */
+  requiredEnvVars?: EnvVarSpec[];
 }
 
 export interface Tool {
@@ -161,13 +208,25 @@ export interface ClassifyItem {
 
 /**
  * 自动分类结果
- * 从后端返回的 AI 分类建议
+ * 从后端返回的 AI 分类建议。当 `suggested_parent_category` 存在时，
+ * `suggested_category` 应作为该父类的子分类创建/使用（depth ≤ 2）。
  */
 export interface ClassifyResult {
   id: string;
   suggested_category: string;
+  suggested_parent_category?: string;
   suggested_tags: string[];
   suggested_icon?: string;
+}
+
+/**
+ * 传给 `auto_classify` IPC 的现有分类快照。`parentName` 设置时表示该
+ * 分类是名为 `parentName` 的根分类的子分类；`null` / 缺省表示根分类。
+ * 模型只在名字层面推理层级。
+ */
+export interface ExistingCategoryPayload {
+  name: string;
+  parentName: string | null;
 }
 
 // ==================== 导入相关类型 ====================
@@ -323,6 +382,22 @@ export interface AppData {
    * frontend treats as `false` and triggers migration.
    */
   hasCompletedCategoryIdMigration?: boolean;
+  /**
+   * Most recently created or edited Scene id. Drives the Marketplace
+   * "Add to active Scene" short-cut (D-Imp-6). Maintained by `add_scene` /
+   * `update_scene` / `delete_scene` on the Rust side; mirrored into
+   * `scenesStore` on the frontend. `undefined` until the user creates or
+   * updates a Scene at least once.
+   */
+  lastEditedSceneId?: string;
+  /**
+   * Triple-hash ids (`{owner}-{repo}-{name}`) of every Skill ever installed
+   * via the Ensemble Marketplace. V1 records only — not yet read by any UI
+   * surface (R-36 keeps top-level lists lean). Survives uninstall + Trash
+   * recovery so the catalog can later show a "you have installed this
+   * before" hint without reaching into `data.json.skillMetadata`.
+   */
+  importedMarketplaceSkills?: string[];
 }
 
 /**

@@ -351,6 +351,8 @@ pub fn init_app_data() -> Result<(), String> {
             claude_md_files: vec![],
             global_claude_md_id: None,
             has_completed_category_id_migration: false,
+            last_edited_scene_id: None,
+            imported_marketplace_skills: vec![],
         };
         write_app_data(default_data)?;
     }
@@ -870,6 +872,9 @@ pub fn add_scene(
     };
 
     data.scenes.push(scene.clone());
+    // V2 Marketplace D-Imp-6: track most recently created/edited Scene so the
+    // post-install ShortcutBanner can surface "Add to active Scene: <name>".
+    data.last_edited_scene_id = Some(scene.id.clone());
     write_app_data(data)?;
 
     Ok(scene)
@@ -908,6 +913,9 @@ pub fn update_scene(
         if let Some(c) = claude_md_ids {
             scene.claude_md_ids = c;
         }
+        // V2 Marketplace D-Imp-6: any scene update bumps the active id so
+        // the user's most recent intent drives the post-install short-cut.
+        data.last_edited_scene_id = Some(id.clone());
         write_app_data(data)?;
         Ok(())
     } else {
@@ -940,6 +948,20 @@ pub fn delete_scene(id: String) -> Result<(), String> {
         };
 
         data.trashed_scenes.push(trashed_scene);
+    }
+
+    // V2 Marketplace D-Imp-6: when the deleted Scene was the active one,
+    // fall back to the most recently `last_used` Scene (or None when no
+    // Scenes remain). Keeps the ShortcutBanner from pointing at a Scene
+    // that no longer exists.
+    if data.last_edited_scene_id.as_deref() == Some(id.as_str()) {
+        data.last_edited_scene_id = data
+            .scenes
+            .iter()
+            .filter_map(|s| s.last_used.as_ref().map(|lu| (s.id.clone(), lu.clone())))
+            .max_by(|a, b| a.1.cmp(&b.1))
+            .map(|(id, _)| id)
+            .or_else(|| data.scenes.last().map(|s| s.id.clone()));
     }
 
     write_app_data(data)?;
@@ -1980,6 +2002,8 @@ mod migrate_category_id_tests {
             last_used: None,
             icon: None,
             scope: "global".to_string(),
+            install_source: None,
+            marketplace_source: None,
         }
     }
 
@@ -1992,6 +2016,9 @@ mod migrate_category_id_tests {
             usage_count: 0,
             last_used: None,
             scope: "global".to_string(),
+            install_source: None,
+            marketplace_source: None,
+            required_env_vars: None,
         }
     }
 
@@ -2891,5 +2918,152 @@ mod concurrency_tests {
             "lost categories detected — final count {} != 12",
             final_data.categories.len(),
         );
+    }
+}
+
+// ============================================================================
+// Scene lifecycle integration tests — A7 (Marketplace D-Imp-6)
+// ============================================================================
+//
+// Verify that `add_scene` / `update_scene` / `delete_scene` correctly
+// maintain `AppData.last_edited_scene_id`. The Marketplace ShortcutBanner
+// reads this field to surface "Add to active Scene: <name>" — getting it
+// wrong means the banner points at the wrong Scene (or at a Scene that
+// no longer exists).
+//
+// We reuse the same `ScopedDataDir` env-isolation pattern as
+// `reorder_integration_tests` (the helper is private to that module so we
+// re-define it here; matches the pattern already used by
+// `set_parent_integration_tests`).
+
+#[cfg(test)]
+mod scene_lifecycle_tests {
+    use super::*;
+    use crate::utils::path::ENV_TEST_LOCK;
+    use tempfile::TempDir;
+
+    struct ScopedDataDir {
+        _tempdir: TempDir,
+        prior: Option<String>,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ScopedDataDir {
+        fn new() -> Self {
+            let guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prior = std::env::var("ENSEMBLE_DATA_DIR").ok();
+            let tempdir = TempDir::new().expect("create tempdir");
+            std::env::set_var("ENSEMBLE_DATA_DIR", tempdir.path());
+            Self {
+                _tempdir: tempdir,
+                prior,
+                _guard: guard,
+            }
+        }
+    }
+
+    impl Drop for ScopedDataDir {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(v) => std::env::set_var("ENSEMBLE_DATA_DIR", v),
+                None => std::env::remove_var("ENSEMBLE_DATA_DIR"),
+            }
+        }
+    }
+
+    #[test]
+    fn add_scene_sets_last_edited_scene_id() {
+        let _scope = ScopedDataDir::new();
+        // Persist an empty AppData so read_app_data returns Ok rather
+        // than panicking on a missing data.json.
+        write_app_data(AppData::default()).expect("seed");
+
+        let scene = add_scene(
+            "test-scene".to_string(),
+            String::new(),
+            String::new(),
+            vec![],
+            vec![],
+            None,
+        )
+        .expect("add_scene");
+
+        let data = read_app_data().expect("read");
+        assert_eq!(data.last_edited_scene_id, Some(scene.id));
+    }
+
+    #[test]
+    fn update_scene_bumps_last_edited_scene_id() {
+        let _scope = ScopedDataDir::new();
+        write_app_data(AppData::default()).expect("seed");
+
+        let first =
+            add_scene("a".into(), String::new(), String::new(), vec![], vec![], None).expect("a");
+        let second =
+            add_scene("b".into(), String::new(), String::new(), vec![], vec![], None).expect("b");
+        // Sanity — `add_scene("b")` should already have set lastEdited to b.
+        let after_add = read_app_data().expect("read");
+        assert_eq!(after_add.last_edited_scene_id, Some(second.id.clone()));
+
+        // Editing the older scene moves the active id back to it.
+        update_scene(
+            first.id.clone(),
+            Some("a-renamed".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("update");
+        let after_update = read_app_data().expect("read");
+        assert_eq!(after_update.last_edited_scene_id, Some(first.id));
+    }
+
+    #[test]
+    fn delete_active_scene_falls_back_to_remaining_scene() {
+        let _scope = ScopedDataDir::new();
+        write_app_data(AppData::default()).expect("seed");
+
+        let a =
+            add_scene("a".into(), String::new(), String::new(), vec![], vec![], None).expect("a");
+        let b =
+            add_scene("b".into(), String::new(), String::new(), vec![], vec![], None).expect("b");
+        // Active is currently b (last add).
+        delete_scene(b.id.clone()).expect("delete b");
+
+        let after_delete = read_app_data().expect("read");
+        // Fallback chooses a remaining scene (a), since b had no last_used
+        // and the fallback ladder ends at "scenes.last()".
+        assert_eq!(after_delete.last_edited_scene_id, Some(a.id));
+    }
+
+    #[test]
+    fn delete_active_scene_with_no_remaining_scenes_clears_active_id() {
+        let _scope = ScopedDataDir::new();
+        write_app_data(AppData::default()).expect("seed");
+
+        let only =
+            add_scene("solo".into(), String::new(), String::new(), vec![], vec![], None).expect("a");
+        delete_scene(only.id).expect("delete");
+
+        let after_delete = read_app_data().expect("read");
+        assert_eq!(after_delete.last_edited_scene_id, None);
+    }
+
+    #[test]
+    fn delete_inactive_scene_preserves_active_id() {
+        let _scope = ScopedDataDir::new();
+        write_app_data(AppData::default()).expect("seed");
+
+        let a =
+            add_scene("a".into(), String::new(), String::new(), vec![], vec![], None).expect("a");
+        let b =
+            add_scene("b".into(), String::new(), String::new(), vec![], vec![], None).expect("b");
+        // Active is b. Deleting a should NOT change active.
+        delete_scene(a.id).expect("delete a");
+
+        let after_delete = read_app_data().expect("read");
+        assert_eq!(after_delete.last_edited_scene_id, Some(b.id));
     }
 }

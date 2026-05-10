@@ -3,7 +3,7 @@ pub mod types;
 mod utils;
 
 use commands::claude_md::migrate_claude_md_storage;
-use commands::{classify, claude_md, config, data, dialog, import, mcps, plugins, skills, symlink, trash, usage};
+use commands::{classify, claude_md, config, data, dialog, import, marketplace, mcps, plugins, skills, symlink, trash, usage};
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -162,6 +162,14 @@ pub fn run() {
             trash::restore_skill,
             trash::restore_mcp,
             trash::restore_claude_md,
+            // Marketplace commands
+            marketplace::list_marketplace_skills,
+            marketplace::list_marketplace_mcps,
+            marketplace::install_marketplace_skill,
+            marketplace::install_marketplace_mcp,
+            marketplace::auto_classify_marketplace_item,
+            marketplace::refresh_marketplace_cache,
+            marketplace::update_mcp_env_vars,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -8,6 +8,8 @@ import ProjectsPage from './pages/ProjectsPage';
 import SettingsPage from './pages/SettingsPage';
 import CategoryPage from './pages/CategoryPage';
 import TagPage from './pages/TagPage';
+import SkillMarketplacePage from './pages/SkillMarketplacePage';
+import McpMarketplacePage from './pages/McpMarketplacePage';
 
 function App() {
   return (
@@ -15,6 +17,10 @@ function App() {
       <Routes>
         <Route path="/" element={<MainLayout />}>
           <Route index element={<Navigate to="/skills" replace />} />
+          {/* Marketplace routes — declared before Skills/MCP to mirror the
+              Sidebar's visual ordering (Marketplace above Navigation). */}
+          <Route path="marketplace-skills" element={<SkillMarketplacePage />} />
+          <Route path="marketplace-mcps" element={<McpMarketplacePage />} />
           <Route path="skills" element={<SkillsPage />} />
           <Route path="mcp-servers" element={<McpServersPage />} />
           <Route path="claude-md" element={<ClaudeMdPage />} />

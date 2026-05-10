@@ -689,6 +689,7 @@ fn extract_mcp_config(
                             plugin_id: None,
                             plugin_name: None,
                             marketplace: None,
+                            marketplace_source: None,
                         };
 
                         let json = serde_json::to_string_pretty(&mcp_file)
@@ -714,6 +715,7 @@ fn extract_mcp_config(
                                 plugin_id: None,
                                 plugin_name: None,
                                 marketplace: None,
+                                marketplace_source: None,
                             };
 
                             let json = serde_json::to_string_pretty(&mcp_file)
@@ -750,6 +752,7 @@ fn extract_mcp_config(
                 plugin_id: None,
                 plugin_name: None,
                 marketplace: None,
+                marketplace_source: None,
             };
 
             let json = serde_json::to_string_pretty(&mcp_file)

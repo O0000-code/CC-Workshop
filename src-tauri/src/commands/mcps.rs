@@ -152,6 +152,20 @@ fn parse_mcp_file(
         None
     };
 
+    // Marketplace provenance — prefer the JSON file's own field (written at
+    // install time by `install_marketplace_mcp`), fall back to metadata in
+    // `data.json` (kept in sync as the SSoT mirror). Either path satisfies
+    // the SSoT helper; the JSON is canonical for newly installed entries.
+    let marketplace_source = config
+        .marketplace_source
+        .clone()
+        .or_else(|| metadata.and_then(|m| m.marketplace_source.clone()));
+
+    // B-P0-9: surface persisted `required_env_vars` from metadata to the
+    // runtime `McpServer` so the Project detail panel can render
+    // "Missing required env vars" hints without rehydrating the catalog.
+    let required_env_vars = metadata.and_then(|m| m.required_env_vars.clone());
+
     let mcp = McpServer {
         id: id.clone(),
         name: config.name,
@@ -177,6 +191,8 @@ fn parse_mcp_file(
         plugin_name: config.plugin_name,
         marketplace: config.marketplace,
         plugin_enabled,
+        marketplace_source,
+        required_env_vars,
     };
 
     Ok(mcp)
@@ -456,9 +472,32 @@ pub fn delete_mcp(mcp_id: String, ensemble_dir: String) -> Result<(), String> {
         dest_path = trash_dir.join(format!("{}_{}.json", name_without_ext, timestamp));
     }
 
+    // B-P0-7 (E3-3 / E4-1): snapshot current metadata into a sibling
+    // `<path>.metadata.json` BEFORE the rename so a future
+    // `RestoreFromTrash` can recover the user's category / tags / icon.
+    // Failure is non-fatal.
+    let _ = crate::commands::marketplace::snapshot_mcp_metadata_into(mcp_path, &mcp_id);
+
     // Move MCP config to trash
     fs::rename(mcp_path, &dest_path)
         .map_err(|e| format!("Failed to move MCP to trash: {}", e))?;
+
+    // Move the metadata snapshot sibling (if any) alongside the trashed
+    // config so it travels with the rename. The marketplace finalize path
+    // looks for it next to the live MCP path post-restore.
+    let snapshot_src = {
+        let mut s = mcp_path.as_os_str().to_os_string();
+        s.push(".metadata.json");
+        std::path::PathBuf::from(s)
+    };
+    if snapshot_src.exists() {
+        let snapshot_dest = {
+            let mut s = dest_path.as_os_str().to_os_string();
+            s.push(".metadata.json");
+            std::path::PathBuf::from(s)
+        };
+        let _ = fs::rename(&snapshot_src, &snapshot_dest);
+    }
 
     // Remove metadata for this MCP (T1f: holds DATA_MUTEX so a concurrent
     // `update_mcp_metadata` / `reorder_categories` cannot lose this delete).

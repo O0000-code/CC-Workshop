@@ -929,23 +929,45 @@ export function SortableCategoriesList({
       if (dist < 4) {
         setDropAnimationConfig(null);
       } else {
+        // V2.3 D11.5 (2026-05-09 二分修复, root active 'leftward flash'):
+        // Opacity fade was previously a CSS transition (120 ms) on
+        // `.drag-overlay-row.is-dropping`, but that runs out of sync with
+        // the drop's transform/duration. Concretely: at t=120 ms the CSS
+        // sets the overlay opacity = 0 while the transform is still ~13 %
+        // away from `final` (std ease-out at t/dur=0.55 reaches ~88 %
+        // progress). The overlay disappears mid-air at +Δ from inline,
+        // then `sideEffects.styles.active.opacity` keeps inline hidden
+        // until cleanup at t=duration — leaving a 100 ms hole. When inline
+        // finally appears at the true final rect, it lands ~Δ left of the
+        // overlay's last visible spot → user perceives "向左闪动".
+        //
+        // Fix: drive opacity through dropAnimation `keyframes` so it
+        // interpolates 1 → 0 *together with* transform, both finishing at
+        // the exact same instant (animation.onfinish). cleanup then
+        // restores inline opacity in the same frame — perfect handoff,
+        // no positional gap. Box-shadow stays on the CSS transition (no
+        // spatial component, no race), so the multi-layer shadow still
+        // fades cleanly within the first 120 ms regardless of drop dur.
         const config: DropAnimation = {
           duration: computeDropAnimationDuration(dist),
           easing: DROP_EASING,
           sideEffects: CATEGORY_DROP_SIDE_EFFECTS,
-        };
-        if (isCrossDepthDrop) {
-          config.keyframes = ({ transform }) => [
-            {
+          keyframes: ({ transform }) => {
+            const startKeyframe: Keyframe = {
               transform: CSS.Transform.toString(transform.initial),
-              paddingLeft: `${preDragPaddingLeft}px`,
-            },
-            {
+              opacity: 1,
+            };
+            const endKeyframe: Keyframe = {
               transform: CSS.Transform.toString(transform.final),
-              paddingLeft: `${finalPaddingLeft}px`,
-            },
-          ];
-        }
+              opacity: 0,
+            };
+            if (isCrossDepthDrop) {
+              startKeyframe.paddingLeft = `${preDragPaddingLeft}px`;
+              endKeyframe.paddingLeft = `${finalPaddingLeft}px`;
+            }
+            return [startKeyframe, endKeyframe];
+          },
+        };
         setDropAnimationConfig(config);
       }
     }

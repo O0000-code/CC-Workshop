@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Scene, Skill, McpServer, ClaudeMdFile } from '@/types';
+import { Scene, Skill, McpServer, ClaudeMdFile, AppData } from '@/types';
 import { useSkillsStore } from './skillsStore';
 import { useMcpsStore } from './mcpsStore';
 import { useClaudeMdStore } from './claudeMdStore';
@@ -25,6 +25,15 @@ export interface CreateModalState {
 interface ScenesState {
   scenes: Scene[];
   selectedSceneId: string | null;
+  /**
+   * Most recently created or edited Scene id. Drives the Marketplace
+   * "Add to active Scene" short-cut (D-Imp-6 / spec §13). Mirrors
+   * `AppData.lastEditedSceneId` on the backend; both sides stay in sync via
+   * `loadScenes` (read-back) and `createScene` / `updateScene` /
+   * `deleteScene` (write-through). `null` until the user creates or
+   * updates a Scene at least once.
+   */
+  lastEditedSceneId: string | null;
   filter: {
     search: string;
   };
@@ -63,6 +72,15 @@ interface ScenesState {
   getAvailableSkills: () => Skill[];
   getAvailableMcps: () => McpServer[];
   getDistributableClaudeMd: () => ClaudeMdFile[];
+
+  /**
+   * Resolve the current "active" Scene from `lastEditedSceneId`. Returns
+   * `undefined` when no Scene has ever been created/edited or when the
+   * tracked id has been removed (e.g. user deleted the last Scene). Used
+   * by the Marketplace ShortcutBanner to render the "Add to active
+   * Scene: <name>" short-cut when present.
+   */
+  getActiveScene: () => Scene | undefined;
 }
 
 // ============================================================================
@@ -89,6 +107,7 @@ const initialCreateModalState: CreateModalState = {
 export const useScenesStore = create<ScenesState>((set, get) => ({
   scenes: [],
   selectedSceneId: null,
+  lastEditedSceneId: null,
   filter: {
     search: '',
   },
@@ -118,7 +137,24 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const scenes = await safeInvoke<Scene[]>('get_scenes');
-      set({ scenes: scenes || [], isLoading: false });
+      // Read-back lastEditedSceneId from AppData. Backend is the source of
+      // truth (maintained by add_scene / update_scene / delete_scene); the
+      // frontend mirrors it so a fresh app session picks up the persisted
+      // value without waiting for the next mutation. (D-Imp-6 / spec §13)
+      const appData = await safeInvoke<AppData>('read_app_data');
+      const persistedActiveId = appData?.lastEditedSceneId ?? null;
+      // Defensive: if the persisted id no longer points at a real Scene
+      // (e.g. data migration edge case), drop it rather than carry a
+      // stale pointer.
+      const validatedActiveId =
+        persistedActiveId && (scenes ?? []).some((s) => s.id === persistedActiveId)
+          ? persistedActiveId
+          : null;
+      set({
+        scenes: scenes || [],
+        lastEditedSceneId: validatedActiveId,
+        isLoading: false,
+      });
     } catch (error) {
       set({ error: String(error), isLoading: false });
     }
@@ -153,6 +189,10 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
         return null;
       }
 
+      // Backend `add_scene` already persists `last_edited_scene_id =
+      // Some(scene.id)` (data.rs:877). Mirror that here so the
+      // Marketplace short-cut sees the fresh active Scene without
+      // waiting for the next `loadScenes` call. (spec §13 / D-Imp-6)
       set((state) => ({
         scenes: [...state.scenes, scene],
         createModal: {
@@ -160,6 +200,7 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
           isOpen: false,
         },
         selectedSceneId: scene.id,
+        lastEditedSceneId: scene.id,
         error: null,
       }));
 
@@ -179,11 +220,36 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
 
     try {
       await safeInvoke('delete_scene', { id });
-      set((state) => ({
-        scenes: state.scenes.filter((scene) => scene.id !== id),
-        selectedSceneId: state.selectedSceneId === id ? null : state.selectedSceneId,
-        error: null,
-      }));
+      // Mirror backend `delete_scene` (data.rs:957-963): when the deleted
+      // scene was active, fall back to the most recently used remaining
+      // Scene (or null if none remain). The backend computes the same
+      // fallback against `last_used`; we replicate it client-side so the
+      // active-scene short-cut updates without waiting for the next
+      // `loadScenes`. (spec §13 / D-Imp-6)
+      set((state) => {
+        const remaining = state.scenes.filter((scene) => scene.id !== id);
+        let nextActiveId: string | null = state.lastEditedSceneId;
+        if (state.lastEditedSceneId === id) {
+          if (remaining.length === 0) {
+            nextActiveId = null;
+          } else {
+            // Pick the most recently used (or fall back to the most recently
+            // created) remaining Scene as the new active anchor.
+            const sorted = [...remaining].sort((a, b) => {
+              const aKey = a.lastUsed ?? a.createdAt;
+              const bKey = b.lastUsed ?? b.createdAt;
+              return bKey.localeCompare(aKey);
+            });
+            nextActiveId = sorted[0]?.id ?? null;
+          }
+        }
+        return {
+          scenes: remaining,
+          selectedSceneId: state.selectedSceneId === id ? null : state.selectedSceneId,
+          lastEditedSceneId: nextActiveId,
+          error: null,
+        };
+      });
     } catch (error) {
       set({ error: String(error) });
       throw error;
@@ -199,10 +265,12 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
 
     try {
       await safeInvoke('update_scene', { id, ...updates });
+      // Backend `update_scene` (data.rs:918) bumps
+      // `last_edited_scene_id = Some(id)`. Mirror it so subsequent reads
+      // reflect the change without a `loadScenes` round-trip.
       set((state) => ({
-        scenes: state.scenes.map((scene) =>
-          scene.id === id ? { ...scene, ...updates } : scene
-        ),
+        scenes: state.scenes.map((scene) => (scene.id === id ? { ...scene, ...updates } : scene)),
+        lastEditedSceneId: id,
         error: null,
       }));
     } catch (error) {
@@ -322,6 +390,15 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     const files = useClaudeMdStore.getState().files;
     // Exclude isGlobal=true files - they don't need to be added to Scene
     return files.filter((file) => !file.isGlobal);
+  },
+
+  // Resolve the active Scene from `lastEditedSceneId` against the current
+  // `scenes` list. Returns `undefined` when no Scene is tracked or the
+  // tracked id no longer points at a real Scene. (spec §13 / D-Imp-6)
+  getActiveScene: () => {
+    const { scenes, lastEditedSceneId } = get();
+    if (!lastEditedSceneId) return undefined;
+    return scenes.find((scene) => scene.id === lastEditedSceneId);
   },
 }));
 

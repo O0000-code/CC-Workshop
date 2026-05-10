@@ -74,7 +74,11 @@ const defaultSettings = {
   mcpSourceDir: '~/.ensemble/mcps',
   claudeConfigDir: '~/.claude',
   anthropicApiKey: '',
-  autoClassifyNewItems: false,
+  // V2 Marketplace (D-Imp-12 / spec §3.5): default ON so newly installed
+  // marketplace items are auto-classified without requiring the user to
+  // discover the toggle. Users can still disable in Settings; backend
+  // `spawn_auto_classify` reads this flag before dispatching.
+  autoClassifyNewItems: true,
   terminalApp: 'Terminal',
   claudeCommand: 'claude',
   warpOpenMode: 'window' as const,

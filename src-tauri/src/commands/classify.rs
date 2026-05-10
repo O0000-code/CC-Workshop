@@ -15,11 +15,27 @@ pub struct ClassifyItem {
     pub tools: Option<Vec<String>>,
 }
 
-/// Classification result
+/// Existing category snapshot passed to the prompt so the model can see
+/// the full hierarchy and decide whether to suggest a sub-category. The
+/// frontend resolves `parent_id` into `parent_name` before calling — the
+/// model only ever reasons in names.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExistingCategory {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_name: Option<String>,
+}
+
+/// Classification result. `suggested_parent_category`, when set, asks the
+/// frontend to create / use `suggested_category` as a child of the named
+/// parent (depth ≤ 2; the parent must itself be a root).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClassifyResult {
     pub id: String,
     pub suggested_category: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_parent_category: Option<String>,
     pub suggested_tags: Vec<String>,
     pub suggested_icon: Option<String>,
 }
@@ -27,7 +43,7 @@ pub struct ClassifyResult {
 /// Build the classification prompt with intelligent decision framework
 fn build_classification_prompt(
     items: &[ClassifyItem],
-    categories: &[String],
+    categories: &[ExistingCategory],
     tags: &[String],
     icons: &[String],
 ) -> String {
@@ -35,7 +51,33 @@ fn build_classification_prompt(
     let categories_list = if categories.is_empty() {
         "(No existing categories)".to_string()
     } else {
-        categories.join(", ")
+        // Render as an indented tree: roots first, then their children
+        // (one indent step). Categories whose parent is missing from the
+        // snapshot fall back to root rendering — defensive only; the
+        // frontend always passes a self-consistent set.
+        let mut lines: Vec<String> = Vec::new();
+        for c in categories.iter().filter(|c| c.parent_name.is_none()) {
+            lines.push(format!("- {}", c.name));
+            for child in categories
+                .iter()
+                .filter(|child| child.parent_name.as_deref() == Some(c.name.as_str()))
+            {
+                lines.push(format!("  - {}", child.name));
+            }
+        }
+        // Append any orphan children (parent_name set but parent missing)
+        // at the bottom so they're still visible to the model.
+        let root_names: std::collections::HashSet<&str> =
+            categories.iter().filter(|c| c.parent_name.is_none()).map(|c| c.name.as_str()).collect();
+        for c in categories.iter().filter(|c| {
+            c.parent_name
+                .as_deref()
+                .map(|p| !root_names.contains(p))
+                .unwrap_or(false)
+        }) {
+            lines.push(format!("- {}", c.name));
+        }
+        lines.join("\n")
     };
     let tags_list = if tags.is_empty() {
         "(No existing tags)".to_string()
@@ -78,6 +120,9 @@ Before using any existing category, check if it's VALID:
 | A VALID existing category is close enough | USE IT (prefer consistency) |
 | Only INVALID categories exist | CREATE a new meaningful one |
 | No category covers this domain | CREATE a new one |
+
+### Step 3: Consider Sub-categories (Optional)
+When a root category is broad enough that splitting by sub-domain genuinely helps users find things (e.g. `category: "Frontend"`, `parent_category: "Development"`), set `parent_category` to the root name. Otherwise leave `parent_category` unset and the category stays at root. Only one level of nesting is supported (root → child); never use an existing sub-category as `parent_category`.
 
 ### Standard Categories (use these when applicable)
 - **Development**: coding tools, git, testing, debugging, code generation
@@ -148,7 +193,7 @@ Return ONLY valid JSON with classifications."#,
 #[tauri::command]
 pub async fn auto_classify(
     items: Vec<ClassifyItem>,
-    existing_categories: Vec<String>,
+    existing_categories: Vec<ExistingCategory>,
     existing_tags: Vec<String>,
     available_icons: Vec<String>,
 ) -> Result<Vec<ClassifyResult>, String> {
@@ -159,7 +204,9 @@ pub async fn auto_classify(
     // Build the prompt
     let prompt = build_classification_prompt(&items, &existing_categories, &existing_tags, &available_icons);
 
-    // Build JSON schema with strict tag constraints
+    // Build JSON schema with strict tag constraints. `parent_category`
+    // is optional: present when the model proposes a sub-category, absent
+    // for root-level categories.
     let schema = serde_json::json!({
         "type": "object",
         "properties": {
@@ -170,6 +217,7 @@ pub async fn auto_classify(
                     "properties": {
                         "id": { "type": "string" },
                         "category": { "type": "string" },
+                        "parent_category": { "type": "string" },
                         "tags": {
                             "type": "array",
                             "items": {
@@ -229,9 +277,19 @@ pub async fn auto_classify(
     let results: Vec<ClassifyResult> = classifications
         .iter()
         .filter_map(|c| {
+            let suggested_category = c["category"].as_str()?.to_string();
+            // Empty-string parent → treat as absent (some models emit "" for
+            // optional string fields). Self-parent → drop; the frontend
+            // would already fall back to root, but cleaner to drop here.
+            let suggested_parent_category = c["parent_category"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && *s != suggested_category)
+                .map(String::from);
             Some(ClassifyResult {
                 id: c["id"].as_str()?.to_string(),
-                suggested_category: c["category"].as_str()?.to_string(),
+                suggested_category,
+                suggested_parent_category,
                 suggested_tags: c["tags"]
                     .as_array()?
                     .iter()

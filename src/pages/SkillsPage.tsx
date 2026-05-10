@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Sparkles,
   Loader2,
@@ -27,6 +28,7 @@ import Badge from '@/components/common/Badge';
 import Button from '@/components/common/Button';
 import EmptyState from '@/components/common/EmptyState';
 import { IconPicker, ICON_MAP, CategoryTreeDropdown, ScopeSelector } from '@/components/common';
+import { MarketplaceSourceBadge } from '@/components/marketplace/MarketplaceSourceBadge';
 import { SkillListItem } from '@/components/skills/SkillListItem';
 import { ImportSkillsModal } from '@/components/modals';
 import { useSkillsStore } from '@/stores/skillsStore';
@@ -217,6 +219,25 @@ export function SkillsPage() {
 
   // Selected skill ID state (replaces URL-based navigation)
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
+
+  // Marketplace short-cut deep link (task card C6).
+  // When the user follows the ShortcutBanner's "View in Skills →" link, the
+  // URL becomes `/skills?selected=<skillId>`. Read it once on mount + on
+  // change so deep links land on the matching detail panel; then strip the
+  // query param so a refresh doesn't keep re-selecting (the user may have
+  // closed the panel intentionally).
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    const selected = searchParams.get('selected');
+    if (selected) {
+      setSelectedSkillId(selected);
+      // `replace: true` keeps the history entry minimal — no extra back-stack
+      // hop. Iterate over a copy of the entries so other params survive.
+      const next = new URLSearchParams(searchParams);
+      next.delete('selected');
+      setSearchParams(next, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   // Get the selected skill using useMemo
   const selectedSkill = useMemo(
@@ -621,6 +642,8 @@ export function SkillsPage() {
                 <span className="rounded bg-[#EFF6FF] px-2 py-0.5 text-[11px] font-medium text-[#3B82F6]">
                   Plugin
                 </span>
+              ) : selectedSkill.installSource === 'marketplace' ? (
+                <MarketplaceSourceBadge source={selectedSkill.marketplaceSource} />
               ) : (
                 <ScopeSelector
                   value={selectedSkill.scope}

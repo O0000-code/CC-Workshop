@@ -1,108 +1,15 @@
-//! Marketplace Skill + MCP seed lists (D-Imp-1 / spec §1.1.1).
+//! Marketplace MCP seed list (D-Imp-1 extension).
 //!
-//! V1 ships with curated seeds for both Skill and MCP marketplaces.
-//! Each entry has been **verified to exist** by scraping
-//! `https://github.com/<owner>/<repo>/tree/<branch>/<path>` HTML or the
-//! npm registry — never trust agent-hallucinated names. When adding a
-//! new entry, paste the verification command into the comment so the
-//! check is reproducible.
+//! V2 (Phase I 2026-05-10): the **Skill seed is gone**. The Skill marketplace
+//! now reads directly from skills.sh's internal pagination API (91k items,
+//! real fuzzy/semantic search) — no curated seed is needed. See
+//! `commands/marketplace.rs::list_marketplace_skills`.
 //!
-//! ## Why so few entries?
-//!
-//! Unauthenticated GitHub API allows only 60 req/h. Each Skill seed
-//! entry costs ~2 requests (repo metadata + SKILL.md), so the list
-//! is intentionally capped at ~10. V1.5 will add Personal Access
-//! Token support (5000 req/h) and a much larger seed.
-
-// ============================================================================
-// Skill seed
-// ============================================================================
-
-#[derive(Debug, Clone, Copy)]
-pub struct SeedSkill {
-    pub owner: &'static str,
-    pub repo: &'static str,
-    /// Path within the repository to the skill directory containing
-    /// `SKILL.md`. `""` means the repository root is itself a skill.
-    pub skill_path: &'static str,
-    /// Logical id `"{owner}/{repo}/{name}"`. Used for SSoT dedup with
-    /// scrape results.
-    pub upstream_id: &'static str,
-}
-
-/// Curated Skill baseline. **All paths verified 2026-05-09** by
-/// scraping `https://github.com/<owner>/<repo>/tree/main/<path>`.
-///
-/// 5 obra/superpowers + 5 anthropics/skills = 10 entries.
-pub const SKILL_SEED: &[SeedSkill] = &[
-    // ── obra/superpowers (community curated; verified via
-    //    https://github.com/obra/superpowers/tree/main/skills) ──
-    SeedSkill {
-        owner: "obra",
-        repo: "superpowers",
-        skill_path: "skills/test-driven-development",
-        upstream_id: "obra/superpowers/test-driven-development",
-    },
-    SeedSkill {
-        owner: "obra",
-        repo: "superpowers",
-        skill_path: "skills/systematic-debugging",
-        upstream_id: "obra/superpowers/systematic-debugging",
-    },
-    SeedSkill {
-        owner: "obra",
-        repo: "superpowers",
-        skill_path: "skills/writing-plans",
-        upstream_id: "obra/superpowers/writing-plans",
-    },
-    SeedSkill {
-        owner: "obra",
-        repo: "superpowers",
-        skill_path: "skills/brainstorming",
-        upstream_id: "obra/superpowers/brainstorming",
-    },
-    SeedSkill {
-        owner: "obra",
-        repo: "superpowers",
-        skill_path: "skills/writing-skills",
-        upstream_id: "obra/superpowers/writing-skills",
-    },
-    // ── anthropics/skills (Anthropic official examples; verified via
-    //    https://github.com/anthropics/skills/tree/main/skills) ──
-    // NOTE: Real path is `skills/<name>` (not `<name>` at repo root).
-    // The previous seed list had this prefix wrong, causing 404 on
-    // every fetch. Path verified 2026-05-09.
-    SeedSkill {
-        owner: "anthropics",
-        repo: "skills",
-        skill_path: "skills/skill-creator",
-        upstream_id: "anthropics/skills/skill-creator",
-    },
-    SeedSkill {
-        owner: "anthropics",
-        repo: "skills",
-        skill_path: "skills/mcp-builder",
-        upstream_id: "anthropics/skills/mcp-builder",
-    },
-    SeedSkill {
-        owner: "anthropics",
-        repo: "skills",
-        skill_path: "skills/webapp-testing",
-        upstream_id: "anthropics/skills/webapp-testing",
-    },
-    SeedSkill {
-        owner: "anthropics",
-        repo: "skills",
-        skill_path: "skills/pdf",
-        upstream_id: "anthropics/skills/pdf",
-    },
-    SeedSkill {
-        owner: "anthropics",
-        repo: "skills",
-        skill_path: "skills/canvas-design",
-        upstream_id: "anthropics/skills/canvas-design",
-    },
-];
+//! What remains: well-known MCP servers (Filesystem, GitHub, Playwright, …)
+//! that the Official MCP Registry does not list. Each entry has been
+//! **verified to exist** via `curl https://registry.npmjs.org/<package>` —
+//! never trust agent-hallucinated names. When adding a new entry, paste
+//! the verification command into the comment so the check is reproducible.
 
 // ============================================================================
 // MCP seed (D-Imp-1 extension; well-known MCP servers users expect)

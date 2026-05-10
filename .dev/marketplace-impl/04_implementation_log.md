@@ -1193,3 +1193,281 @@ $ curl https://github.com/anthropics/skills/tree/main/skills | grep '"path":"ski
 - Phase E 4 专家评审、Phase F P0 修复都漏了"上游数据源真实性"这一层 — 评审都假设代码逻辑对,没人验证 seed list 真实存在
 - 未来类似工作必须包含一个"seed verification"任务 = 对每条 entry 跑 `curl https://github.com/<owner>/<repo>` 确认 200,作为 PR gate
 
+
+---
+
+## [Phase I 后端重写 — skills.sh internal API] — 2026-05-10
+
+### 用户实测痛点(Phase I 起因)
+
+H2 修复之后用户实测发现 Skill marketplace 仍然只有 12 项 + 客户端 filter "no useful"。根因不在代码 bug,而在**方法路径**:V1 走 GitHub Contents API + 10 条 hand-curated seed,先天容量上限 ≤ 60(rate limit) ≤ 12(实际能 fetch 到的)。这是 architecture 限制,不是 fix 能解决的。
+
+### 调研发现(主 Agent 用 chrome-devtools 做的)
+
+skills.sh 网站本身有一个完全 **unauth** 的 internal API:
+
+- `GET /api/skills/{view}/{page}` — view ∈ `all-time`(91029 项)/ `trending`(9691 项)/ `hot`(5318 项),每页 200 项
+- `GET /api/search?q={q}` — fuzzy / semantic 双模式
+- 仅需同源 browser headers(`Origin`、`Referer`、`Sec-Fetch-Mode`)+ gzip 解压
+- 验证:curl 命中 → 200 项 + total ≈ 91029 + hasMore true
+
+也就是说我们之前的 12 项(seed 10 + 一些 fallback)对比上游真实可达的 91k —— **三个数量级差距**,而修复成本仅是替换 fetch 实现层。
+
+### 实施(本卡)
+
+**Cargo.toml**(+1 字符)
+- `reqwest = { version = "0.12", features = ["json", "gzip"] }` — 加 `gzip`(skills.sh 强制 gzip,不解压会 reject)
+
+**`src-tauri/src/types.rs`(扩展 MarketplaceSkillItem)**
+- 加 V2 内部 API 字段:`source`(= `"owner/repo"`)、`skillId`(= 仓库内路径)、`installs`、`isOfficial`、`installsYesterday`、`change`
+- 所有 V1 GitHub-derived 字段(`stars`、`lastUpdatedAt`、`license`、`readmeMarkdown`、`owner`、`repo`、`skillPath`、`homepageUrl`、`author`、`categories`、`tags`)改为 `#[serde(default)]` —— internal API 不返回这些,从其他源 lazily 派生
+- `id` 也改为 `#[serde(default)]`(V2 用 `{source}/{skillId}` 作为 id;V1 cache 是 triple-hash,均能 round-trip)
+- 加 `#[derive(Default)]` 让测试 fixture 简洁
+
+**`src-tauri/src/commands/marketplace.rs`(主体重写)**
+新增:
+- `skills_sh_request(url)` — 为每个 internal API 请求注入 mandatory headers(User-Agent、Origin、Referer、Sec-Fetch-Mode、Accept)
+- `fetch_skills_internal(view, page)` — async fetch + JSON parse
+- `search_skills_internal(query)` — async search
+- `fetch_skill_readme_github(source, skill_id)` — 走 `raw.githubusercontent.com`(不耗 GitHub API quota),先试 subfolder/SKILL.md,fallback 到 root SKILL.md
+- 5-min 内存 README cache(`OnceLock<Mutex<HashMap>>`,FIFO 64 entry cap)— 详情面板重复点击不会重复 fetch
+- 类型:`SkillsPageResponse { skills, total, hasMore, page }`、`SkillsSearchResponse { query, searchType, skills, count, durationMs }`
+- 派生工具:`derive_install_triple(item)` — 优先走 V2 `source.split('/')` + `skillId`,fallback 到 V1 `owner`/`repo`/`skillPath`,install 路径与 finalize 都用它
+
+替换:
+- `list_marketplace_skills(refresh: bool)` → `list_marketplace_skills(view: String, page: u32) -> SkillsPageResponse` —— 真分页,真 91k 容量
+- 加 `search_marketplace_skills(query: String) -> SkillsSearchResponse` —— 真服务器端搜索
+- 加 `get_marketplace_skill_readme(source: String, skill_id: String) -> String` —— 详情面板按需拉
+
+删除(`rg` 验证 0 hits):
+- `SKILL_SEED` const 全删(`marketplace_seed.rs` 内仅保留 `MCP_SEED`)
+- `fetch_skills_seed`、`fetch_one_seed_skill`、`fetch_skills_sh_top`、`spawn_skills_scrape_enhancement`、`merge_scrape_into_catalog`
+- `read_skills_catalog`、`write_skills_catalog`、`skills_catalog_path` —— V2 不需要 catalog cache(每次 fresh fetch internal API,< 1s)
+- `GitHubRepoMetadata`、`GitHubLicense`、`build_repo_metadata_url` —— 仅 V1 seed 用,install 走 Contents API 不需要 repo metadata
+
+保留(install 路径不变):
+- `download_skill_recursive` —— install 仍走 GitHub Contents API(已有 base64 + 安全 sanitize)
+- `MCP_SEED` + MCP marketplace 全部代码 —— 本任务范围只重写 Skill 部分
+- `install_marketplace_skill` 主流程 —— 仅在 download 前加 `derive_install_triple` 派生 owner/repo/skill_path,`finalize_skill_install` 写 `MarketplaceSource` 时也用派生值
+
+**`src-tauri/src/lib.rs`**
+- 注册 2 个新 IPC:`search_marketplace_skills`、`get_marketplace_skill_readme`
+- `list_marketplace_skills` 签名变更(向前不兼容 — 前端 SubAgent 后续重写 store)
+- `refresh_marketplace_cache("skills", ...)` 改为 fresh fetch 一次 page 0(原本是 cache invalidation,新设计无 cache)
+
+### 改动文件清单
+
+- `src-tauri/Cargo.toml`(+1 字符 — `gzip` feature)
+- `src-tauri/src/types.rs`(MarketplaceSkillItem +6 V2 字段 + 11 处 `#[serde(default)]` + Default derive,共 ~80 行 doc + struct 改)
+- `src-tauri/src/commands/marketplace.rs`(净 -340 行;新加 ~280 行,删 ~620 行 V1 fetch helpers + tests)
+- `src-tauri/src/commands/marketplace_seed.rs`(-105 行 SKILL_SEED;留 ~135 行 MCP_SEED)
+- `src-tauri/src/lib.rs`(+2 IPC 注册)
+
+### 自动化 gate 输出
+
+```
+$ cargo build
+   Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.82s
+   (zero warnings, zero errors)
+
+$ cargo test --lib
+test result: ok. 188 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out
+   (从 177 增 11 个新 unit tests:
+    - parse_skills_internal_response (list-page envelope deserialise)
+    - parse_skills_internal_response_hot_view (hot view 字段)
+    - parse_skills_search_response (search envelope deserialise)
+    - parse_skills_v1_legacy_cache_still_works (V1 cache 向后兼容)
+    - validate_skills_view_accepts_known_views
+    - derive_install_triple_v2_internal_api
+    - derive_install_triple_v2_with_nested_skill_path
+    - derive_install_triple_v1_legacy_fallback
+    - derive_install_triple_returns_empty_when_unparseable
+    - readme_cache_put_then_get
+    - readme_cache_get_returns_none_for_missing
+    + 2 ignored live integration tests)
+
+$ cargo test --lib -- --ignored live_internal_api_returns_skills --nocapture
+running 1 test
+Live: 200 skills on page 0, total 91028, hasMore true
+test commands::marketplace::tests::live_internal_api_returns_skills ... ok
+test result: ok. 1 passed; 0 failed
+
+$ cargo test --lib -- --ignored live_internal_search_returns_results --nocapture
+running 1 test
+Live search 'playwright': 100 results, type=fuzzy, took=0 ms
+test commands::marketplace::tests::live_internal_search_returns_results ... ok
+
+$ rg -n 'SKILL_SEED|fetch_skills_seed|spawn_skills_scrape_enhancement|fetch_skills_sh_top|fetch_one_seed_skill|merge_scrape_into_catalog' src-tauri/
+(zero hits — 全部删干净)
+
+$ rg -n 'read_app_data|write_app_data' src-tauri/src/commands/marketplace.rs
+6 个 mutating callsite,每个都包 DATA_MUTEX guard;2 个 pure-read callsite(snapshot 内、run_auto_classify 内),均符合现有惯例
+
+$ rg -n 'data_path|app_data\.\w+_metadata|fs::write.*data\.json' src-tauri/src/commands/marketplace.rs
+(zero hits — 无 bypass 通道)
+```
+
+### 用户可观测成功(Backend 侧 IPC 契约)
+
+- 调 `list_marketplace_skills(view: "all-time", page: 0)` → 返回 `{skills: [200 项], total: 91028, hasMore: true, page: 0}`
+- 调 `list_marketplace_skills(view: "trending", page: 0)` → 返回 200 项 + total ≈ 9691
+- 调 `list_marketplace_skills(view: "hot", page: 0)` → 返回 200 项 + 含 `installsYesterday` / `change` 字段
+- 调 `search_marketplace_skills(query: "playwright")` → 返回 100 fuzzy 结果(实测 type=fuzzy,duration=0ms)
+- 调 `get_marketplace_skill_readme("anthropics/skills", "skill-creator")` → 返回 SKILL.md 字符串(< 3000 字节,truncate 标记附后)
+- 调 `install_marketplace_skill(item, None)` 其中 `item.source = "anthropics/skills"`、`item.skillId = "skill-creator"`、`item.name = "skill-creator"` → `~/.ensemble/skills/skill-creator/SKILL.md` 物理出现 + metadata `marketplace_source = {source: "skills_sh", owner: "anthropics", repo: "skills", name: "skill-creator", ...}`
+- 调 `install_marketplace_skill` 但用旧 V1 缓存形态(只有 owner/repo/skillPath,无 source/skillId) → 仍能 install,走 V1 fallback 路径
+
+### 不变(Backend 范围)
+
+- ✅ 不修改前端代码(签名变更将由 Frontend SubAgent 后续做)
+- ✅ 不修改 install_marketplace_skill 主体流程(collision detection、Replace、RestoreFromTrash、download_skill_recursive 全部保留)
+- ✅ 不修改 MCP_SEED / install_marketplace_mcp / list_marketplace_mcps / fetch_mcp_registry / update_mcp_env_vars
+- ✅ 不引入新 crate(reqwest 已存在,只是加 `gzip` feature)
+- ✅ DATA_MUTEX 不变(grep-before-enumerate 6 个 callsite 全保留)
+
+### 实施笔记(给 Frontend SubAgent 的提示)
+
+- **`list_marketplace_skills` 签名变更是不兼容**:旧调用 `safeInvoke('list_marketplace_skills', {refresh: false})` 会运行时报"missing field: view"。前端 store 必须改为 `safeInvoke<SkillsPageResponse>('list_marketplace_skills', {view: 'all-time', page: 0})` 并消费 `{skills, total, hasMore, page}` 而不是直接拿 array
+- **`install_marketplace_skill` 仍接 `MarketplaceSkillItem`**,但前端构造 item 时只需填 `{source, skillId, name, ...}`;backend 自动派生 owner/repo/skill_path,前端不需要再 split source 字符串
+- **README on-demand**:用户点开 detail panel 时前端调 `get_marketplace_skill_readme(item.source, item.skillId)`,不要在列表 fetch 时一并拉 91k * README ≈ 数 GB
+- **`skill_id`(Rust)= `skillId`(TS)**:Rust 用 `#[serde(rename_all = "camelCase")]`,前端 TS 看到的是 `skillId`(已与现有 `MarketplaceSkillItem.skillPath` 类似的 naming 对齐)
+- **search returns `searchType: "fuzzy"|"semantic"`**:对短 query(< ~3 字符)是 fuzzy,长 query 是 semantic;前端可在结果区显示 hint badge "Semantic results" 增强用户感知
+- **internal API 没有 stars / lastUpdatedAt**:前端 ListItem 排序用 `installs` 而不是 `stars`(注意 V1 cache items 仍可能传 stars > 0,可以用 fallback `installs || stars` 排序兼容)
+- **`upstream-error` event 在 fetch 失败时仍会 emit**:前端 store 现有 listener 不需要改
+
+
+
+---
+
+## [Phase I 前端重写 — server-driven listing + search] — 2026-05-10
+
+### 背景
+
+Phase I Backend(本日上半段)已经把 IPC 契约从 V1 GitHub seed 切到 skills.sh internal API 全量分页(91k 项)。前端这一轮把 store / page / list item 全面对齐到新契约。
+
+### 实施清单
+
+**`src/types/marketplace.ts`**
+- `MarketplaceSkillItem` 重定义:V2 必需字段 `source` / `skillId` / `name`;V2 选填 `installs` / `isOfficial` / `installsYesterday` / `change`;所有 V1 GitHub-derived 字段(`description` / `readmeMarkdown` / `author` / `owner` / `repo` / `skillPath` / `homepageUrl` / `lastUpdatedAt` / `stars` / `categories` / `tags` / `license` / `id`)改成 `?:` 可选 — backend list/search 不返回这些
+- 加 `SkillsPageResponse` interface(`{skills, total, hasMore, page}`)
+- 加 `SkillsSearchResponse` interface(`{query, searchType, skills, count, durationMs}`)
+- 加 `SkillsView` 类型(`'all-time' | 'trending' | 'hot'`)
+- 加 `getSkillItemKey(item)` 帮手 — 派生稳定 React key(`${source}/${skillId}`),V1 cache item 走 `id` fallback
+
+**`src/stores/marketplaceStore.ts` — Skill 部分大改(MCP 部分完全保留)**
+
+State 改造:
+- 删除:`skillsCatalog` / `skillsFilter` / `lastSyncedSkills` / `staleCacheSkills` / `isLoadingSkills` / `upstreamErrorSkills`
+- 新增:
+  - `skillsListing: SkillsListingState`(items / view / total / currentPage / hasMore / isLoadingPage / isLoadingMore / upstreamError)
+  - `skillsSearch: SkillsSearchState | null`(query / results / searchType / count / isSearching / error;`null = listing mode`)
+  - `skillReadmes: Record<key, {content, loadedAt}>`(per-item README,5 min TTL)
+  - `loadingReadmes: Set<key>`
+  - `readmeErrors: Record<key, string>`
+
+Actions 改造:
+- 删除:`loadSkillsCatalog` / `setSkillsFilter` / `getFilteredSkills`
+- 新增:
+  - `loadSkillsPage(view, page=0)` — page=0 替换 + 清搜索;page>0 append + dedupe
+  - `loadMoreSkills()` — `hasMore && !isLoadingMore` 才触发,搜索模式下 no-op
+  - `setSkillsView(view)` — 切 view → loadSkillsPage(view, 0)
+  - `searchSkills(query)` — query.length < 2 → clearSkillsSearch;否则 IPC 调用 + 写 skillsSearch(stale-response guard:typed 过头丢结果)
+  - `clearSkillsSearch()` — 设 skillsSearch=null
+  - `loadSkillReadme(source, skillId)` — 5min 内存 cache,loading set,error map
+  - `getVisibleSkills()` — 返回 `skillsSearch.results` 或 `skillsListing.items`
+- 改造:
+  - `installSkill` 用 `getSkillItemKey(item)` 作 installingItemIds key;classifying 用 `outcome.skillId`(local id)— 修复 V1 既存的 marketplace-id-vs-local-id 不匹配 bug
+  - `closeCollisionModal` 派生 itemKey 时分 skill/mcp 两支
+  - `retryInstall` 用 `getVisibleSkills()` 查找而非 catalog
+  - `refreshCatalog('skills')` 改调 `loadSkillsPage(view, 0)`
+  - `isSkillInstalled` 从 V2 `source` 派生 `(owner, repo)` triple,fallback 到 V1 `owner`/`repo` 字段
+  - 事件监听:`marketplace:upstream-error` for skills 改写到 `skillsListing.upstreamError`(state shape 变了);`marketplace:catalog-enhanced` for skills 改调 `loadSkillsPage(view, 0)`;`marketplace:stale-cache` for skills 直接 ignore(V2 无 cache)
+
+`applyFilter<T>` 改名为 `applyMcpFilter`(只剩 MCP 用)+ 加 `appendUnique(prev, next)` 帮手做 dedupe-by-key concat。
+
+**`src/components/marketplace/MarketplaceListItem.tsx` — 字段映射小改**
+- `itemKey` 派生:skill 走 `getSkillItemKey`,mcp 走 `item.id`
+- `installingItemIds.has(itemKey)` / `installFailedItems[itemKey]`
+- popularity:skill 走 `installs ?? stars ?? 0`,mcp 走 `stars ?? 0`
+- `isOfficialSkill` 时左段加 `Official` Badge
+- `secondaryText`:skill V2 无 description 时走 `item.source`(`anthropics/skills`)作 secondary 文本
+- `formatPopularity`:`>= 1M → 1.2M`,`>= 1k → 1.2K`,否则原值。`> 0` 才显示
+- `onSelect(itemKey)` 而非 `item.id`
+
+**`src/pages/SkillMarketplacePage.tsx` — 整页重写**
+- header actions 删 Refresh + Sort dropdown,加 `<ViewTabBar>` 三 tab segmented control(`All Time` / `Trending` / `Hot`),active 用 `bg-[#F4F4F5] font-semibold`,non-active hover `bg-[#FAFAFA]`(design-language Constraints / Hover-active token)
+- 搜索改 useState + useEffect 300ms debounce → `searchSkills` / `clearSkillsSearch`
+- `visibleItems` / `isInitialLoading` / `isSearching` / `upstreamError` / `isOffline` 全派生自新 store state
+- 无限滚动:`<div ref={sentinelRef} />` + IntersectionObserver(rootMargin: 200px,提前预取);仅 listing mode 激活;observer dep 包 items.length + hasMore
+- EmptyState 多模式:initial loading / searching with no results / offline / search no-results / 列表;listing 底部 sentinel 旁边 isLoadingMore 显示 spinner,hasMore=false 显示 "End of catalog (N total)"
+- 详情面板:selectedItem 从 visibleItems 找(`getSkillItemKey === selectedItemId`);若 selectedItemId 设但 item 找不到(切换 mode 后)→ auto-close 防空 SlidePanel
+- `<SkillDetailContent>` 内 useEffect 触发 `loadSkillReadme(item.source, item.skillId)`;rendering 三态:loading spinner / error + retry / cached content
+- 状态行 "Live from skills.sh · {total} skills · {viewLabel}" 替代 V1 "Last synced X ago"
+- Filter row 删除(CategoryTreeDropdown 整段移除 — V1.5 评估)
+- `parseDescription` / `truncateToFirstSentence` import 删除(不再用于 description first-sentence)
+- onboarding banner copy 微调:"Browse the most popular Skills others are using"
+
+### 改动文件
+
+- `src/types/marketplace.ts`(+85 行,改写 MarketplaceSkillItem)
+- `src/stores/marketplaceStore.ts`(净 +180 行;Skill state 大改 + applyMcpFilter rename + appendUnique 帮手)
+- `src/components/marketplace/MarketplaceListItem.tsx`(+34 行;itemKey 派生 + Official badge + secondary text + formatPopularity)
+- `src/pages/SkillMarketplacePage.tsx`(净 -40 行;整页重写 — 删 V1 sort dropdown / refresh / category dropdown / formatRelativeTime,加 ViewTabBar / debounced search / IntersectionObserver / on-demand README)
+
+### 自动化 gate
+
+```
+$ npx tsc --noEmit
+(zero errors)
+
+$ npx eslint src/
+✖ 15 problems (0 errors, 15 warnings)
+   (15 warnings 全部 pre-existing,与本任务无关:PageHeader/Sidebar/SlidePanel 的
+    catch-err 空 destructure,ImportSkillsModal 的 useCallback dep,ProjectsPage 的
+    console.log,parseDescription regex)
+
+$ npm test
+ Test Files  22 passed (22)
+      Tests  283 passed (283)
+   Duration  1.68s
+```
+
+### 用户可观测成功(下一轮 build + 替换 .app 后由用户实测)
+
+- 进 Skill Marketplace → 看到 200 项 + 顶部 3 tab + 搜索框 + 状态行 "Live from skills.sh · 91K skills · All Time"
+- 滚到底部 → 自动加载下一页(spinner + "Loading more...");继续滚 → 400 / 600 / 800... 项;到几百页都能继续
+- 切 Trending tab → 立即重置到 trending 页 0,200 项 trending 数据
+- 输入 "playwright"(2+ 字符)→ debounce 300ms 后真实搜索结果(实测 100 fuzzy)
+- 清搜索框 → 立即回到当前 tab listing
+- 点详情 → README 异步加载(spinner → 内容)
+- 列表底部 hasMore=false 时显示 "End of catalog (91K total)"
+- selected item 切换 mode 后消失 → 详情面板自动关闭(不显示空 panel)
+
+### 不变(Phase I Frontend 范围)
+
+- ✅ 不修改 backend(只消费已落定的 IPC 契约)
+- ✅ 不修改 marketplaceStore 内 MCP 部分(`mcpsCatalog` / `mcpsFilter` / `loadMcpsCatalog` / `installMcp` / `isMcpInstalled` / `getFilteredMcps` 全部保留)
+- ✅ 不修改 SettingsPage(Phase I 不需要 API key)
+- ✅ 不修改 SkillsPage / McpServersPage / McpMarketplacePage 主体逻辑
+- ✅ 不引入新 design token / 自创色(全部沿用 design-language Rule 已有 token:zinc 灰阶 / `bg-[#F4F4F5]` active / `bg-[#FAFAFA]` hover / `font-semibold` active)
+- ✅ 不删 onboarding banner(只微调文案)
+- ✅ 保留 `MarketplaceCollisionModal` / `MarketplaceSourceBadge` / `AddToSceneTriggerButton` / `MarketplaceShortcutBanner` 组件接口
+
+### 设计语言合规
+
+- 3 tab 切换组合用 `border-[#E5E5E5]` 容器 + `bg-[#F4F4F5]` active token(design-language Hover/active 段)
+- `Loader2 className="animate-spin"` 沿用既有 lucide-react 旋转模式(无新动画引入)
+- 详情面板布局沿用 V1 三段(info / source / README)+ retry button 用 underline 文本(不引入新 button variant)
+- `text-[11px] / [12px] / [13px]` 字号全部在 design-language Font sizes 段允许范围
+- `gap-2` / `gap-2.5` / `gap-3` / `gap-7` 间距全部在 Spacing scale 段允许范围
+- ViewTabBar `rounded-md` / `rounded-[4px]` 内 button 在 radius gradient 内
+- prefers-reduced-motion:沿用 `src/index.css` 既有 sidebar-only 覆盖即可(本次新增的 transition 仅 `transition-colors` / `transition-[margin-right]`,既有 reduced-motion 媒体查询通过 `*` 选择器自动覆盖`color-scheme` / `transition-property: color` 等)
+
+### 实施笔记 / 易错点
+
+- **`getSkillItemKey` 是单一 React key 真理**:V2 internal-API item 没 `id` 字段,如果用 `item.id` 作 key 会出现 React key collision(全是 `undefined`)。整个前端凡涉及 skill item identity 的地方都走 `getSkillItemKey(item)`
+- **`installingItemIds` vs `classifyingItemIds` 的 key 不同**:`installingItemIds` 用 marketplace key(因为 row UI 用此判断 button 状态),`classifyingItemIds` 用 local Skill id(因为后端 emit `marketplace:classify-result` 用 local id);这两个 set 永远不会用同一个 id。修复了 V1 既存的 marketplace-id-vs-local-id mismatch
+- **stale response guard**:用户连续 typing 时,searchSkills 多次发出。新 response 到达时检查 `state.skillsSearch.query !== trimmed` 丢弃过时结果。loadSkillsPage 同样检查 `state.skillsListing.view !== view`。两处都防止"切 view / 改 query 后旧 response 覆盖新 state"
+- **IntersectionObserver dep 必须包 items.length 和 hasMore**:不然 observer 在 first render observe 后,后续 hasMore=true → false 转变时不会 re-evaluate;hasMore=false 时仍会触发 loadMore(尽管 store 内 guard 会 no-op,但浪费一次 IPC dispatch)
+- **selectedItem 找不到 → auto-close**:用户在 search mode 选了一项,然后清掉搜索切回 listing — selected key 在 listing.items 中可能不在(分页未到那一页)。useEffect 检测此情况调用 selectSkillItem(null) 关闭面板
+- **README 缓存 5min TTL**:重复点开同一 skill 不会再发 IPC(backend 也有自己的 5min 内存 cache,即使前端 cache miss 也廉价)。loadingReadmes Set 防止 race condition(detail panel mount 时间 <50ms,重复点击会触发 useEffect 多次)

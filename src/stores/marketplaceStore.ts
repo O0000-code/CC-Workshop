@@ -12,8 +12,14 @@ import type {
   MarketplaceSkillItem,
   MarketplaceStaleCacheEvent,
   MarketplaceUpstreamErrorEvent,
+  SkillsPageResponse,
+  SkillsSearchResponse,
+  SkillsView,
   TrashedItemBrief,
 } from '@/types/marketplace';
+import { getSkillItemKey } from '@/types/marketplace';
+
+export type { SkillsView } from '@/types/marketplace';
 import { isTauri, safeInvoke } from '@/utils/tauri';
 import { useSkillsStore } from './skillsStore';
 import { useMcpsStore } from './mcpsStore';
@@ -48,6 +54,9 @@ import { useTrashStore } from './trashStore';
 
 // ----- Filter / sort -------------------------------------------------------
 
+// MCP filter (V1 client-side filter still in use for the MCP marketplace —
+// MCP catalog is small enough that client-side sort/filter remains
+// appropriate). The Skill marketplace uses the V2 server-driven model below.
 type MarketplaceSort = 'popularity' | 'alphabet' | 'updated';
 
 interface MarketplaceFilter {
@@ -63,6 +72,56 @@ const initialFilter: MarketplaceFilter = {
   tags: [],
   sort: 'popularity',
 };
+
+// ----- Skill marketplace (V2: server-driven listing + search) -------------
+
+export interface SkillsListingState {
+  /** Items accumulated across pages. New items append + dedupe by key. */
+  items: MarketplaceSkillItem[];
+  view: SkillsView;
+  /** Full upstream count. Drives the "End of catalog (N total)" sentinel. */
+  total: number;
+  /** 0-indexed page number of the most recent successful fetch. */
+  currentPage: number;
+  hasMore: boolean;
+  /** True only on initial fetch / view switch (page=0). */
+  isLoadingPage: boolean;
+  /** True while appending the next page. */
+  isLoadingMore: boolean;
+  /** Last upstream error (string). Set when a page fetch fails; cleared on
+   *  the next successful fetch. */
+  upstreamError: string | null;
+}
+
+const initialSkillsListing: SkillsListingState = {
+  items: [],
+  view: 'all-time',
+  total: 0,
+  currentPage: 0,
+  hasMore: false,
+  isLoadingPage: false,
+  isLoadingMore: false,
+  upstreamError: null,
+};
+
+export interface SkillsSearchState {
+  /** Trimmed query string that produced these results. */
+  query: string;
+  results: MarketplaceSkillItem[];
+  /** `"fuzzy"` | `"semantic"` per the upstream classification. */
+  searchType: string | null;
+  count: number;
+  isSearching: boolean;
+  error: string | null;
+}
+
+/** README cache entry — populated by `loadSkillReadme`. Memory-only and
+ *  TTL'd on the backend (5-min); we mirror the cache here so a re-open
+ *  of the same item within the session does not re-fetch. */
+export interface SkillReadmeEntry {
+  content: string;
+  loadedAt: string; // ISO timestamp
+}
 
 // ----- UI state shapes -----------------------------------------------------
 
@@ -126,34 +185,42 @@ const initialAddToScenePopoverState: MarketplaceAddToScenePopoverState = {
 // ----- Store interface -----------------------------------------------------
 
 export interface MarketplaceState {
-  // Catalog data
-  skillsCatalog: MarketplaceSkillItem[];
-  mcpsCatalog: MarketplaceMcpItem[];
-  /** ISO timestamp of the most recent successful catalog sync. */
-  lastSyncedSkills?: string;
-  lastSyncedMcps?: string;
-  /** Set when the backend serves stale (>24h) cache as a fallback. The
-   * Marketplace page renders an amber "Last synced N hours ago" hint. */
-  staleCacheSkills?: { ageHours: number };
-  staleCacheMcps?: { ageHours: number };
+  // Skill marketplace V2 — server-driven listing + search.
+  skillsListing: SkillsListingState;
+  /** `null` = listing mode (show `skillsListing.items`).
+   *  Non-null = search mode (show `skillsSearch.results`). */
+  skillsSearch: SkillsSearchState | null;
+  /** README cache. Key is `${source}/${skillId}` (= `getSkillItemKey`). */
+  skillReadmes: Record<string, SkillReadmeEntry>;
+  /** Currently-loading README keys (so multiple openings of the same item
+   *  don't trigger duplicate fetches). */
+  loadingReadmes: Set<string>;
+  /** README load failures, keyed by `${source}/${skillId}`. */
+  readmeErrors: Record<string, string>;
 
-  // Loading / upstream errors
-  isLoadingSkills: boolean;
+  // MCP marketplace (V1 client-side filter — unchanged).
+  mcpsCatalog: MarketplaceMcpItem[];
+  /** ISO timestamp of the most recent successful MCP catalog sync. */
+  lastSyncedMcps?: string;
+  /** Set when the backend serves stale MCP cache. */
+  staleCacheMcps?: { ageHours: number };
   isLoadingMcps: boolean;
-  upstreamErrorSkills: string | null;
   upstreamErrorMcps: string | null;
 
-  // Per-item progress (cross-view persistence; keyed by upstream item id)
+  // Per-item progress (cross-view persistence; keyed by item React key —
+  // `getSkillItemKey(item)` for skills, `item.id` for MCPs)
   installingItemIds: Set<string>;
   installFailedItems: Record<string, { error: string; attemptedAt: string }>;
   classifyingItemIds: Set<string>;
   classifyFailedItemIds: Set<string>;
 
-  // Filters
-  skillsFilter: MarketplaceFilter;
+  // MCP filter (Skill marketplace V2 has no client-side filter — server
+  // decides via view + search). Kept for MCP page only.
   mcpsFilter: MarketplaceFilter;
 
   // Selection (drives SlidePanel detail)
+  /** For Skill marketplace, this stores `getSkillItemKey(item)`
+   *  (`${source}/${skillId}`), NOT a backend-issued id. */
   selectedSkillItemId: string | null;
   selectedMcpItemId: string | null;
 
@@ -172,8 +239,24 @@ export interface MarketplaceState {
 
   // ---- Actions ----
 
-  // Catalog
-  loadSkillsCatalog: (refresh?: boolean) => Promise<void>;
+  // Skill catalog (V2 server-driven)
+  /** Fetch a single page of the listing. `page=0` replaces `items`; `page>0`
+   *  appends + dedupes. Switching `view` should call this with `page=0`. */
+  loadSkillsPage: (view: SkillsView, page?: number) => Promise<void>;
+  /** Convenience: fetch the next page when `hasMore` and not currently
+   *  loading. No-op in search mode. */
+  loadMoreSkills: () => Promise<void>;
+  /** Switch the active listing tab. Resets pagination + clears search. */
+  setSkillsView: (view: SkillsView) => void;
+  /** Run a server-side search. Queries shorter than 2 chars are no-ops
+   *  (callers are expected to debounce input). Toggles to search mode. */
+  searchSkills: (query: string) => Promise<void>;
+  /** Switch back to listing mode. */
+  clearSkillsSearch: () => void;
+  /** Fetch a single skill's README. Memoised per `${source}/${skillId}`. */
+  loadSkillReadme: (source: string, skillId: string) => Promise<void>;
+
+  // MCP catalog (unchanged — V1 client-side filter)
   loadMcpsCatalog: (refresh?: boolean) => Promise<void>;
   refreshCatalog: (source: 'skills' | 'mcps') => Promise<void>;
 
@@ -181,8 +264,7 @@ export interface MarketplaceState {
   installSkill: (item: MarketplaceSkillItem, conflictAction?: ConflictAction) => Promise<void>;
   installMcp: (item: MarketplaceMcpItem, conflictAction?: ConflictAction) => Promise<void>;
 
-  // Filter / select
-  setSkillsFilter: (filter: Partial<MarketplaceFilter>) => void;
+  // MCP filter / select
   setMcpsFilter: (filter: Partial<MarketplaceFilter>) => void;
   selectSkillItem: (id: string | null) => void;
   selectMcpItem: (id: string | null) => void;
@@ -221,7 +303,9 @@ export interface MarketplaceState {
   // SSoT selectors (always derived from useSkillsStore / useMcpsStore)
   isSkillInstalled: (item: MarketplaceSkillItem) => boolean;
   isMcpInstalled: (item: MarketplaceMcpItem) => boolean;
-  getFilteredSkills: () => MarketplaceSkillItem[];
+  /** Visible Skill items. Returns `skillsSearch.results` in search mode,
+   *  otherwise `skillsListing.items`. */
+  getVisibleSkills: () => MarketplaceSkillItem[];
   getFilteredMcps: () => MarketplaceMcpItem[];
 
   // Tauri event subscription (called once from MainLayout)
@@ -251,23 +335,20 @@ function computeInitialSceneIds(
 }
 
 /**
- * Apply the 4-axis filter (search / categoryId / tags / sort) to a
+ * Apply the 4-axis filter (search / categoryId / tags / sort) to the MCP
  * marketplace catalog. The category / tag filters compare against
  * upstream-declared classification (display-only, never imported into
  * Ensemble's own taxonomy per D-15 / R-33). When a filter row has no
- * upstream-side data, it is treated as a no-op rather than an exclusion
- * — this keeps the upstream-permissive default of D-15 intact.
+ * upstream-side data, it is treated as a no-op rather than an exclusion.
+ *
+ * NOTE: The Skill marketplace no longer routes through this filter — it
+ * uses server-driven view + search via the skills.sh internal API. Only
+ * the MCP marketplace consumes `applyFilter` in V2.
  */
-function applyFilter<
-  T extends {
-    name: string;
-    description: string;
-    categories: string[];
-    tags: string[];
-    stars: number;
-    lastUpdatedAt: string;
-  },
->(items: T[], filter: MarketplaceFilter): T[] {
+function applyMcpFilter(
+  items: MarketplaceMcpItem[],
+  filter: MarketplaceFilter,
+): MarketplaceMcpItem[] {
   let result = items;
 
   if (filter.search) {
@@ -303,22 +384,43 @@ function applyFilter<
   return sorted;
 }
 
+/** Dedupe-by-key concat that preserves order of first appearance.
+ *  Used by `loadSkillsPage` when appending the next page. */
+function appendUnique(
+  prev: MarketplaceSkillItem[],
+  next: MarketplaceSkillItem[],
+): MarketplaceSkillItem[] {
+  const seen = new Set(prev.map(getSkillItemKey));
+  const merged = [...prev];
+  for (const item of next) {
+    const key = getSkillItemKey(item);
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push(item);
+    }
+  }
+  return merged;
+}
+
+const README_CACHE_TTL_MS = 5 * 60 * 1000;
+
 // ============================================================================
 // Store
 // ============================================================================
 
 export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
   // Initial state
-  skillsCatalog: [],
+  skillsListing: initialSkillsListing,
+  skillsSearch: null,
+  skillReadmes: {},
+  loadingReadmes: new Set<string>(),
+  readmeErrors: {},
+
   mcpsCatalog: [],
-  lastSyncedSkills: undefined,
   lastSyncedMcps: undefined,
-  staleCacheSkills: undefined,
   staleCacheMcps: undefined,
 
-  isLoadingSkills: false,
   isLoadingMcps: false,
-  upstreamErrorSkills: null,
   upstreamErrorMcps: null,
 
   installingItemIds: new Set<string>(),
@@ -326,7 +428,6 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
   classifyingItemIds: new Set<string>(),
   classifyFailedItemIds: new Set<string>(),
 
-  skillsFilter: initialFilter,
   mcpsFilter: initialFilter,
 
   selectedSkillItemId: null,
@@ -339,41 +440,243 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
   onboardingDismissedSkills: false,
   onboardingDismissedMcps: false,
 
-  // -- Catalog --
+  // -- Skill catalog (V2: server-driven listing + search) --
 
-  loadSkillsCatalog: async (refresh = false) => {
+  loadSkillsPage: async (view, page = 0) => {
     if (!isTauri()) {
-      // Browser preview mode (vite-only without Tauri IPC). Set
-      // upstreamError so the page renders the offline EmptyState
-      // instead of a blank main pane.
-      console.warn('MarketplaceStore: Cannot load skills catalog in browser mode');
+      console.warn('MarketplaceStore: Cannot load skills page in browser mode');
+      set((state) => ({
+        skillsListing: {
+          ...state.skillsListing,
+          view,
+          isLoadingPage: false,
+          isLoadingMore: false,
+          upstreamError: 'Browser preview mode — run `npm run tauri dev` to load the marketplace.',
+        },
+      }));
+      return;
+    }
+
+    // Page 0 → replace; clear any active search (the user just selected a
+    // listing tab, so search mode is no longer the visible state).
+    if (page === 0) {
+      set((state) => ({
+        skillsListing: {
+          ...state.skillsListing,
+          view,
+          items: [],
+          total: 0,
+          currentPage: 0,
+          hasMore: false,
+          isLoadingPage: true,
+          isLoadingMore: false,
+          upstreamError: null,
+        },
+        skillsSearch: null,
+      }));
+    } else {
+      set((state) => ({
+        skillsListing: {
+          ...state.skillsListing,
+          isLoadingMore: true,
+          upstreamError: null,
+        },
+      }));
+    }
+
+    try {
+      const resp = await safeInvoke<SkillsPageResponse>('list_marketplace_skills', {
+        view,
+        page,
+      });
+      if (!resp) {
+        throw new Error('Backend returned no listing response');
+      }
+      set((state) => {
+        // Concurrent-safety: if the user switched view while this page was
+        // in flight, ignore the late response. The latest `view` wins.
+        if (state.skillsListing.view !== view) return state;
+        const merged =
+          page === 0 ? resp.skills : appendUnique(state.skillsListing.items, resp.skills);
+        return {
+          skillsListing: {
+            ...state.skillsListing,
+            items: merged,
+            total: resp.total,
+            currentPage: resp.page,
+            hasMore: resp.hasMore,
+            isLoadingPage: false,
+            isLoadingMore: false,
+            upstreamError: null,
+          },
+        };
+      });
+    } catch (error) {
+      const message = typeof error === 'string' ? error : String(error);
+      console.error('Failed to load skills page:', error);
+      set((state) => ({
+        skillsListing: {
+          ...state.skillsListing,
+          isLoadingPage: false,
+          isLoadingMore: false,
+          upstreamError: message,
+        },
+      }));
+    }
+  },
+
+  loadMoreSkills: async () => {
+    const { skillsListing, skillsSearch } = get();
+    // Search mode never paginates (skills.sh /api/search returns all hits up
+    // to its server-side cap in one shot).
+    if (skillsSearch !== null) return;
+    if (!skillsListing.hasMore) return;
+    if (skillsListing.isLoadingPage || skillsListing.isLoadingMore) return;
+    await get().loadSkillsPage(skillsListing.view, skillsListing.currentPage + 1);
+  },
+
+  setSkillsView: (view) => {
+    const { skillsListing } = get();
+    if (skillsListing.view === view && !skillsListing.upstreamError) return;
+    void get().loadSkillsPage(view, 0);
+  },
+
+  searchSkills: async (query) => {
+    const trimmed = query.trim();
+    if (trimmed.length < 2) {
+      get().clearSkillsSearch();
+      return;
+    }
+
+    if (!isTauri()) {
+      console.warn('MarketplaceStore: Cannot search in browser mode');
       set({
-        upstreamErrorSkills:
-          'Browser preview mode — run `npm run tauri dev` to load the marketplace.',
+        skillsSearch: {
+          query: trimmed,
+          results: [],
+          searchType: null,
+          count: 0,
+          isSearching: false,
+          error: 'Browser preview mode — run `npm run tauri dev` to load the marketplace.',
+        },
       });
       return;
     }
 
-    set({ isLoadingSkills: true, upstreamErrorSkills: null });
+    set((state) => ({
+      skillsSearch: {
+        query: trimmed,
+        results: state.skillsSearch?.query === trimmed ? state.skillsSearch.results : [],
+        searchType: state.skillsSearch?.query === trimmed ? state.skillsSearch.searchType : null,
+        count: state.skillsSearch?.query === trimmed ? state.skillsSearch.count : 0,
+        isSearching: true,
+        error: null,
+      },
+    }));
+
     try {
-      const items =
-        (await safeInvoke<MarketplaceSkillItem[]>('list_marketplace_skills', {
-          refresh,
-        })) ?? [];
-      set({
-        skillsCatalog: items,
-        lastSyncedSkills: new Date().toISOString(),
-        isLoadingSkills: false,
+      const resp = await safeInvoke<SkillsSearchResponse>('search_marketplace_skills', {
+        query: trimmed,
+      });
+      if (!resp) {
+        throw new Error('Backend returned no search response');
+      }
+      set((state) => {
+        // Stale-response guard: if the user typed past this query in the
+        // meantime, drop this result.
+        if (state.skillsSearch && state.skillsSearch.query !== trimmed) return state;
+        return {
+          skillsSearch: {
+            query: resp.query,
+            results: resp.skills,
+            searchType: resp.searchType,
+            count: resp.count,
+            isSearching: false,
+            error: null,
+          },
+        };
       });
     } catch (error) {
       const message = typeof error === 'string' ? error : String(error);
-      console.error('Failed to load skills catalog:', error);
-      set({
-        upstreamErrorSkills: message,
-        isLoadingSkills: false,
+      console.error('Failed to search skills:', error);
+      set((state) => {
+        if (state.skillsSearch && state.skillsSearch.query !== trimmed) return state;
+        return {
+          skillsSearch: {
+            query: trimmed,
+            results: [],
+            searchType: null,
+            count: 0,
+            isSearching: false,
+            error: message,
+          },
+        };
       });
     }
   },
+
+  clearSkillsSearch: () => set({ skillsSearch: null }),
+
+  loadSkillReadme: async (source, skillId) => {
+    const key = `${source}/${skillId}`;
+    const { skillReadmes, loadingReadmes } = get();
+    // Memoise: cached entry within TTL → skip; loading → skip.
+    const cached = skillReadmes[key];
+    if (cached) {
+      const ageMs = Date.now() - new Date(cached.loadedAt).getTime();
+      if (ageMs < README_CACHE_TTL_MS) return;
+    }
+    if (loadingReadmes.has(key)) return;
+
+    if (!isTauri()) {
+      set((state) => ({
+        readmeErrors: {
+          ...state.readmeErrors,
+          [key]: 'Browser preview mode — run `npm run tauri dev` to load the marketplace.',
+        },
+      }));
+      return;
+    }
+
+    set((state) => {
+      const next = new Set(state.loadingReadmes);
+      next.add(key);
+      const errors = { ...state.readmeErrors };
+      delete errors[key];
+      return { loadingReadmes: next, readmeErrors: errors };
+    });
+
+    try {
+      const content = await safeInvoke<string>('get_marketplace_skill_readme', {
+        source,
+        skillId,
+      });
+      set((state) => {
+        const next = new Set(state.loadingReadmes);
+        next.delete(key);
+        return {
+          skillReadmes: {
+            ...state.skillReadmes,
+            [key]: { content: content ?? '', loadedAt: new Date().toISOString() },
+          },
+          loadingReadmes: next,
+        };
+      });
+    } catch (error) {
+      const message = typeof error === 'string' ? error : String(error);
+      console.error(`Failed to load README for ${key}:`, error);
+      set((state) => {
+        const next = new Set(state.loadingReadmes);
+        next.delete(key);
+        return {
+          loadingReadmes: next,
+          readmeErrors: { ...state.readmeErrors, [key]: message },
+        };
+      });
+    }
+  },
+
+  // -- MCP catalog (unchanged from V1) --
 
   loadMcpsCatalog: async (refresh = false) => {
     if (!isTauri()) {
@@ -419,7 +722,8 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
     }
     // Always trigger a fresh load to update lastSynced + listing.
     if (source === 'skills') {
-      await get().loadSkillsCatalog(true);
+      const { skillsListing } = get();
+      await get().loadSkillsPage(skillsListing.view, 0);
     } else {
       await get().loadMcpsCatalog(true);
     }
@@ -439,12 +743,16 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
       await useTrashStore.getState().loadTrashedItems();
     }
 
+    // Per-item progress key. V2 internal-API items don't carry an `id`, so
+    // we derive the key from `(source, skillId)`. See `getSkillItemKey`.
+    const itemKey = getSkillItemKey(item);
+
     // Mark installing (per-item, persists across page navigation).
     set((state) => ({
-      installingItemIds: new Set([...state.installingItemIds, item.id]),
+      installingItemIds: new Set([...state.installingItemIds, itemKey]),
       installFailedItems: (() => {
         const next = { ...state.installFailedItems };
-        delete next[item.id];
+        delete next[itemKey];
         return next;
       })(),
     }));
@@ -466,13 +774,14 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
           // Mark this item as classifying — backend `auto_classify` runs in
           // background and emits `marketplace:classify-result` /
           // `marketplace:classify-failed`. The event listeners below will
-          // remove the id from `classifyingItemIds`.
+          // remove the id from `classifyingItemIds` (the event payload `id`
+          // is the LOCAL skill id, not the marketplace key — see below).
           set((state) => {
             const installing = new Set([...state.installingItemIds]);
-            installing.delete(item.id);
-            const classifying = new Set([...state.classifyingItemIds, item.id]);
+            installing.delete(itemKey);
+            const classifying = new Set([...state.classifyingItemIds, outcome.skillId]);
             const classifyFailed = new Set([...state.classifyFailedItemIds]);
-            classifyFailed.delete(item.id);
+            classifyFailed.delete(outcome.skillId);
             return {
               installingItemIds: installing,
               classifyingItemIds: classifying,
@@ -499,12 +808,12 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
         case 'failed': {
           set((state) => {
             const installing = new Set([...state.installingItemIds]);
-            installing.delete(item.id);
+            installing.delete(itemKey);
             return {
               installingItemIds: installing,
               installFailedItems: {
                 ...state.installFailedItems,
-                [item.id]: {
+                [itemKey]: {
                   error: outcome.reason,
                   attemptedAt: new Date().toISOString(),
                 },
@@ -519,12 +828,12 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
       console.error('installSkill failed:', error);
       set((state) => {
         const installing = new Set([...state.installingItemIds]);
-        installing.delete(item.id);
+        installing.delete(itemKey);
         return {
           installingItemIds: installing,
           installFailedItems: {
             ...state.installFailedItems,
-            [item.id]: { error: message, attemptedAt: new Date().toISOString() },
+            [itemKey]: { error: message, attemptedAt: new Date().toISOString() },
           },
         };
       });
@@ -627,8 +936,6 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
 
   // -- Filter / select --
 
-  setSkillsFilter: (filter) =>
-    set((state) => ({ skillsFilter: { ...state.skillsFilter, ...filter } })),
   setMcpsFilter: (filter) => set((state) => ({ mcpsFilter: { ...state.mcpsFilter, ...filter } })),
   selectSkillItem: (id) => set({ selectedSkillItemId: id }),
   selectMcpItem: (id) => set({ selectedMcpItemId: id }),
@@ -644,12 +951,19 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
     // Closing without resolving = cancel. Clear the installing flag for
     // the modal's underlying item so the button returns to `Install`.
     const { collisionModalState } = get();
-    const itemId = collisionModalState.item?.id;
+    let itemKey: string | undefined;
+    if (collisionModalState.item) {
+      if (collisionModalState.itemType === 'skill') {
+        itemKey = getSkillItemKey(collisionModalState.item as MarketplaceSkillItem);
+      } else {
+        itemKey = (collisionModalState.item as MarketplaceMcpItem).id;
+      }
+    }
     set((state) => {
       const next = { ...state, collisionModalState: initialCollisionModalState };
-      if (itemId) {
+      if (itemKey) {
         const installing = new Set([...state.installingItemIds]);
-        installing.delete(itemId);
+        installing.delete(itemKey);
         next.installingItemIds = installing;
       }
       return next;
@@ -676,17 +990,18 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
   // -- Failure / retry --
 
   retryInstall: async (itemId, itemType) => {
-    // Look up the item in the appropriate catalog. If absent, clear the
-    // failure so the row no longer claims to be retryable.
-    const { skillsCatalog, mcpsCatalog } = get();
+    // Look up the item in the appropriate visible source. If absent, clear
+    // the failure so the row no longer claims to be retryable.
     if (itemType === 'skill') {
-      const item = skillsCatalog.find((i) => i.id === itemId);
+      const visible = get().getVisibleSkills();
+      const item = visible.find((i) => getSkillItemKey(i) === itemId);
       if (!item) {
         get().clearInstallFailure(itemId);
         return;
       }
       await get().installSkill(item);
     } else {
+      const { mcpsCatalog } = get();
       const item = mcpsCatalog.find((i) => i.id === itemId);
       if (!item) {
         get().clearInstallFailure(itemId);
@@ -837,15 +1152,31 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
 
   isSkillInstalled: (item) => {
     const skills = useSkillsStore.getState().skills;
+    // Derive the (owner, repo) triple from the V2 internal-API `source`
+    // field first; fall back to the V1 owner/repo fields for legacy cache
+    // entries. The local skill's `marketplaceSource.name` is the upstream
+    // skillId / name (backend writes whichever is present).
+    let owner = item.owner ?? '';
+    let repo = item.repo ?? '';
+    if ((!owner || !repo) && item.source) {
+      const parts = item.source.split('/');
+      if (parts.length === 2) {
+        owner = owner || parts[0];
+        repo = repo || parts[1];
+      }
+    }
+    const upstreamName = item.skillId || item.name;
     // Triple match (preferred). Marketplace-installed Skills carry
     // `marketplaceSource = { owner, repo, name }`.
-    const tripleMatch = skills.some(
-      (s) =>
-        s.marketplaceSource?.owner === item.owner &&
-        s.marketplaceSource?.repo === item.repo &&
-        s.marketplaceSource?.name === item.name,
-    );
-    if (tripleMatch) return true;
+    if (owner && repo) {
+      const tripleMatch = skills.some(
+        (s) =>
+          s.marketplaceSource?.owner === owner &&
+          s.marketplaceSource?.repo === repo &&
+          (s.marketplaceSource?.name === upstreamName || s.marketplaceSource?.name === item.name),
+      );
+      if (tripleMatch) return true;
+    }
     // Name fallback for resources installed before the marketplace path
     // existed (or installed locally with a colliding name).
     const target = normalizeName(item.name);
@@ -869,14 +1200,14 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
     return mcps.some((m) => normalizeName(m.name) === target);
   },
 
-  getFilteredSkills: () => {
-    const { skillsCatalog, skillsFilter } = get();
-    return applyFilter(skillsCatalog, skillsFilter);
+  getVisibleSkills: () => {
+    const { skillsListing, skillsSearch } = get();
+    return skillsSearch !== null ? skillsSearch.results : skillsListing.items;
   },
 
   getFilteredMcps: () => {
     const { mcpsCatalog, mcpsFilter } = get();
-    return applyFilter(mcpsCatalog, mcpsFilter);
+    return applyMcpFilter(mcpsCatalog, mcpsFilter);
   },
 
   // -- Event listeners --
@@ -936,29 +1267,34 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
       }),
     );
 
-    // Stale cache — record the age so the page can render the amber
-    // "Last synced N hours ago" hint without obscuring data.
+    // Stale cache — only the MCP marketplace still uses cache. Skills V2
+    // is fresh on every fetch (skills.sh internal API), so a stale-cache
+    // event for skills is unexpected — log + ignore.
     unlisteners.push(
       await listen<MarketplaceStaleCacheEvent>('marketplace:stale-cache', (event) => {
         const { source, ageHours } = event.payload;
         if (source === 'skills') {
-          set({ staleCacheSkills: { ageHours } });
-        } else {
-          set({ staleCacheMcps: { ageHours } });
+          // V2 skills marketplace has no cache layer; if the backend ever
+          // emits this for skills, we ignore it (no UI hint applies).
+          return;
         }
+        set({ staleCacheMcps: { ageHours } });
       }),
     );
 
-    // Catalog enhanced — background scrape added new items to the cache.
-    // Quietly reload so the list gains entries; do not surface a banner
-    // (PRD §5.7 — soft enhancement, not an alert).
+    // Catalog enhanced — only meaningful for MCP V1. Skills V2 has no
+    // background enhancement step (every fetch is a fresh page from
+    // skills.sh); reload the active page if the upstream signals new data.
     unlisteners.push(
       await listen<MarketplaceCatalogEnhancedEvent>(
         'marketplace:catalog-enhanced',
         async (event) => {
           const { source } = event.payload;
           if (source === 'skills') {
-            await get().loadSkillsCatalog(false);
+            const { skillsListing, skillsSearch } = get();
+            if (skillsSearch === null) {
+              await get().loadSkillsPage(skillsListing.view, 0);
+            }
           } else {
             await get().loadMcpsCatalog(false);
           }
@@ -967,23 +1303,25 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
     );
 
     // Scrape degraded — only affects the skills source's enhancement
-    // layer; surface as a non-blocking flag so the page can show
-    // "(seed only)" on the synced timestamp (D-Imp-1 contract).
+    // layer (V1). V2 doesn't emit this; keep the listener for forward
+    // compat with any leftover legacy signal so it doesn't surface as a
+    // hard error.
     unlisteners.push(
       await listen<MarketplaceScrapeDegradedEvent>('marketplace:scrape-degraded', (event) => {
-        // V1: telemetry only — we do not interrupt the user. The
-        // `lastSyncedSkills` already reflects the seed-only timestamp.
         console.warn('Marketplace scrape degraded:', event.payload.reason);
       }),
     );
 
-    // Upstream error — backend exhausted seed + cache fallbacks. Record
-    // as upstream error so EmptyState renders (PRD §5.7).
+    // Upstream error — backend hit a network / API failure. Record on the
+    // appropriate listing-state error slot so the page can render its
+    // EmptyState (PRD §5.7).
     unlisteners.push(
       await listen<MarketplaceUpstreamErrorEvent>('marketplace:upstream-error', (event) => {
         const { source, error } = event.payload;
         if (source === 'skills') {
-          set({ upstreamErrorSkills: error });
+          set((state) => ({
+            skillsListing: { ...state.skillsListing, upstreamError: error },
+          }));
         } else {
           set({ upstreamErrorMcps: error });
         }

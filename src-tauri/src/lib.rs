@@ -164,6 +164,8 @@ pub fn run() {
             trash::restore_claude_md,
             // Marketplace commands
             marketplace::list_marketplace_skills,
+            marketplace::search_marketplace_skills,
+            marketplace::get_marketplace_skill_readme,
             marketplace::list_marketplace_mcps,
             marketplace::install_marketplace_skill,
             marketplace::install_marketplace_mcp,

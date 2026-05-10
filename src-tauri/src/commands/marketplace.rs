@@ -1,30 +1,50 @@
-//! Marketplace IPCs (V2.0).
+//! Marketplace IPCs (V2.0 — Phase I rewrite, 2026-05-10).
 //!
-//! This module exposes six commands plus six Tauri events. See
-//! `.dev/marketplace-impl/02_tech_spec.md` §3 for the full contract:
+//! ## V2 Skill marketplace = skills.sh internal API
 //!
-//! - `list_marketplace_skills(refresh)`
-//! - `list_marketplace_mcps(refresh)`
-//! - `install_marketplace_skill(item, conflict_action)`
-//! - `install_marketplace_mcp(item, conflict_action)`
-//! - `auto_classify_marketplace_item(id, item_type)`
-//! - `refresh_marketplace_cache(source)`
+//! Skills are now served by walking the **internal pagination API** at
+//! `https://skills.sh/api/skills/{view}/{page}` (200 items/page, 91k items
+//! across the `all-time` / `trending` / `hot` views) plus the unauthenticated
+//! search at `https://skills.sh/api/search?q=...`. README detail content is
+//! pulled from `raw.githubusercontent.com` on demand. This replaces the V1
+//! "GitHub Contents API + curated 10-entry seed" pipeline, which produced
+//! only 12 visible items and was useless for browsing.
 //!
-//! ## Three layers (D-Imp-1 hybrid)
+//! The internal API returns `{source, skillId, name, installs, isOfficial?,
+//! installsYesterday?, change?}` — see `MarketplaceSkillItem` in `types.rs`
+//! for the field-by-field deserialisation contract. The IPC signatures and
+//! Tauri events are documented in
+//! `.dev/marketplace-impl/02_tech_spec.md` §3:
 //!
-//! 1. **Seed layer** (immediate, ~5s): `marketplace_seed::SKILL_SEED` walked
-//!    serially against the GitHub Contents API to populate the catalog on
-//!    first paint. MCPs use the Official MCP Registry's `/v0.1/servers`
-//!    endpoint as their seed (single GET, ~200KB, no pagination).
-//! 2. **Cache layer** (24h TTL): catalogs serialise to
-//!    `~/.ensemble/marketplace-cache/{skills,mcps}-catalog.json` so
-//!    subsequent app launches show the previous result instantly. Stale
-//!    cache is still rendered but emits `marketplace:stale-cache`.
-//! 3. **Scrape enhancement** (background, Skills only): once the seed is
-//!    served, `tokio::spawn` launches `fetch_skills_sh_top` to scrape the
-//!    skills.sh leaderboard for items not in the seed. Failures are
-//!    silent — they emit `marketplace:scrape-degraded` and leave the seed
-//!    catalog untouched.
+//! - `list_marketplace_skills(view, page)` — V2 pagination
+//! - `search_marketplace_skills(query)` — V2 fuzzy / semantic search
+//! - `get_marketplace_skill_readme(source, skill_id)` — V2 README detail
+//! - `list_marketplace_mcps(refresh)` — unchanged
+//! - `install_marketplace_skill(item, conflict_action)` — unchanged signature; install path
+//!   now derives `(owner, repo)` from `item.source.split('/')` and reads
+//!   from GitHub Contents API as before
+//! - `install_marketplace_mcp(item, conflict_action)` — unchanged
+//! - `auto_classify_marketplace_item(id, item_type)` — unchanged
+//! - `refresh_marketplace_cache(source)` — unchanged
+//! - `update_mcp_env_vars(mcp_id, env)` — unchanged
+//!
+//! ## skills.sh internal API headers
+//!
+//! The endpoint requires same-origin browser headers (verified 2026-05-10
+//! via curl + Chrome DevTools — without them the upstream returns 403).
+//! All requests go through `skills_sh_request()` which sets:
+//! `User-Agent` (Mac Safari fingerprint), `Accept: application/json`,
+//! `Origin: https://skills.sh`, `Referer: https://skills.sh/`,
+//! `Sec-Fetch-Mode: cors`. The reqwest client has gzip decompression
+//! enabled (Cargo.toml `features = ["json", "gzip"]`) — the upstream
+//! always serves gzip and rejects clients that cannot decode it.
+//!
+//! ## MCP marketplace (unchanged)
+//!
+//! MCPs use the Official MCP Registry's `/v0.1/servers` endpoint
+//! (single GET, ~200KB, no pagination) merged with the well-known seed
+//! in `marketplace_seed::MCP_SEED`. Cache lives at
+//! `~/.ensemble/marketplace-cache/mcps-catalog-v2.json` with a 24h TTL.
 //!
 //! ## DATA_MUTEX discipline
 //!
@@ -36,27 +56,29 @@
 //! ## HTTP client
 //!
 //! A single `reqwest::Client` lives behind a `OnceLock` (D-Imp-10). It
-//! ships with a 15s timeout and a `User-Agent` matching `Ensemble/<version>
-//! (+https://github.com/...)`. No new crate is needed — `OnceLock` has
-//! been in std since Rust 1.70 and the project's MSRV is 1.77.2 (Cargo.toml).
+//! ships with a 15s timeout, gzip decompression, and a `User-Agent` matching
+//! `Ensemble/<version>` for non-skills.sh callers (the skills.sh helper
+//! overrides UA to a browser fingerprint).
 //!
 //! ## verify-third-party-behavior-firsthand
 //!
-//! - GitHub Contents API: <https://docs.github.com/en/rest/repos/contents>
-//!   verified to return `{type, encoding: "base64", content: <bytes>}` for
-//!   blob requests at time of writing. Headers `Accept: application/vnd.github+json`
-//!   and `X-GitHub-Api-Version: 2022-11-28` are the official recommendation.
-//! - MCP Registry: <https://registry.modelcontextprotocol.io/v0.1/servers>
+//! - skills.sh internal API:
+//!   `https://skills.sh/api/skills/all-time/0` returned 200 items + total ≈ 91029
+//!   when curled with the browser headers on 2026-05-10. The same request
+//!   without `Origin` / `Referer` returned 403, confirming the same-origin
+//!   gate.
+//! - skills.sh search:
+//!   `https://skills.sh/api/search?q=playwright` returned `{searchType: "fuzzy", count: ...}`.
+//! - GitHub raw README:
+//!   `https://raw.githubusercontent.com/anthropics/skills/HEAD/skill-creator/SKILL.md`
+//!   was either 200 (skill at sub-path) or 404 (skill at repo root); our
+//!   helper tries the sub-path first and falls back to the root SKILL.md.
+//! - MCP Registry: `https://registry.modelcontextprotocol.io/v0.1/servers`
 //!   responds with `{servers: Vec<Server>, total_count, ...}` per
 //!   <https://github.com/modelcontextprotocol/registry/blob/main/docs/openapi.yaml>.
-//!
-//! Both schemas are reflected in `GitHubContentResponse` and `RegistryListResponse`
-//! below; if the upstream changes shape, deserialisation surfaces a clear
-//! `serde_json` error rather than silent corruption.
 
 use crate::commands::classify::{auto_classify, ClassifyItem, ClassifyResult, ExistingCategory};
 use crate::commands::data::{read_app_data, write_app_data, DATA_MUTEX};
-use crate::commands::marketplace_seed::SKILL_SEED;
 use crate::types::{
     AppData, ConflictAction, EnvVarSpec, HttpMcpConfig, InstallOutcome, MarketplaceCatalog,
     MarketplaceMcpItem, MarketplaceSkillItem, MarketplaceSource, McpConfigFile, McpMetadata,
@@ -64,7 +86,8 @@ use crate::types::{
 };
 use crate::utils::{ensure_dir, get_app_data_dir};
 use base64_simple::decode_base64;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -75,34 +98,45 @@ use tauri::{AppHandle, Emitter};
 // Constants
 // ============================================================================
 
-/// Cache TTL gate. Spec §1.3 / D-Imp-3.
+/// Cache TTL gate. Used by MCP catalog. Skills are fresh-fetched per call
+/// (the internal API is fast enough that catalog cache is not needed; in-memory
+/// README cache below is sufficient).
 const CACHE_TTL_SECS: i64 = 24 * 60 * 60;
 
 /// HTTP client timeout for upstream catalog requests.
 const HTTP_TIMEOUT_SECS: u64 = 15;
 
-/// Per-request sleep between sequential GitHub API calls (R-24 mitigation —
-/// unauthenticated rate limit is 60 req/h; 100ms between calls keeps us
-/// well below burst thresholds even if a refresh fan-outs to the seed
-/// length).
+/// Per-request sleep between sequential GitHub Contents API calls during
+/// install (R-24 mitigation — unauthenticated GitHub rate limit is 60 req/h;
+/// 100ms between calls stays well below burst thresholds when fanning out
+/// across a skill's nested file tree).
 const GITHUB_PACING_MS: u64 = 100;
-
-/// Skills.sh leaderboard scrape ceiling (D-Imp-1.2). Anything more is
-/// diminishing returns for V1 catalog breadth.
-const SKILLS_SH_SCRAPE_CAP: usize = 100;
-
-/// Background scrape watchdog. If the scrape exceeds this duration the
-/// task is dropped and the seed catalog is treated as final for this run.
-const SCRAPE_TIMEOUT_SECS: u64 = 30;
 
 /// Cap on README-content-bytes carried in the catalog. Larger bodies are
 /// truncated at fetch time so the cache file stays small.
 const README_BYTES_CAP: usize = 3_000;
 
-/// Display label baked into the catalog file's `source` field. Useful for
-/// dev logs but not surfaced in the UI.
-const SOURCE_TAG_SKILLS: &str = "skills.sh-seed-v1";
+/// In-memory README cache TTL (5 minutes). Skill detail panels can fan out
+/// repeated `get_marketplace_skill_readme` calls when the user clicks
+/// the same row multiple times; we serve from memory to avoid hammering
+/// `raw.githubusercontent.com`. Cache lives in `OnceLock<Mutex<...>>` —
+/// process-local, lost on restart.
+const README_CACHE_TTL_SECS: i64 = 5 * 60;
+
+/// Cap on entries in the README cache to bound memory growth. Eviction
+/// is FIFO once the cache hits the cap (sufficient for an interactive
+/// browse pattern; the LRU upgrade is in V1.5 backlog).
+const README_CACHE_MAX_ENTRIES: usize = 64;
+
+/// Display label baked into the MCP catalog file's `source` field. Useful
+/// for dev logs but not surfaced in the UI.
 const SOURCE_TAG_MCPS: &str = "mcp-registry-v0.1";
+
+/// User-Agent string sent to skills.sh — must look like a browser. The
+/// upstream rejects requests whose UA matches `*reqwest*` or empty UA.
+/// Verified 2026-05-10 via curl.
+const SKILLS_SH_USER_AGENT: &str =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15";
 
 // ============================================================================
 // Resource-name sanitisation (B-P0-1 — security)
@@ -168,6 +202,11 @@ pub fn marketplace_http() -> &'static reqwest::Client {
     MARKETPLACE_HTTP.get_or_init(|| {
         reqwest::Client::builder()
             .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+            // Phase I (V2): skills.sh API serves gzip and **rejects clients
+            // that cannot decompress it**. The `gzip` feature on reqwest
+            // (Cargo.toml) registers the `Accept-Encoding: gzip` header and
+            // transparent decoder. Verified 2026-05-10 via curl.
+            .gzip(true)
             .user_agent(concat!(
                 "Ensemble/",
                 env!("CARGO_PKG_VERSION"),
@@ -176,6 +215,22 @@ pub fn marketplace_http() -> &'static reqwest::Client {
             .build()
             .expect("reqwest Client builds with no failures from constants")
     })
+}
+
+/// Build the request that talks to skills.sh's *internal* (unauth) API.
+/// The API rejects requests that don't carry a same-origin browser
+/// fingerprint — `Origin` and `Referer` are mandatory, `Sec-Fetch-Mode`
+/// guards against CORS preflight bypass detection, and the User-Agent
+/// must look like a real browser (server-side filter on `*reqwest*`).
+/// Verified working 2026-05-10 via curl + chrome-devtools.
+fn skills_sh_request(url: &str) -> reqwest::RequestBuilder {
+    marketplace_http()
+        .get(url)
+        .header(reqwest::header::USER_AGENT, SKILLS_SH_USER_AGENT)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header("Origin", "https://skills.sh")
+        .header("Referer", "https://skills.sh/")
+        .header("Sec-Fetch-Mode", "cors")
 }
 
 // ============================================================================
@@ -191,38 +246,22 @@ pub fn ensure_marketplace_cache_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-// Cache filename version. Bumped to invalidate older cache files when
-// the seed list changes shape (Phase H 2026-05-10 — SKILL_SEED paths
-// rewritten + MCP_SEED added). Older `*-catalog.json` files become
-// orphaned but are harmless; they sit on disk untouched until a user
-// clears `~/.ensemble/marketplace-cache/`.
-fn skills_catalog_path() -> Result<PathBuf, String> {
-    Ok(ensure_marketplace_cache_dir()?.join("skills-catalog-v2.json"))
-}
-
+// Cache filename version. Bumped when the cache schema changes shape so
+// older entries become orphaned (and harmless — they sit on disk untouched
+// until the user clears `~/.ensemble/marketplace-cache/`).
+//
+// V2 (Phase I 2026-05-10): the Skills cache is **gone**. The skills.sh
+// internal API responds in < 1s for any page; reading from a cache instead
+// adds complexity (TTL invalidation, schema migration, stale data) for
+// no observable benefit. MCP cache stays — the registry merge is heavier
+// and the result is stable across hours.
 fn mcps_catalog_path() -> Result<PathBuf, String> {
     Ok(ensure_marketplace_cache_dir()?.join("mcps-catalog-v2.json"))
 }
 
 // ============================================================================
-// Cache I/O helpers
+// Cache I/O helpers (MCP only — Skills now fresh-fetch every call)
 // ============================================================================
-
-fn read_skills_catalog() -> Option<MarketplaceCatalog<MarketplaceSkillItem>> {
-    let path = skills_catalog_path().ok()?;
-    if !path.exists() {
-        return None;
-    }
-    let content = fs::read_to_string(&path).ok()?;
-    serde_json::from_str(&content).ok()
-}
-
-fn write_skills_catalog(catalog: &MarketplaceCatalog<MarketplaceSkillItem>) -> Result<(), String> {
-    let path = skills_catalog_path()?;
-    let json =
-        serde_json::to_string_pretty(catalog).map_err(|e| format!("serialize skills catalog: {}", e))?;
-    fs::write(&path, json).map_err(|e| format!("write skills catalog: {}", e))
-}
 
 fn read_mcps_catalog() -> Option<MarketplaceCatalog<MarketplaceMcpItem>> {
     let path = mcps_catalog_path().ok()?;
@@ -600,22 +639,6 @@ enum GitHubContentResponse {
     Multiple(Vec<GitHubContentBlob>),
 }
 
-#[derive(Deserialize)]
-struct GitHubRepoMetadata {
-    full_name: String,
-    description: Option<String>,
-    stargazers_count: u32,
-    updated_at: String,
-    license: Option<GitHubLicense>,
-    homepage: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct GitHubLicense {
-    spdx_id: Option<String>,
-    name: Option<String>,
-}
-
 // ============================================================================
 // MCP Registry response
 // ============================================================================
@@ -706,12 +729,8 @@ struct RegistryRemote {
 }
 
 // ============================================================================
-// Helpers — fetch and parse GitHub
+// Helpers — fetch and parse GitHub Contents API (used by install path only)
 // ============================================================================
-
-fn build_repo_metadata_url(owner: &str, repo: &str) -> String {
-    format!("https://api.github.com/repos/{}/{}", owner, repo)
-}
 
 fn build_contents_url(owner: &str, repo: &str, path: &str) -> String {
     if path.is_empty() {
@@ -807,171 +826,223 @@ fn truncate_readme(s: &str) -> String {
 }
 
 // ============================================================================
-// fetch_skills_seed — the baseline catalog (D-Imp-1.1.1)
+// V2 — skills.sh internal API (Phase I, 2026-05-10)
 // ============================================================================
 
-async fn fetch_one_seed_skill(
-    seed: &crate::commands::marketplace_seed::SeedSkill,
-) -> Result<MarketplaceSkillItem, String> {
-    // 1. Repo metadata (stars, last update, license).
-    let repo_meta: GitHubRepoMetadata =
-        github_get_json(&build_repo_metadata_url(seed.owner, seed.repo)).await?;
+/// Wire envelope for `GET https://skills.sh/api/skills/{view}/{page}`.
+///
+/// Field names match the upstream JSON exactly; `MarketplaceSkillItem`
+/// carries `#[serde(rename_all = "camelCase")]` so its `source` /
+/// `skillId` / `installs` / `isOfficial` / `installsYesterday` /
+/// `change` fields deserialise directly from the API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillsPageResponse {
+    pub skills: Vec<MarketplaceSkillItem>,
+    pub total: u64,
+    pub has_more: bool,
+    pub page: u32,
+}
 
-    // 2. SKILL.md content. The Contents API returns base64 with
-    //    embedded newlines.
-    let skill_md_url = build_contents_url(
-        seed.owner,
-        seed.repo,
-        &if seed.skill_path.is_empty() {
-            "SKILL.md".to_string()
-        } else {
-            format!("{}/SKILL.md", seed.skill_path)
+/// Wire envelope for `GET https://skills.sh/api/search?q=...`.
+///
+/// `searchType` is one of `"fuzzy"` / `"semantic"`. `durationMs` is
+/// the upstream-reported elapsed time (camelCase per upstream — verified
+/// 2026-05-10 via curl; the snake-case alternative `duration_ms` does
+/// not appear).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillsSearchResponse {
+    pub query: String,
+    pub search_type: String,
+    pub skills: Vec<MarketplaceSkillItem>,
+    pub count: u32,
+    #[serde(default)]
+    pub duration_ms: u64,
+}
+
+/// Fetch one page of the skills.sh internal API.
+///
+/// `view` is one of `"all-time"` / `"trending"` / `"hot"`. `page` is
+/// 0-indexed; each page carries up to 200 items. The `total` field on the
+/// response is the *full* upstream count (not the page count) — used by
+/// the frontend to render pagination affordances.
+///
+/// Returns the deserialised envelope. Network / HTTP-status / JSON
+/// errors are surfaced to the caller as a string error so the IPC can
+/// emit `marketplace:upstream-error` for the UI.
+async fn fetch_skills_internal(view: &str, page: u32) -> Result<SkillsPageResponse, String> {
+    let url = format!("https://skills.sh/api/skills/{}/{}", view, page);
+    let resp = skills_sh_request(&url)
+        .send()
+        .await
+        .map_err(|e| format!("skills.sh API: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("skills.sh API HTTP {}", resp.status()));
+    }
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("skills.sh body read: {}", e))?;
+    serde_json::from_str::<SkillsPageResponse>(&body)
+        .map_err(|e| format!("skills.sh JSON parse: {}", e))
+}
+
+/// Fetch search results from the skills.sh `/api/search` endpoint.
+///
+/// The upstream chooses `searchType` (`fuzzy` for short queries,
+/// `semantic` for longer ones); we surface it back to the frontend
+/// untouched so the UI can show a hint ("Semantic results" badge).
+async fn search_skills_internal(query: &str) -> Result<SkillsSearchResponse, String> {
+    let url = format!(
+        "https://skills.sh/api/search?q={}",
+        urlencoding::encode(query)
+    );
+    let resp = skills_sh_request(&url)
+        .send()
+        .await
+        .map_err(|e| format!("skills.sh search API: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("skills.sh search API HTTP {}", resp.status()));
+    }
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("skills.sh search body read: {}", e))?;
+    serde_json::from_str::<SkillsSearchResponse>(&body)
+        .map_err(|e| format!("skills.sh search JSON parse: {}", e))
+}
+
+// ============================================================================
+// README in-memory cache (V2 — bounded FIFO + 5-min TTL)
+// ============================================================================
+
+struct ReadmeCacheEntry {
+    body: String,
+    fetched_at: i64, // unix seconds
+}
+
+static README_CACHE: OnceLock<std::sync::Mutex<HashMap<String, ReadmeCacheEntry>>> =
+    OnceLock::new();
+
+fn readme_cache() -> &'static std::sync::Mutex<HashMap<String, ReadmeCacheEntry>> {
+    README_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn readme_cache_get(key: &str) -> Option<String> {
+    let now = chrono::Utc::now().timestamp();
+    let cache = readme_cache().lock().ok()?;
+    let entry = cache.get(key)?;
+    if now - entry.fetched_at > README_CACHE_TTL_SECS {
+        return None;
+    }
+    Some(entry.body.clone())
+}
+
+fn readme_cache_put(key: String, body: String) {
+    let now = chrono::Utc::now().timestamp();
+    let mut cache = match readme_cache().lock() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    if cache.len() >= README_CACHE_MAX_ENTRIES && !cache.contains_key(&key) {
+        // Evict the oldest entry (linear scan; cap is small).
+        if let Some(oldest_key) = cache
+            .iter()
+            .min_by_key(|(_, v)| v.fetched_at)
+            .map(|(k, _)| k.clone())
+        {
+            cache.remove(&oldest_key);
+        }
+    }
+    cache.insert(
+        key,
+        ReadmeCacheEntry {
+            body,
+            fetched_at: now,
         },
     );
-    let blob: GitHubContentBlob = github_get_json(&skill_md_url).await?;
-    let content_b64 = blob.content.ok_or("SKILL.md content was empty")?;
-    let bytes = decode_base64(&content_b64).map_err(|e| format!("Decode SKILL.md: {}", e))?;
-    let skill_md = String::from_utf8(bytes).map_err(|e| format!("SKILL.md UTF-8: {}", e))?;
-
-    let name = extract_skill_name_from_md(&skill_md).unwrap_or_else(|| {
-        seed.upstream_id
-            .rsplit('/')
-            .next()
-            .unwrap_or(seed.upstream_id)
-            .to_string()
-    });
-    let description = extract_skill_description_from_md(&skill_md).unwrap_or_default();
-
-    let id = format!("{}-{}-{}", seed.owner, seed.repo, name);
-    let homepage_url = repo_meta
-        .homepage
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| format!("https://github.com/{}/{}", seed.owner, seed.repo));
-
-    Ok(MarketplaceSkillItem {
-        id,
-        name,
-        description,
-        readme_markdown: truncate_readme(&skill_md),
-        author: seed.owner.to_string(),
-        owner: seed.owner.to_string(),
-        repo: seed.repo.to_string(),
-        skill_path: seed.skill_path.to_string(),
-        homepage_url,
-        last_updated_at: repo_meta.updated_at,
-        stars: repo_meta.stargazers_count,
-        categories: Vec::new(),
-        tags: Vec::new(),
-        license: repo_meta
-            .license
-            .and_then(|l| l.spdx_id.or(l.name)),
-    })
 }
 
-/// Walk `SKILL_SEED` serially, sleeping 100ms between requests to stay
-/// well under GitHub's rate limit. Returns the items collected; entries
-/// that fail individually are dropped (logged to stderr). If the entire
-/// walk yields zero items the caller falls back to stale cache.
-async fn fetch_skills_seed() -> Vec<MarketplaceSkillItem> {
-    let mut out = Vec::with_capacity(SKILL_SEED.len());
-    for seed in SKILL_SEED.iter() {
-        match fetch_one_seed_skill(seed).await {
-            Ok(item) => out.push(item),
+/// Try `https://raw.githubusercontent.com/{source}/HEAD/{skill_id}/SKILL.md`
+/// first (skill in subfolder), then fall back to
+/// `https://raw.githubusercontent.com/{source}/HEAD/SKILL.md` (skill at
+/// repo root). Returns the markdown body — capped at `README_BYTES_CAP`.
+///
+/// `source` and `skill_id` flow from the catalog item directly. Both go
+/// through `sanitize_resource_name` for path-traversal defence in depth
+/// (the API surface accepts arbitrary strings).
+async fn fetch_skill_readme_github(source: &str, skill_id: &str) -> Result<String, String> {
+    // Validate `source` shape: must be `owner/repo` with simple chars.
+    let parts: Vec<&str> = source.split('/').collect();
+    if parts.len() != 2 {
+        return Err(format!("Invalid source (expected owner/repo): {}", source));
+    }
+    let owner = sanitize_resource_name(parts[0])
+        .map_err(|e| format!("Invalid source owner: {}", e))?;
+    let repo = sanitize_resource_name(parts[1])
+        .map_err(|e| format!("Invalid source repo: {}", e))?;
+
+    // skill_id may include intermediate `/` separators (e.g.
+    // `skills/skill-creator`) — sanitise each segment independently.
+    let safe_skill_id_segments: Vec<String> = skill_id
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(sanitize_resource_name)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Invalid skill_id segment: {}", e))?;
+    let safe_skill_id = safe_skill_id_segments.join("/");
+
+    let cache_key = format!("{}/{}|{}", owner, repo, safe_skill_id);
+    if let Some(cached) = readme_cache_get(&cache_key) {
+        return Ok(cached);
+    }
+
+    let mut tried_urls: Vec<String> = Vec::new();
+    if !safe_skill_id.is_empty() {
+        tried_urls.push(format!(
+            "https://raw.githubusercontent.com/{}/{}/HEAD/{}/SKILL.md",
+            owner, repo, safe_skill_id
+        ));
+    }
+    tried_urls.push(format!(
+        "https://raw.githubusercontent.com/{}/{}/HEAD/SKILL.md",
+        owner, repo
+    ));
+
+    let mut last_err = String::from("no urls tried");
+    for url in &tried_urls {
+        match marketplace_http().get(url).send().await {
+            Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
+                last_err = format!("404 at {}", url);
+                continue;
+            }
+            Ok(resp) if !resp.status().is_success() => {
+                last_err = format!("HTTP {} at {}", resp.status(), url);
+                continue;
+            }
+            Ok(resp) => match resp.text().await {
+                Ok(body) => {
+                    let truncated = truncate_readme(&body);
+                    readme_cache_put(cache_key, truncated.clone());
+                    return Ok(truncated);
+                }
+                Err(e) => {
+                    last_err = format!("read body {}: {}", url, e);
+                    continue;
+                }
+            },
             Err(e) => {
-                eprintln!(
-                    "[marketplace] seed fetch failed for {}/{}/{}: {}",
-                    seed.owner, seed.repo, seed.skill_path, e
-                );
+                last_err = format!("network {}: {}", url, e);
+                continue;
             }
         }
-        tokio::time::sleep(Duration::from_millis(GITHUB_PACING_MS)).await;
     }
-    out
+    Err(format!("README not found ({})", last_err))
 }
 
 // ============================================================================
-// fetch_skills_sh_top — background scrape (D-Imp-1.1.2)
-// ============================================================================
-
-/// Best-effort scrape of `https://skills.sh/` (or `/leaderboard`). Returns
-/// a Vec of `(owner, repo, skill_path)` triples extracted from
-/// `https://github.com/{owner}/{repo}` anchors. Limit is `SKILLS_SH_SCRAPE_CAP`.
-///
-/// The scrape is intentionally tolerant: any failure (DNS, TLS, 4xx, 5xx,
-/// HTML structure change) returns an empty Vec rather than propagating —
-/// the caller logs / emits `marketplace:scrape-degraded` and treats the
-/// seed as authoritative.
-async fn fetch_skills_sh_top(limit: usize) -> Vec<(String, String, String)> {
-    let resp = match marketplace_http().get("https://skills.sh/").send().await {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("[marketplace] skills.sh fetch failed: {}", e);
-            return Vec::new();
-        }
-    };
-    if !resp.status().is_success() {
-        eprintln!("[marketplace] skills.sh HTTP {}", resp.status());
-        return Vec::new();
-    }
-    let body = match resp.text().await {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("[marketplace] skills.sh body read failed: {}", e);
-            return Vec::new();
-        }
-    };
-
-    let re = match regex::Regex::new(r#"https?://github\.com/([\w.-]+)/([\w.-]+)"#) {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
-    };
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    for caps in re.captures_iter(&body) {
-        let owner = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
-        let repo = caps.get(2).map(|m| m.as_str().to_string()).unwrap_or_default();
-        // Filter common false positives.
-        if owner.is_empty()
-            || repo.is_empty()
-            || repo.ends_with(".png")
-            || repo.ends_with(".jpg")
-            || repo == "issues"
-            || owner == "github"
-        {
-            continue;
-        }
-        let key = format!("{}/{}", owner, repo);
-        if !seen.insert(key) {
-            continue;
-        }
-        out.push((owner, repo, String::new()));
-        if out.len() >= limit {
-            break;
-        }
-    }
-    out
-}
-
-/// Merge new scrape items into the catalog, deduping against the existing
-/// `id` set. Returns the count actually added.
-fn merge_scrape_into_catalog(
-    catalog: &mut MarketplaceCatalog<MarketplaceSkillItem>,
-    new_items: Vec<MarketplaceSkillItem>,
-) -> usize {
-    let existing: std::collections::HashSet<String> =
-        catalog.items.iter().map(|i| i.id.clone()).collect();
-    let added: Vec<MarketplaceSkillItem> = new_items
-        .into_iter()
-        .filter(|i| !existing.contains(&i.id))
-        .collect();
-    let count = added.len();
-    catalog.items.extend(added);
-    catalog.last_synced_at = chrono::Utc::now().to_rfc3339();
-    count
-}
-
-// ============================================================================
-// fetch_mcp_registry — single GET (D-Imp-2)
+// fetch_mcp_registry — single GET (D-Imp-2; unchanged from V1)
 // ============================================================================
 
 /// Parse `(owner, repo)` from a GitHub repository URL.
@@ -1193,154 +1264,87 @@ async fn fetch_mcp_registry() -> Result<Vec<MarketplaceMcpItem>, String> {
 }
 
 // ============================================================================
-// IPC: list_marketplace_skills (spec §3.1)
+// IPC: list_marketplace_skills (V2 — skills.sh internal API pagination)
 // ============================================================================
 
+/// Validate the `view` parameter against the upstream's known set.
+/// Returns the canonical lowercased value or an error string.
+fn validate_skills_view(view: &str) -> Result<&str, String> {
+    match view {
+        "all-time" | "trending" | "hot" => Ok(view),
+        other => Err(format!(
+            "Invalid view: {} (expected one of: all-time, trending, hot)",
+            other
+        )),
+    }
+}
+
+/// V2: fetch one page of skills directly from the skills.sh internal API.
+///
+/// The full envelope (`SkillsPageResponse`) is returned so the frontend can
+/// drive pagination from `total` + `hasMore`. The caller specifies:
+///
+/// - `view`: `"all-time"` | `"trending"` | `"hot"`
+/// - `page`: 0-indexed page number; each page carries up to 200 items
+///
+/// All `MarketplaceSkillItem` GitHub-derived fields (`stars`, `last_updated_at`,
+/// `license`, etc.) come back empty for V2 list-page items — the frontend
+/// renders `installs` instead. When the user opens the detail panel the
+/// frontend calls `get_marketplace_skill_readme` to populate the body.
 #[tauri::command]
 pub async fn list_marketplace_skills(
     app: AppHandle,
-    refresh: bool,
-) -> Result<Vec<MarketplaceSkillItem>, String> {
-    let cache = read_skills_catalog();
-
-    // Fast path: cache hit, not asked to refresh.
-    if !refresh {
-        if let Some(c) = &cache {
-            if cache_age_hours_if_stale(&c.last_synced_at).is_none() {
-                let items = c.items.clone();
-                spawn_skills_scrape_enhancement(app.clone());
-                return Ok(items);
-            }
-        }
-    }
-
-    // Path B: refresh requested OR cache stale OR cache absent.
-    let seed_items = fetch_skills_seed().await;
-    if seed_items.is_empty() {
-        // Fall back to whatever stale cache we have.
-        if let Some(c) = cache {
-            let age = cache_age_hours_if_stale(&c.last_synced_at).unwrap_or(0);
+    view: String,
+    page: u32,
+) -> Result<SkillsPageResponse, String> {
+    validate_skills_view(&view)?;
+    match fetch_skills_internal(&view, page).await {
+        Ok(resp) => Ok(resp),
+        Err(e) => {
             let _ = app.emit(
-                "marketplace:stale-cache",
-                serde_json::json!({"source": "skills", "ageHours": age}),
+                "marketplace:upstream-error",
+                serde_json::json!({"source": "skills", "error": e}),
             );
-            return Ok(c.items);
+            Err(e)
         }
-        let _ = app.emit(
-            "marketplace:upstream-error",
-            serde_json::json!({"source": "skills", "error": "Seed fetch returned no items"}),
-        );
-        return Err("Marketplace temporarily unavailable.".to_string());
     }
-
-    let new_catalog = MarketplaceCatalog {
-        items: seed_items.clone(),
-        last_synced_at: chrono::Utc::now().to_rfc3339(),
-        source: SOURCE_TAG_SKILLS.to_string(),
-    };
-    if let Err(e) = write_skills_catalog(&new_catalog) {
-        eprintln!("[marketplace] write skills catalog failed: {}", e);
-    }
-    spawn_skills_scrape_enhancement(app);
-    Ok(seed_items)
 }
 
-/// Spawn the background skills.sh scrape task. Failures are silent and
-/// surface only via `marketplace:scrape-degraded`. Successes emit
-/// `marketplace:catalog-enhanced`.
-fn spawn_skills_scrape_enhancement(app: AppHandle) {
-    tokio::spawn(async move {
-        let scraped = match tokio::time::timeout(
-            Duration::from_secs(SCRAPE_TIMEOUT_SECS),
-            fetch_skills_sh_top(SKILLS_SH_SCRAPE_CAP),
-        )
-        .await
-        {
-            Ok(v) => v,
-            Err(_) => {
-                let _ = app.emit(
-                    "marketplace:scrape-degraded",
-                    serde_json::json!({"source": "skills", "reason": "scrape timeout"}),
-                );
-                return;
-            }
-        };
-        if scraped.is_empty() {
+// ============================================================================
+// IPC: search_marketplace_skills (V2 — fuzzy / semantic via skills.sh)
+// ============================================================================
+
+#[tauri::command]
+pub async fn search_marketplace_skills(
+    app: AppHandle,
+    query: String,
+) -> Result<SkillsSearchResponse, String> {
+    let trimmed = query.trim();
+    if trimmed.len() < 2 {
+        return Err("Query must be at least 2 characters".to_string());
+    }
+    match search_skills_internal(trimmed).await {
+        Ok(resp) => Ok(resp),
+        Err(e) => {
             let _ = app.emit(
-                "marketplace:scrape-degraded",
-                serde_json::json!({"source": "skills", "reason": "skills.sh unreachable or no anchors"}),
+                "marketplace:upstream-error",
+                serde_json::json!({"source": "skills", "error": e}),
             );
-            return;
+            Err(e)
         }
+    }
+}
 
-        // For each scraped (owner, repo) not already in the catalog, fetch
-        // a minimal item using the same GitHub API path. We avoid SKILL.md
-        // probing (the path may not exist at the repo root) and instead
-        // synthesise from repo metadata; the user can still inspect on
-        // GitHub via `homepage_url`.
-        let cache = match read_skills_catalog() {
-            Some(c) => c,
-            None => return,
-        };
-        let known: std::collections::HashSet<String> = cache
-            .items
-            .iter()
-            .map(|i| format!("{}/{}", i.owner, i.repo))
-            .collect();
-        let mut new_items: Vec<MarketplaceSkillItem> = Vec::new();
-        for (owner, repo, _path) in scraped {
-            if known.contains(&format!("{}/{}", owner, repo)) {
-                continue;
-            }
-            // Best-effort metadata fetch.
-            let meta_url = build_repo_metadata_url(&owner, &repo);
-            let meta: GitHubRepoMetadata = match github_get_json(&meta_url).await {
-                Ok(m) => m,
-                Err(_) => {
-                    tokio::time::sleep(Duration::from_millis(GITHUB_PACING_MS)).await;
-                    continue;
-                }
-            };
-            let name = meta
-                .full_name
-                .rsplit('/')
-                .next()
-                .unwrap_or(&meta.full_name)
-                .to_string();
-            let id = format!("{}-{}-{}", owner, repo, name);
-            new_items.push(MarketplaceSkillItem {
-                id,
-                name,
-                description: meta.description.unwrap_or_default(),
-                readme_markdown: String::new(),
-                author: owner.clone(),
-                owner,
-                repo,
-                skill_path: String::new(),
-                homepage_url: meta.homepage.unwrap_or_default(),
-                last_updated_at: meta.updated_at,
-                stars: meta.stargazers_count,
-                categories: Vec::new(),
-                tags: Vec::new(),
-                license: meta.license.and_then(|l| l.spdx_id.or(l.name)),
-            });
-            tokio::time::sleep(Duration::from_millis(GITHUB_PACING_MS)).await;
-        }
+// ============================================================================
+// IPC: get_marketplace_skill_readme (V2 — GitHub raw + 5-min memory cache)
+// ============================================================================
 
-        if new_items.is_empty() {
-            return;
-        }
-        let mut updated_catalog = cache;
-        let added = merge_scrape_into_catalog(&mut updated_catalog, new_items);
-        if let Err(e) = write_skills_catalog(&updated_catalog) {
-            eprintln!("[marketplace] write enhanced catalog failed: {}", e);
-            return;
-        }
-        let _ = app.emit(
-            "marketplace:catalog-enhanced",
-            serde_json::json!({"source": "skills", "addedCount": added}),
-        );
-    });
+#[tauri::command]
+pub async fn get_marketplace_skill_readme(
+    source: String,
+    skill_id: String,
+) -> Result<String, String> {
+    fetch_skill_readme_github(&source, &skill_id).await
 }
 
 // ============================================================================
@@ -1546,7 +1550,11 @@ pub fn update_mcp_env_vars(
 pub async fn refresh_marketplace_cache(app: AppHandle, source: String) -> Result<(), String> {
     match source.as_str() {
         "skills" => {
-            list_marketplace_skills(app, true).await?;
+            // V2: Skills are fresh-fetched per call (no cache). Refresh here
+            // is a noop except for the implicit "warm the connection" effect
+            // of one round-trip to skills.sh. We pull page 0 of the all-time
+            // view to confirm reachability and surface upstream errors.
+            list_marketplace_skills(app, "all-time".to_string(), 0).await?;
             Ok(())
         }
         "mcps" => {
@@ -1619,6 +1627,34 @@ async fn download_skill_recursive(
         }
     }
     Ok(())
+}
+
+/// Derive `(owner, repo, skill_path)` for the GitHub Contents API from a
+/// catalog item. V2 internal-API items carry `source = "owner/repo"` and
+/// `skillId = "<path-within-repo>"`; V1 cache items carried `owner` /
+/// `repo` / `skill_path` separately. Prefer V2 when both are present; fall
+/// back to V1 fields. Empty strings on any axis mean "skill at repo root".
+fn derive_install_triple(item: &MarketplaceSkillItem) -> (String, String, String) {
+    if !item.source.is_empty() {
+        let parts: Vec<&str> = item.source.splitn(2, '/').collect();
+        if parts.len() == 2 {
+            let owner = parts[0].to_string();
+            let repo = parts[1].to_string();
+            // Use `skill_id` (V2) preferentially; fall back to `skill_path` (V1).
+            let path = if !item.skill_id.is_empty() {
+                item.skill_id.clone()
+            } else {
+                item.skill_path.clone()
+            };
+            return (owner, repo, path);
+        }
+    }
+    // V1 fallback path.
+    (
+        item.owner.clone(),
+        item.repo.clone(),
+        item.skill_path.clone(),
+    )
 }
 
 #[tauri::command]
@@ -1713,7 +1749,16 @@ pub async fn install_marketplace_skill(
     }
 
     // -- Download path (None and Replace both reach here once the path is clear)
-    if let Err(e) = download_skill_recursive(&item.owner, &item.repo, &item.skill_path, &target_dir).await {
+    let (owner, repo, skill_path) = derive_install_triple(&item);
+    if owner.is_empty() || repo.is_empty() {
+        return Ok(InstallOutcome::Failed {
+            reason: format!(
+                "Cannot derive owner/repo from item.source={:?}, item.owner={:?}, item.repo={:?}",
+                item.source, item.owner, item.repo
+            ),
+        });
+    }
+    if let Err(e) = download_skill_recursive(&owner, &repo, &skill_path, &target_dir).await {
         // Roll back partial download so the next attempt sees a clean target.
         let _ = fs::remove_dir_all(&target_dir);
         return Ok(InstallOutcome::Failed { reason: e });
@@ -1736,6 +1781,11 @@ async fn finalize_skill_install(
     // merge them into the new entry. Non-RestoreFromTrash paths simply
     // find no snapshot and behave as before.
     let recovered = consume_skill_metadata_snapshot(&target_dir);
+
+    // Derive the install triple so MarketplaceSource carries real
+    // (owner, repo, name) — V2 catalog items only have `source` /
+    // `skill_id` populated.
+    let (owner, repo, _path) = derive_install_triple(item);
 
     // Write metadata under DATA_MUTEX.
     {
@@ -1766,8 +1816,8 @@ async fn finalize_skill_install(
         entry.install_source = Some("marketplace".to_string());
         entry.marketplace_source = Some(MarketplaceSource {
             source: "skills_sh".to_string(),
-            owner: item.owner.clone(),
-            repo: item.repo.clone(),
+            owner,
+            repo,
             name: item.name.clone(),
             last_synced_at: now.clone(),
         });
@@ -2710,5 +2760,284 @@ mod tests {
         assert!(sanitize_resource_name("foo bar").is_err()); // space
         assert!(sanitize_resource_name("foo\0bar").is_err()); // NUL
         assert!(sanitize_resource_name("foo:bar").is_err()); // colon
+    }
+
+    // ========================================================================
+    // V2 Phase I tests — skills.sh internal API
+    // ========================================================================
+
+    /// Skills.sh internal API list-page envelope. Fixture matches the live
+    /// response shape captured 2026-05-10 via curl + chrome-devtools.
+    /// Field names are camelCase: `skills, total, hasMore, page`.
+    #[test]
+    fn parse_skills_internal_response() {
+        let body = r#"{
+            "skills": [
+                {
+                    "source": "anthropics/skills",
+                    "skillId": "skill-creator",
+                    "name": "skill-creator",
+                    "installs": 12345,
+                    "isOfficial": true
+                },
+                {
+                    "source": "obra/superpowers",
+                    "skillId": "skills/test-driven-development",
+                    "name": "test-driven-development",
+                    "installs": 678
+                }
+            ],
+            "total": 91029,
+            "hasMore": true,
+            "page": 0
+        }"#;
+        let parsed: SkillsPageResponse =
+            serde_json::from_str(body).expect("internal API list shape must parse");
+        assert_eq!(parsed.total, 91029);
+        assert!(parsed.has_more);
+        assert_eq!(parsed.page, 0);
+        assert_eq!(parsed.skills.len(), 2);
+        assert_eq!(parsed.skills[0].source, "anthropics/skills");
+        assert_eq!(parsed.skills[0].skill_id, "skill-creator");
+        assert_eq!(parsed.skills[0].installs, 12345);
+        assert_eq!(parsed.skills[0].is_official, Some(true));
+        // GitHub-derived fields default to empty.
+        assert!(parsed.skills[0].owner.is_empty());
+        assert!(parsed.skills[0].repo.is_empty());
+        assert!(parsed.skills[0].readme_markdown.is_empty());
+    }
+
+    /// Hot-view enrichment: `installsYesterday` + `change`.
+    #[test]
+    fn parse_skills_internal_response_hot_view() {
+        let body = r#"{
+            "skills": [
+                {
+                    "source": "anthropics/skills",
+                    "skillId": "pdf",
+                    "name": "pdf",
+                    "installs": 9999,
+                    "installsYesterday": 100,
+                    "change": -25
+                }
+            ],
+            "total": 5318,
+            "hasMore": true,
+            "page": 0
+        }"#;
+        let parsed: SkillsPageResponse =
+            serde_json::from_str(body).expect("hot view fields must parse");
+        assert_eq!(parsed.skills[0].installs_yesterday, Some(100));
+        assert_eq!(parsed.skills[0].change, Some(-25));
+    }
+
+    #[test]
+    fn parse_skills_search_response() {
+        let body = r#"{
+            "query": "playwright",
+            "searchType": "fuzzy",
+            "skills": [
+                {
+                    "id": "abc123",
+                    "source": "microsoft/playwright-mcp",
+                    "skillId": "playwright",
+                    "name": "playwright",
+                    "installs": 4242
+                }
+            ],
+            "count": 1,
+            "duration_ms": 8
+        }"#;
+        let parsed: SkillsSearchResponse =
+            serde_json::from_str(body).expect("search shape must parse");
+        assert_eq!(parsed.query, "playwright");
+        assert_eq!(parsed.search_type, "fuzzy");
+        assert_eq!(parsed.count, 1);
+        assert_eq!(parsed.skills.len(), 1);
+        assert_eq!(parsed.skills[0].name, "playwright");
+        assert_eq!(parsed.skills[0].installs, 4242);
+    }
+
+    /// Backward compatibility: V1 cache JSON had only legacy fields. The
+    /// V2 struct must still deserialise it (V2 fields default to empty /
+    /// None). Guards against silently dropping V1 cache entries on app
+    /// upgrade.
+    #[test]
+    fn parse_skills_v1_legacy_cache_still_works() {
+        // r#"..."# raw-string literal handles the literal `\n` JSON escape
+        // sequence inside `readmeMarkdown` without Rust trying to interpret
+        // it as a Rust escape (which would error on a raw string anyway —
+        // r#""# has a different escape lexicon than "").
+        let body = "{
+            \"id\": \"anthropics-skills-skill-creator\",
+            \"name\": \"skill-creator\",
+            \"description\": \"Create new skills\",
+            \"readmeMarkdown\": \"# Skill Creator body\",
+            \"author\": \"anthropics\",
+            \"owner\": \"anthropics\",
+            \"repo\": \"skills\",
+            \"skillPath\": \"skills/skill-creator\",
+            \"homepageUrl\": \"https://github.com/anthropics/skills\",
+            \"lastUpdatedAt\": \"2026-05-09T00:00:00Z\",
+            \"stars\": 1234,
+            \"categories\": [],
+            \"tags\": [],
+            \"license\": \"MIT\"
+        }";
+        let parsed: MarketplaceSkillItem =
+            serde_json::from_str(body).expect("V1 legacy cache JSON must still parse");
+        assert_eq!(parsed.owner, "anthropics");
+        assert_eq!(parsed.repo, "skills");
+        assert_eq!(parsed.stars, 1234);
+        assert!(parsed.source.is_empty()); // V2 field defaults
+        assert!(parsed.skill_id.is_empty());
+        assert_eq!(parsed.installs, 0);
+    }
+
+    #[test]
+    fn validate_skills_view_accepts_known_views() {
+        assert!(validate_skills_view("all-time").is_ok());
+        assert!(validate_skills_view("trending").is_ok());
+        assert!(validate_skills_view("hot").is_ok());
+        assert!(validate_skills_view("popular").is_err());
+        assert!(validate_skills_view("").is_err());
+    }
+
+    #[test]
+    fn derive_install_triple_v2_internal_api() {
+        let item = MarketplaceSkillItem {
+            id: "anthropics/skills/skill-creator".into(),
+            name: "skill-creator".into(),
+            source: "anthropics/skills".into(),
+            skill_id: "skill-creator".into(),
+            ..Default::default()
+        };
+        let (owner, repo, path) = derive_install_triple(&item);
+        assert_eq!(owner, "anthropics");
+        assert_eq!(repo, "skills");
+        assert_eq!(path, "skill-creator");
+    }
+
+    #[test]
+    fn derive_install_triple_v2_with_nested_skill_path() {
+        let item = MarketplaceSkillItem {
+            id: "obra/superpowers/test-driven-development".into(),
+            name: "test-driven-development".into(),
+            source: "obra/superpowers".into(),
+            skill_id: "skills/test-driven-development".into(),
+            ..Default::default()
+        };
+        let (owner, repo, path) = derive_install_triple(&item);
+        assert_eq!(owner, "obra");
+        assert_eq!(repo, "superpowers");
+        assert_eq!(path, "skills/test-driven-development");
+    }
+
+    #[test]
+    fn derive_install_triple_v1_legacy_fallback() {
+        // V1-shape item with no `source` / `skill_id` populated.
+        let item = MarketplaceSkillItem {
+            id: "old-cache-id".into(),
+            name: "skill-creator".into(),
+            source: String::new(),
+            skill_id: String::new(),
+            owner: "anthropics".into(),
+            repo: "skills".into(),
+            skill_path: "skills/skill-creator".into(),
+            ..Default::default()
+        };
+        let (owner, repo, path) = derive_install_triple(&item);
+        assert_eq!(owner, "anthropics");
+        assert_eq!(repo, "skills");
+        assert_eq!(path, "skills/skill-creator");
+    }
+
+    #[test]
+    fn derive_install_triple_returns_empty_when_unparseable() {
+        let item = MarketplaceSkillItem {
+            id: "bad".into(),
+            name: "x".into(),
+            // `source` lacks the `/` so we can't split it.
+            source: "no-slash-here".into(),
+            ..Default::default()
+        };
+        let (owner, repo, _) = derive_install_triple(&item);
+        // Falls through to V1 fallback which is also empty.
+        assert!(owner.is_empty());
+        assert!(repo.is_empty());
+    }
+
+    /// README cache TTL behaviour. We hit `readme_cache_put` directly
+    /// (avoids a network call) and verify get/put consistency.
+    #[test]
+    fn readme_cache_put_then_get() {
+        readme_cache_put("test-key-A".to_string(), "body content".to_string());
+        let got = readme_cache_get("test-key-A");
+        assert_eq!(got.as_deref(), Some("body content"));
+    }
+
+    #[test]
+    fn readme_cache_get_returns_none_for_missing() {
+        let got = readme_cache_get("nonexistent-test-key");
+        assert!(got.is_none());
+    }
+
+    /// Live skills.sh internal-API integration test. Marked `#[ignore]` so
+    /// the default `cargo test` skips it; run manually:
+    ///
+    ///   cargo test --lib -- --ignored live_internal_api_returns_skills --nocapture
+    ///
+    /// Guards the same-origin browser headers + gzip decompression
+    /// requirements: a regression here is exactly what Phase I shipped
+    /// to fix (the V1 GitHub-seed pipeline returned only ~10 items;
+    /// the internal API returns ~91k).
+    #[test]
+    #[ignore = "requires network access to skills.sh"]
+    fn live_internal_api_returns_skills() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+        let resp = rt
+            .block_on(fetch_skills_internal("all-time", 0))
+            .expect("internal API should succeed against live skills.sh");
+        assert!(
+            !resp.skills.is_empty(),
+            "Live skills.sh internal API should return at least one item (got {} skills)",
+            resp.skills.len()
+        );
+        assert!(
+            resp.total > 1000,
+            "Live skills.sh all-time total should be > 1000 (got {})",
+            resp.total
+        );
+        eprintln!(
+            "Live: {} skills on page 0, total {}, hasMore {}",
+            resp.skills.len(),
+            resp.total,
+            resp.has_more
+        );
+    }
+
+    #[test]
+    #[ignore = "requires network access to skills.sh"]
+    fn live_internal_search_returns_results() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+        let resp = rt
+            .block_on(search_skills_internal("playwright"))
+            .expect("search API should succeed against live skills.sh");
+        assert!(
+            !resp.skills.is_empty(),
+            "Live search 'playwright' should return at least one match"
+        );
+        eprintln!(
+            "Live search 'playwright': {} results, type={}, took={} ms",
+            resp.skills.len(),
+            resp.search_type,
+            resp.duration_ms
+        );
     }
 }

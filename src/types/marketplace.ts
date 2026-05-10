@@ -24,22 +24,104 @@ export interface MarketplaceSource {
 
 // ----- Catalog item — Skill ------------------------------------------------
 
-/** A single Skill entry as returned by `list_marketplace_skills`. */
+/**
+ * A single Skill entry as returned by `list_marketplace_skills` /
+ * `search_marketplace_skills`.
+ *
+ * V2 (Phase I, 2026-05-10): the **canonical wire shape** comes from the
+ * skills.sh internal pagination API
+ * (`GET https://skills.sh/api/skills/{view}/{page}` and
+ * `GET https://skills.sh/api/search?q=...`), which returns a flat envelope of
+ * `{source, skillId, name, installs, isOfficial?, installsYesterday?, change?}`.
+ *
+ * All GitHub-derived fields (`stars`, `lastUpdatedAt`, `license`, `repo`,
+ * `repositoryUrl`, `categories`, `tags`, `readmeMarkdown`, `homepageUrl`,
+ * `skillPath`, `author`, `owner`) are now **optional** because the internal
+ * API does not return them — they are populated lazily at install time when
+ * the backend walks the GitHub Contents API. The detail panel pulls README
+ * content on-demand via `get_marketplace_skill_readme(source, skillId)`.
+ *
+ * `id` is also optional: V2 internal-API items don't carry one. The frontend
+ * uses `${source}/${skillId}` as the React key (see `useSkillItemKey` /
+ * `getSkillItemKey` helpers in `marketplaceStore`).
+ */
 export interface MarketplaceSkillItem {
-  id: string;
+  // ---- V2 internal-API fields (canonical) ----
+  /** skills.sh-style upstream `source` field, e.g. `"anthropics/skills"`.
+   *  Combined with `skillId` to form the install path + the React key. */
+  source: string;
+  /** skills.sh-style upstream `skillId` field — typically the directory path
+   *  within the repo (e.g. `"skill-creator"` or `"skills/skill-creator"`). */
+  skillId: string;
   name: string;
-  description: string;
-  readmeMarkdown: string;
-  author: string;
-  owner: string;
-  repo: string;
-  skillPath: string;
-  homepageUrl: string;
-  lastUpdatedAt: string;
-  stars: number;
-  categories: string[];
-  tags: string[];
+  /** Total install count reported by skills.sh. */
+  installs?: number;
+  /** Whether the skill is published by Anthropic / a verified author. */
+  isOfficial?: boolean;
+  /** Hot-view enrichment: installs in the last 24h. Only present when the
+   *  item came from the `hot` view; absent for `all-time` / `trending`. */
+  installsYesterday?: number;
+  /** Hot-view enrichment: signed delta vs. the previous 24h. */
+  change?: number;
+
+  // ---- V1 legacy / lazily-derived fields (optional) ----
+  /** Legacy V1 cache id; absent for V2 internal-API items. The frontend
+   *  always derives the React key from `${source}/${skillId}` instead. */
+  id?: string;
+  description?: string;
+  readmeMarkdown?: string;
+  author?: string;
+  owner?: string;
+  repo?: string;
+  skillPath?: string;
+  homepageUrl?: string;
+  lastUpdatedAt?: string;
+  stars?: number;
+  categories?: string[];
+  tags?: string[];
   license?: string;
+}
+
+// ----- Skills.sh listing / search response envelopes -----------------------
+
+/** Wire envelope returned by `list_marketplace_skills(view, page)`. Mirrors
+ *  Rust `SkillsPageResponse` in `src-tauri/src/commands/marketplace.rs`. */
+export interface SkillsPageResponse {
+  skills: MarketplaceSkillItem[];
+  /** Full upstream count (NOT the count on this page). Used to render
+   *  "{total} skills" hints + drive the "End of catalog" sentinel. */
+  total: number;
+  hasMore: boolean;
+  /** 0-indexed page number of the returned slice. */
+  page: number;
+}
+
+/** Wire envelope returned by `search_marketplace_skills(query)`. Mirrors
+ *  Rust `SkillsSearchResponse` in `src-tauri/src/commands/marketplace.rs`. */
+export interface SkillsSearchResponse {
+  query: string;
+  /** Upstream-chosen mode — `"fuzzy"` for short queries, `"semantic"` for
+   *  longer ones. Surfaced in the UI as a small hint badge. */
+  searchType: string;
+  skills: MarketplaceSkillItem[];
+  count: number;
+  /** Upstream-reported elapsed time in milliseconds. */
+  durationMs: number;
+}
+
+/** Skills.sh listing view tab. */
+export type SkillsView = 'all-time' | 'trending' | 'hot';
+
+/** Stable React key for a marketplace skill item. V2 internal-API items
+ *  identify themselves by `(source, skillId)`; V1 cache items carry an `id`.
+ *  Using `${source}/${skillId}` works for both — V1 cache items also fill
+ *  `source` and `skillId` (see `MarketplaceSkillItem` doc). */
+export function getSkillItemKey(item: MarketplaceSkillItem): string {
+  if (item.source && item.skillId) return `${item.source}/${item.skillId}`;
+  if (item.id) return item.id;
+  // Defensive last-resort. The backend never returns an item with neither, but
+  // a falsy key would collide React's reconciliation.
+  return item.name;
 }
 
 // ----- Catalog item — MCP --------------------------------------------------

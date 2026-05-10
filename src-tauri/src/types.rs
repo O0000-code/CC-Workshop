@@ -1077,42 +1077,102 @@ pub struct MarketplaceSource {
     pub last_synced_at: String,
 }
 
-/// Catalog item returned by `list_marketplace_skills`. Combines GitHub repo
-/// metadata (stars, last update, license) with the parsed SKILL.md frontmatter
-/// and a slice of README content used by the SlidePanel detail view.
+/// Catalog item returned by `list_marketplace_skills`.
 ///
-/// Verified against the GitHub Contents API response shape — see
-/// <https://docs.github.com/en/rest/repos/contents#get-repository-content>
-/// (response is base64-encoded for blob requests; we decode in `marketplace.rs`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// V2 (Phase I, 2026-05-10): the **canonical wire shape** is the skills.sh
+/// internal pagination API
+/// (`GET https://skills.sh/api/skills/{view}/{page}`), which returns a flat
+/// envelope of `{source, skillId, name, installs, isOfficial?, installsYesterday?, change?}`.
+/// All GitHub-specific fields (`stars`, `last_updated_at`, `license`,
+/// `repository_url`, etc.) are now `#[serde(default)]` so the same struct
+/// deserialises cleanly from the internal API where those fields are absent.
+/// They are populated only at install time when we walk
+/// `https://api.github.com/repos/{owner}/{repo}/contents/...` — see
+/// `commands/marketplace.rs::install_marketplace_skill`.
+///
+/// `id` for V2 catalog items is the upstream `{source}/{skillId}` pair — stable
+/// across refreshes, suitable as a React key, and what the frontend SSoT
+/// selector matches against `marketplace_source`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MarketplaceSkillItem {
-    /// Triple-hash id `"{owner}-{repo}-{name}"` — stable across catalog
-    /// refreshes and used as the React key + retry/install state key.
+    /// Stable id: `"{source}/{skillId}"` for V2 internal-API items, or the
+    /// legacy `"{owner}-{repo}-{name}"` triple-hash for cache entries
+    /// written by V1 backend. The frontend treats this as opaque.
+    #[serde(default)]
     pub id: String,
     pub name: String,
+    #[serde(default)]
     pub description: String,
-    /// SKILL.md body (frontmatter stripped) plus an optional repo README
-    /// header concatenated for the detail panel. Capped to ~3000 chars at
-    /// fetch time to keep cache files small.
+    /// skills.sh-style upstream `source` field, e.g. `"anthropics/skills"`.
+    /// Combined with `skillId` to form the install path. Empty when this
+    /// item came from the legacy V1 GitHub-seed pipeline (those entries
+    /// carried `owner`/`repo` separately).
+    #[serde(default)]
+    pub source: String,
+    /// skills.sh-style upstream `skillId` field — typically the directory
+    /// path within the repo (e.g. `"skill-creator"` or
+    /// `"skills/skill-creator"`). Empty for V1 cache entries.
+    #[serde(default)]
+    pub skill_id: String,
+    /// Total install count reported by skills.sh. The internal API returns
+    /// this as a number; we keep it as `u64` to match.
+    #[serde(default)]
+    pub installs: u64,
+    /// Whether the skill is published by Anthropic / a verified author.
+    /// Surfaced as a small badge in the catalog list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_official: Option<bool>,
+    /// Hot-view enrichment: installs in the last 24h. Only present when
+    /// the item came from the `hot` view; `None` for `all-time` / `trending`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installs_yesterday: Option<u64>,
+    /// Hot-view enrichment: signed delta vs. the previous 24h. May be
+    /// negative for waning items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change: Option<i64>,
+
+    // ---- GitHub-derived fields (legacy V1 pipeline; populated lazily
+    // ---- at install time for V2 internal-API items). All optional.
+
+    /// SKILL.md body (frontmatter stripped). Populated when the catalog
+    /// item came from V1 GitHub seed; empty for V2 list-page items, which
+    /// fetch README on demand via `get_marketplace_skill_readme`.
+    #[serde(default)]
     pub readme_markdown: String,
-    /// Display author — typically equal to `owner` but kept separate to
-    /// allow future "real name" enrichment without breaking the triple.
+    /// Display author — derived from `source` (= split before `/`) for
+    /// V2 items. Kept separate from `owner` so future "real name" enrichment
+    /// does not break the (owner, repo, name) install triple.
+    #[serde(default)]
     pub author: String,
+    /// `source` split: piece before the `/`. Derived at install time for
+    /// V2 internal-API items.
+    #[serde(default)]
     pub owner: String,
+    /// `source` split: piece after the `/`. Derived at install time for
+    /// V2 internal-API items.
+    #[serde(default)]
     pub repo: String,
-    /// Path within the repository to the skill directory. `""` when the
-    /// repo is itself a single skill at the root.
+    /// Path within the repository to the skill directory. For V2 items this
+    /// equals `skill_id` (the upstream skillId IS the path). Kept separately
+    /// so the V1 cache format still parses cleanly.
+    #[serde(default)]
     pub skill_path: String,
+    #[serde(default)]
     pub homepage_url: String,
+    #[serde(default)]
     pub last_updated_at: String,
-    /// Popularity proxy (GitHub stars). skills.sh weekly install counts are
-    /// not exposed via REST — D-Imp-5 uses stars as the V1 sort key.
+    /// Popularity proxy (GitHub stars). V2 catalogue uses `installs`
+    /// instead; this remains for backward compat with V1 cache entries.
+    #[serde(default)]
     pub stars: u32,
     /// Upstream-declared categories (for display only; not merged into the
     /// Ensemble Categories taxonomy per D-15).
+    #[serde(default)]
     pub categories: Vec<String>,
+    #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
 }
 

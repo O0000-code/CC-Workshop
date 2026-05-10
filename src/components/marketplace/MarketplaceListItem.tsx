@@ -7,6 +7,7 @@ import { ICON_MAP } from '@/components/common';
 import { truncateToFirstSentence } from '@/utils/text';
 import { useMarketplaceStore } from '@/stores/marketplaceStore';
 import type { MarketplaceMcpItem, MarketplaceSkillItem } from '@/types/marketplace';
+import { getSkillItemKey } from '@/types/marketplace';
 
 // ============================================================================
 // Animation Constants — mirror SkillListItem.tsx:19-23 verbatim (R2 §3.1).
@@ -95,11 +96,18 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
   isInstalled,
   onSelect,
 }) => {
+  // Stable key for cross-call lookup. Skills V2 internal-API items don't carry
+  // an `id`; we derive `${source}/${skillId}`. MCPs still use their `id`.
+  const itemKey =
+    itemType === 'skill'
+      ? getSkillItemKey(item as MarketplaceSkillItem)
+      : (item as MarketplaceMcpItem).id;
+
   // Per-item progress + failure state from the marketplace store. We
   // subscribe to slices so the row re-renders only when its own id appears
   // in / leaves these collections.
-  const isInstalling = useMarketplaceStore((s) => s.installingItemIds.has(item.id));
-  const installFailure = useMarketplaceStore((s) => s.installFailedItems[item.id]);
+  const isInstalling = useMarketplaceStore((s) => s.installingItemIds.has(itemKey));
+  const installFailure = useMarketplaceStore((s) => s.installFailedItems[itemKey]);
 
   const installSkill = useMarketplaceStore((s) => s.installSkill);
   const installMcp = useMarketplaceStore((s) => s.installMcp);
@@ -112,17 +120,45 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
     [item, itemType],
   );
 
-  const popularity = item.stars ?? 0;
+  // V2 catalogue: Skill items expose `installs` (skills.sh primary metric).
+  // V1 fallback: legacy GitHub-derived `stars` count when the catalogue
+  // entry has no `installs`. MCPs continue to use `stars`.
+  const popularity = useMemo(() => {
+    if (itemType === 'skill') {
+      const skillItem = item as MarketplaceSkillItem;
+      return skillItem.installs ?? skillItem.stars ?? 0;
+    }
+    return (item as MarketplaceMcpItem).stars ?? 0;
+  }, [item, itemType]);
   const mcpType = itemType === 'mcp' ? (item as MarketplaceMcpItem).mcpType : undefined;
+  const isOfficialSkill =
+    itemType === 'skill' && (item as MarketplaceSkillItem).isOfficial === true;
+
+  // Secondary line under the name. For skill V2 internal-API items the
+  // upstream description is empty — fall back to the upstream `source`
+  // (`anthropics/skills`) so the row always carries one piece of secondary
+  // identifying info. V1 / MCP items use `description` (truncated).
+  const secondaryText = useMemo(() => {
+    if (itemType === 'skill') {
+      const skillItem = item as MarketplaceSkillItem;
+      const desc = skillItem.description?.trim();
+      if (desc) return truncateToFirstSentence(desc, 100);
+      return skillItem.source ?? '';
+    }
+    const desc = (item as MarketplaceMcpItem).description?.trim();
+    return truncateToFirstSentence(desc ?? '', 100);
+  }, [item, itemType]);
 
   // README first-sentence (≤ ~200 chars) for the hover tooltip. Falls back
-  // to the description when the README is empty so the hover still surfaces
-  // useful copy (PRD §5.5 R-P2-1).
+  // to the description (or source) when the README is empty.
   const tooltipPreview = useMemo(() => {
     const readme = item.readmeMarkdown?.trim();
-    const source = readme && readme.length > 0 ? readme : item.description;
-    return truncateToFirstSentence(source ?? '', 200);
-  }, [item.readmeMarkdown, item.description]);
+    if (readme) return truncateToFirstSentence(readme, 200);
+    const desc = item.description?.trim();
+    if (desc) return truncateToFirstSentence(desc, 200);
+    if (itemType === 'skill') return (item as MarketplaceSkillItem).source ?? '';
+    return '';
+  }, [item, itemType]);
 
   // Right-section container transition: collapse immediately, expand with
   // 150 ms delay so the SlidePanel can finish its slide-in first (otherwise
@@ -139,7 +175,7 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
   };
 
   const handleRowClick = () => {
-    onSelect(item.id);
+    onSelect(itemKey);
   };
 
   const handleInstallClick = (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -151,6 +187,13 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
     } else {
       void installMcp(item as MarketplaceMcpItem);
     }
+  };
+
+  // Format installs / stars: 1.2K / 3.4M for compactness in the row.
+  const formatPopularity = (n: number): string => {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`;
+    return n.toLocaleString();
   };
 
   // ----- Right section trailing control: Installed / Installing / Retry / Install -----
@@ -253,27 +296,38 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
           </div>
         </div>
 
-        {/* Info — name + description. Description truncates to its first
-            sentence (≤ 100 chars) so the row keeps a single visual rhythm. */}
+        {/* Info — name + secondary line. Secondary truncates to first sentence
+            for V1 / MCP items, or shows the upstream `source` repo for V2
+            skill items (which have no description). */}
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <span
-            className={`text-[13px] text-[#18181B] truncate ${selected ? 'font-semibold' : 'font-medium'}`}
+            className={`text-[13px] text-[#18181B] truncate flex items-center gap-2 ${selected ? 'font-semibold' : 'font-medium'}`}
             style={{ transition: `font-weight ${TRANSITION_BASE}` }}
           >
-            {item.name}
+            <span className="truncate">{item.name}</span>
+            {isOfficialSkill && (
+              <Badge variant="neutral" showDot={false}>
+                Official
+              </Badge>
+            )}
           </span>
-          <span className="text-xs font-normal text-[#71717A] truncate max-w-[600px]">
-            {truncateToFirstSentence(item.description ?? '', 100)}
-          </span>
+          {secondaryText && (
+            <span className="text-xs font-normal text-[#71717A] truncate max-w-[600px]">
+              {secondaryText}
+            </span>
+          )}
         </div>
       </div>
 
       {/* Right section — popularity + (MCP type) + Install/Installed/Retry */}
       <div className="flex items-center gap-2.5 shrink-0" style={rightSectionStyle}>
-        {/* Popularity (star count) — neutral grey numeric. */}
-        <span className="text-[11px] font-normal text-[#A1A1AA] tabular-nums">
-          {popularity.toLocaleString()}
-        </span>
+        {/* Popularity — installs (skills V2) or stars (MCP / legacy).
+            Neutral grey numeric, formatted compactly (1.2K / 3.4M). */}
+        {popularity > 0 && (
+          <span className="text-[11px] font-normal text-[#A1A1AA] tabular-nums">
+            {formatPopularity(popularity)}
+          </span>
+        )}
 
         {/* MCP type badge — only present for itemType === 'mcp'. Sits between
             popularity and the install control so the install action stays

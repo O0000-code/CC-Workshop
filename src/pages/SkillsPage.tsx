@@ -851,8 +851,6 @@ export function SkillsPage() {
                 <span className="rounded bg-[#EFF6FF] px-2 py-0.5 text-[11px] font-medium text-[#3B82F6]">
                   Plugin
                 </span>
-              ) : selectedSkill.installSource === 'marketplace' ? (
-                <MarketplaceSourceBadge source={selectedSkill.marketplaceSource} />
               ) : (
                 <ScopeSelector
                   value={selectedSkill.scope}
@@ -875,6 +873,12 @@ export function SkillsPage() {
             <span className="text-xs font-medium text-[#71717A]">Path</span>
             <span className="font-mono text-xs text-[#18181B]">{selectedSkill.sourcePath}</span>
           </div>
+          {selectedSkill.installSource === 'marketplace' && selectedSkill.marketplaceSource && (
+            <div className="flex items-center gap-2.5">
+              <span className="text-xs font-medium text-[#71717A]">From</span>
+              <MarketplaceSourceBadge source={selectedSkill.marketplaceSource} />
+            </div>
+          )}
           <Button
             variant="secondary"
             size="small"

@@ -20,9 +20,10 @@
 //! - `search_marketplace_skills(query)` — V2 fuzzy / semantic search
 //! - `get_marketplace_skill_readme(source, skill_id)` — V2 README detail
 //! - `list_marketplace_mcps(refresh)` — unchanged
-//! - `install_marketplace_skill(item, conflict_action)` — unchanged signature; install path
-//!   now derives `(owner, repo)` from `item.source.split('/')` and reads
-//!   from GitHub Contents API as before
+//! - `install_marketplace_skill(item, conflict_action)` — installs by
+//!   pulling `codeload.github.com/<o>/<r>/tar.gz/HEAD` once (no
+//!   `api.github.com` calls, no rate limit) and extracting the matching
+//!   sub-tree. See `install_skill_via_codeload` for the algorithm.
 //! - `install_marketplace_mcp(item, conflict_action)` — unchanged
 //! - `auto_classify_marketplace_item(id, item_type)` — unchanged
 //! - `refresh_marketplace_cache(source)` — unchanged
@@ -82,6 +83,13 @@
 //!   `https://raw.githubusercontent.com/anthropics/skills/HEAD/skill-creator/SKILL.md`
 //!   was either 200 (skill at sub-path) or 404 (skill at repo root); our
 //!   helper tries the sub-path first and falls back to the root SKILL.md.
+//! - codeload tarball install:
+//!   `curl -sI https://codeload.github.com/anthropics/skills/tar.gz/HEAD`
+//!   returns 200 directly (no redirect to api.github.com) with
+//!   `content-type: application/x-gzip` and **no** `x-ratelimit-*` headers,
+//!   confirming this endpoint is not subject to the 60 req/h api.github.com
+//!   unauthenticated rate limit. Tarball top-level dir is `<repo>-HEAD/`.
+//!   Verified 2026-05-11.
 //! - MCP Registry: `https://registry.modelcontextprotocol.io/v0.1/servers`
 //!   responds with `{servers: Vec<Server>, total_count, ...}` per
 //!   <https://github.com/modelcontextprotocol/registry/blob/main/docs/openapi.yaml>.
@@ -94,7 +102,6 @@ use crate::types::{
     StdioMcpConfig, TrashedItemBrief,
 };
 use crate::utils::{ensure_dir, get_app_data_dir};
-use base64_simple::decode_base64;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -109,12 +116,6 @@ use tauri::{AppHandle, Emitter};
 
 /// HTTP client timeout for upstream catalog requests.
 const HTTP_TIMEOUT_SECS: u64 = 15;
-
-/// Per-request sleep between sequential GitHub Contents API calls during
-/// install (R-24 mitigation — unauthenticated GitHub rate limit is 60 req/h;
-/// 100ms between calls stays well below burst thresholds when fanning out
-/// across a skill's nested file tree).
-const GITHUB_PACING_MS: u64 = 100;
 
 /// Cap on README-content-bytes carried in the catalog. Larger bodies are
 /// truncated at fetch time so the cache file stays small.
@@ -148,12 +149,12 @@ const MCP_REGISTRY_PAGE_SIZE: u32 = 96;
 // Resource-name sanitisation (B-P0-1 — security)
 // ============================================================================
 //
-// The `name` and recursive `entry.name` strings reaching the install path
+// The `name` and tarball entry path-components reaching the install path
 // originate from three untrusted sources:
 //
 // 1. SKILL.md frontmatter (arbitrary YAML written by repo authors)
 // 2. SKILL.md H1 fallback (markdown heading text, also arbitrary)
-// 3. GitHub Contents API entries (`entry.name` for nested files / dirs)
+// 3. codeload tarball entry components (each path segment between `/`s)
 //
 // Without sanitisation, any of these can carry `..`, `/`, `\`, or a leading
 // `.`, causing `PathBuf::join(...)` to walk outside `~/.ensemble/skills/`
@@ -544,85 +545,6 @@ fn consume_mcp_metadata_snapshot(live_path: &std::path::Path) -> Option<McpMetad
 }
 
 // ============================================================================
-// Base64 — minimal, vendored to avoid new crate
-// ============================================================================
-//
-// Only used to decode GitHub Contents API blob payloads, which always
-// arrive as base64 (with embedded newlines). We accept both standard
-// base64 (`A-Za-z0-9+/`) and url-safe base64 (`-_`) for forward
-// compatibility, and tolerate whitespace / line breaks anywhere in the
-// payload.
-//
-// Vendored to keep the crate tree lean — `base64` proper would have been
-// the obvious choice but adds a transitive dep for what is here ~25
-// lines of pure logic.
-
-mod base64_simple {
-    /// Decode a base64 string, ignoring whitespace, equals padding, and
-    /// supporting both standard and url-safe alphabets. Returns the
-    /// decoded bytes or a static error on the first invalid character.
-    pub fn decode_base64(input: &str) -> Result<Vec<u8>, &'static str> {
-        let mut out = Vec::with_capacity(input.len() * 3 / 4 + 2);
-        let mut buffer: u32 = 0;
-        let mut bits: u32 = 0;
-        for c in input.chars() {
-            let value = match c {
-                'A'..='Z' => c as u32 - 'A' as u32,
-                'a'..='z' => c as u32 - 'a' as u32 + 26,
-                '0'..='9' => c as u32 - '0' as u32 + 52,
-                '+' | '-' => 62,
-                '/' | '_' => 63,
-                '=' | '\n' | '\r' | ' ' | '\t' => continue,
-                _ => return Err("invalid base64 character"),
-            };
-            buffer = (buffer << 6) | value;
-            bits += 6;
-            if bits >= 8 {
-                bits -= 8;
-                out.push(((buffer >> bits) & 0xFF) as u8);
-                buffer &= (1 << bits) - 1;
-            }
-        }
-        Ok(out)
-    }
-}
-
-// ============================================================================
-// GitHub Contents API responses
-// ============================================================================
-
-#[derive(Deserialize)]
-struct GitHubContentBlob {
-    /// Either `"file"` or `"dir"`. We branch on this to recurse for
-    /// directories or fetch blob bytes for files.
-    #[serde(rename = "type")]
-    kind: String,
-    name: String,
-    path: String,
-    /// base64-encoded content, present when `kind == "file"`. May contain
-    /// embedded newlines per the GitHub API contract.
-    #[serde(default)]
-    content: Option<String>,
-    /// `"base64"` or absent. We assume base64 always — the API
-    /// docs list base64 as the only encoding for blob responses.
-    #[serde(default)]
-    #[allow(dead_code)]
-    encoding: Option<String>,
-    /// Direct download URL for files larger than 1MB (where `content`
-    /// is null). V1 ignores this — we cap effective skill size at
-    /// 1MB combined.
-    #[serde(default)]
-    download_url: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum GitHubContentResponse {
-    Single(GitHubContentBlob),
-    Multiple(Vec<GitHubContentBlob>),
-}
-
-// ============================================================================
 // MCP Registry response
 // ============================================================================
 
@@ -721,59 +643,6 @@ struct RegistryRemote {
     transport: Option<String>,
     #[serde(default)]
     oauth_authorization_url: Option<String>,
-}
-
-// ============================================================================
-// Helpers — fetch and parse GitHub Contents API (used by install path only)
-// ============================================================================
-
-fn build_contents_url(owner: &str, repo: &str, path: &str) -> String {
-    if path.is_empty() {
-        format!("https://api.github.com/repos/{}/{}/contents", owner, repo)
-    } else {
-        format!(
-            "https://api.github.com/repos/{}/{}/contents/{}",
-            owner, repo, path
-        )
-    }
-}
-
-/// Build the `Accept` + `X-GitHub-Api-Version` headers used by every
-/// GitHub Contents API request. Centralised so we set them once.
-async fn github_get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String> {
-    let resp = marketplace_http()
-        .get(url)
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
-        .send()
-        .await
-        .map_err(|e| format!("Network error: {}", e))?;
-
-    if resp.status() == reqwest::StatusCode::FORBIDDEN || resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        // GitHub returns 403 for rate limiting with X-RateLimit-Reset
-        // header. Surface a friendly message rather than the raw body.
-        let reset = resp
-            .headers()
-            .get("X-RateLimit-Reset")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<i64>().ok());
-        let mins_to_reset = reset
-            .map(|r| {
-                let now = chrono::Utc::now().timestamp();
-                ((r - now).max(0) / 60).max(1)
-            })
-            .unwrap_or(60);
-        return Err(format!(
-            "GitHub rate limit reached. Try again in {} minutes.",
-            mins_to_reset
-        ));
-    }
-    if !resp.status().is_success() {
-        return Err(format!("GitHub API HTTP {}", resp.status()));
-    }
-    resp.json::<T>()
-        .await
-        .map_err(|e| format!("Failed to parse GitHub response: {}", e))
 }
 
 fn extract_skill_name_from_md(md: &str) -> Option<String> {
@@ -1942,70 +1811,204 @@ pub async fn refresh_marketplace_cache(app: AppHandle, source: String) -> Result
 // IPC: install_marketplace_skill (spec §3.3)
 // ============================================================================
 
-/// Recursively download a skill directory from GitHub to `dest_dir`.
-/// Pacing applies between every blob/dir request.
-async fn download_skill_recursive(
+/// Download a skill from a public GitHub repo via `codeload.github.com`'s
+/// tarball endpoint, extract the requested sub-tree into `dest_dir`.
+///
+/// Replaces the V1 `download_skill_recursive` flow that walked the GitHub
+/// Contents API directory by directory. The Contents API counts against
+/// the 60 req/h unauthenticated rate limit (per IP) and was easy to
+/// exhaust in normal use. `codeload.github.com` serves the same content
+/// as a single `.tar.gz` and is **not** subject to that rate limit —
+/// verified 2026-05-11 by inspecting response headers (no `x-ratelimit-*`)
+/// and running 50 sequential requests with zero throttling.
+///
+/// We download the whole repo tarball, walk it twice in-memory: pass 1
+/// enumerates file paths to pick the correct sub-tree (skills.sh's
+/// `skillId` may live at `skills/<id>/`, `<id>/`, or a deeper plugin
+/// path like `.github/plugins/azure-skills/skills/<id>/`); pass 2
+/// extracts only the matching sub-tree into `dest_dir`. Tarballs are
+/// typically sub-MB to ~5 MB even for "large" curated repos.
+///
+/// Safety: every path component is checked against `sanitize_resource_name`
+/// (rejects `..`, slashes, non-ASCII alnum/`_-.`), dotfile components are
+/// dropped (matches the V1 behaviour for `.gitignore` / `.DS_Store` /
+/// `.github`), and only regular file / directory entries are extracted
+/// (symlinks, hard links, devices are skipped). `tar::Entry::unpack`
+/// additionally rejects paths escaping the destination on a best-effort
+/// basis. See `.claude/rules/verify-third-party-behavior-firsthand.md`.
+async fn install_skill_via_codeload(
     owner: &str,
     repo: &str,
-    path: &str,
+    candidate_paths: &[String],
+    skill_id: &str,
     dest_dir: &std::path::Path,
 ) -> Result<(), String> {
-    let resp: GitHubContentResponse =
-        github_get_json(&build_contents_url(owner, repo, path)).await?;
-    let entries = match resp {
-        GitHubContentResponse::Single(b) => vec![b],
-        GitHubContentResponse::Multiple(v) => v,
+    let url = format!("https://codeload.github.com/{}/{}/tar.gz/HEAD", owner, repo);
+    let resp = marketplace_http()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("codeload network error: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("codeload HTTP {}", resp.status()));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("codeload read error: {}", e))?
+        .to_vec();
+
+    // codeload's `/HEAD` ref produces a top-level `<repo>-HEAD/` prefix
+    // (verified 2026-05-11 across anthropics/skills, microsoft/azure-skills,
+    // vercel-labs/skills, obra/superpowers).
+    let archive_top = format!("{}-HEAD/", repo);
+
+    // Pass 1: enumerate file paths to determine which sub-tree of the
+    // repo holds the skill. We can't tell from the catalog alone whether
+    // the layout is `skills/<id>/`, `<id>/`, or a plugin path.
+    let all_paths: Vec<String> = {
+        let cursor = std::io::Cursor::new(&bytes);
+        let gz = flate2::read::GzDecoder::new(cursor);
+        let mut archive = tar::Archive::new(gz);
+        let mut names = Vec::new();
+        for entry_res in archive.entries().map_err(|e| format!("tar parse: {}", e))? {
+            let entry = entry_res.map_err(|e| format!("tar entry: {}", e))?;
+            let p = entry.path().map_err(|e| format!("tar path: {}", e))?;
+            names.push(p.to_string_lossy().into_owned());
+        }
+        names
     };
 
-    fs::create_dir_all(dest_dir).map_err(|e| format!("create dir: {}", e))?;
+    // Pick the sub-prefix to extract.
+    // (a) Try each catalog-supplied candidate: accept if SKILL.md or
+    //     README.md sits directly inside.
+    // (b) Else fall back to "anywhere ending in /<skill_id>/SKILL.md",
+    //     which catches plugin-nested layouts (e.g. microsoft-foundry
+    //     inside .github/plugins/azure-skills/skills/<id>/).
+    let make_prefix = |cand: &str| -> String {
+        if cand.is_empty() {
+            archive_top.clone()
+        } else {
+            format!("{}{}/", archive_top, cand)
+        }
+    };
+    let base_prefix = candidate_paths
+        .iter()
+        .find_map(|cand| {
+            let prefix = make_prefix(cand);
+            let skill_md = format!("{}SKILL.md", prefix);
+            let readme_md = format!("{}README.md", prefix);
+            if all_paths.iter().any(|p| p == &skill_md || p == &readme_md) {
+                Some(prefix)
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            if skill_id.is_empty() {
+                return None;
+            }
+            let needle_lower = format!("/{}/skill.md", skill_id.to_lowercase());
+            all_paths.iter().find_map(|p| {
+                if p.to_lowercase().ends_with(&needle_lower) {
+                    Some(p[..p.len() - "SKILL.md".len()].to_string())
+                } else {
+                    None
+                }
+            })
+        })
+        .ok_or_else(|| {
+            format!(
+                "could not locate SKILL.md in {}/{} (tried candidates {:?}, skill_id {:?})",
+                owner, repo, candidate_paths, skill_id
+            )
+        })?;
 
-    for entry in entries {
-        // Silently skip dotfiles / dotdirs (.gitignore / .DS_Store /
-        // .github / etc.). They're never part of a skill's installable
-        // content, and `sanitize_resource_name` rejects them anyway; without
-        // this skip the whole install fails on any repo whose skill dir
-        // happens to ship a .gitignore.
-        if entry.name.starts_with('.') {
+    // Pass 2: extract every entry under `base_prefix` into `dest_dir`,
+    // stripping the prefix so files land directly under `dest_dir`.
+    fs::create_dir_all(dest_dir).map_err(|e| format!("create dir: {}", e))?;
+    let cursor = std::io::Cursor::new(&bytes);
+    let gz = flate2::read::GzDecoder::new(cursor);
+    let mut archive = tar::Archive::new(gz);
+    let mut extracted_any = false;
+
+    for entry_res in archive.entries().map_err(|e| format!("tar parse: {}", e))? {
+        let mut entry = entry_res.map_err(|e| format!("tar entry: {}", e))?;
+        let path = entry
+            .path()
+            .map_err(|e| format!("tar path: {}", e))?
+            .into_owned();
+        let path_str = path.to_string_lossy().to_string();
+        if !path_str.starts_with(&base_prefix) {
             continue;
         }
-        tokio::time::sleep(Duration::from_millis(GITHUB_PACING_MS)).await;
-        // B-P0-1 — security: every recursive `entry.name` must pass the
-        // same alphabet check before being joined. GitHub Contents API does
-        // not protect us from a tree node whose `name` is `..` or `foo/bar`
-        // (rare but possible via crafted contents).
-        let safe_entry_name = match sanitize_resource_name(&entry.name) {
-            Ok(n) => n,
-            Err(e) => return Err(format!("Invalid entry name: {}", e)),
-        };
-        let target = dest_dir.join(&safe_entry_name);
-        match entry.kind.as_str() {
-            "file" => {
-                let bytes = if let Some(b64) = entry.content {
-                    decode_base64(&b64).map_err(|e| format!("decode {}: {}", entry.name, e))?
-                } else if let Some(url) = entry.download_url {
-                    // Large file fallback — just GET the raw bytes.
-                    let r = marketplace_http()
-                        .get(&url)
-                        .send()
-                        .await
-                        .map_err(|e| format!("download {}: {}", entry.name, e))?;
-                    r.bytes()
-                        .await
-                        .map_err(|e| format!("read {}: {}", entry.name, e))?
-                        .to_vec()
-                } else {
-                    return Err(format!("{} has neither content nor download_url", entry.name));
-                };
-                fs::write(&target, bytes).map_err(|e| format!("write {}: {}", entry.name, e))?;
-            }
-            "dir" => {
-                Box::pin(download_skill_recursive(owner, repo, &entry.path, &target)).await?;
-            }
-            _ => {
-                // Skip submodules / symlinks at top level — uncommon in
-                // skill repos and tricky to mirror correctly.
+        let rel = &path_str[base_prefix.len()..];
+        if rel.is_empty() {
+            continue;
+        }
+
+        // Only regular files and directories. Symlinks / hard links /
+        // device files are the easiest tarball path-traversal vector
+        // and skills don't legitimately use them.
+        let etype = entry.header().entry_type();
+        if !(etype.is_file() || etype.is_dir()) {
+            continue;
+        }
+
+        // Per-component sanitization. Dotfile components silently
+        // dropped (matches V1 behaviour for `.gitignore` / `.DS_Store`).
+        let rel_path = std::path::PathBuf::from(rel);
+        let mut clean = std::path::PathBuf::new();
+        let mut skip = false;
+        for comp in rel_path.components() {
+            if let std::path::Component::Normal(s) = comp {
+                let name = s.to_string_lossy();
+                if name.starts_with('.') {
+                    skip = true;
+                    break;
+                }
+                if sanitize_resource_name(&name).is_err() {
+                    skip = true;
+                    break;
+                }
+                clean.push(name.as_ref());
+            } else {
+                skip = true;
+                break;
             }
         }
+        if skip || clean.as_os_str().is_empty() {
+            continue;
+        }
+
+        let target = dest_dir.join(&clean);
+        // Defence in depth — every component already passed
+        // `sanitize_resource_name`, which forbids slashes and `..`, so
+        // this should be unreachable.
+        if !target.starts_with(dest_dir) {
+            continue;
+        }
+
+        if etype.is_dir() {
+            fs::create_dir_all(&target)
+                .map_err(|e| format!("mkdir {:?}: {}", target, e))?;
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("mkdir {:?}: {}", parent, e))?;
+        }
+        entry
+            .unpack(&target)
+            .map_err(|e| format!("unpack {:?}: {}", target, e))?;
+        extracted_any = true;
+    }
+
+    if !extracted_any {
+        return Err(format!(
+            "codeload located '{}' but extracted 0 files (all entries failed sanitization)",
+            base_prefix
+        ));
     }
     Ok(())
 }
@@ -2143,134 +2146,44 @@ pub async fn install_marketplace_skill(
     // the repo. Most curated skills.sh repos house their skills under a
     // top-level `skills/` directory (anthropics/skills, vercel-labs/skills,
     // microsoft/azure-skills, obra/superpowers — all use `skills/<id>`).
-    // Build a candidate path list and walk it in order. Empty path means
-    // the catalog provided no sub-path; that's a malformed item.
+    // `install_skill_via_codeload` walks the repo tarball once, tries
+    // these candidates against the in-memory path list, and falls back
+    // to a tree-search for plugin-nested layouts.
     let candidate_paths: Vec<String> = if skill_path.is_empty() {
         vec![String::new()]
     } else if skill_path.starts_with("skills/") || skill_path.contains('/') {
-        // Already qualified (e.g. `skills/find-skills`) or carries an
-        // arbitrary sub-path — try as-is only, don't double-nest.
         vec![skill_path.clone()]
     } else {
-        // Bare short name like `find-skills` — try the `skills/` convention
-        // first (covers ~95% of skills.sh-hosted repos), fall back to
-        // root-level for the rare repos that have skills at the top.
         vec![format!("skills/{}", skill_path), skill_path.clone()]
     };
 
-    let mut last_err = String::from("no candidate paths");
-    let mut ok = false;
-    for candidate in &candidate_paths {
-        // Make sure each retry starts from a clean target dir.
-        let _ = fs::remove_dir_all(&target_dir);
-        match download_skill_recursive(&owner, &repo, candidate, &target_dir).await {
-            Ok(()) => {
-                // Verify the downloaded dir actually contains a SKILL.md
-                // (or a README.md as a permissive fallback for repos that
-                // don't follow the SKILL.md convention). An empty
-                // placeholder dir like `skills/microsoft-foundry/.gitignore`
-                // (real skill lives in `.github/plugins/...`) downloads
-                // cleanly but isn't usable — treat it as failure so we
-                // continue to the next candidate.
-                if target_dir.join("SKILL.md").exists()
-                    || target_dir.join("README.md").exists()
-                {
-                    ok = true;
-                    break;
-                }
-                last_err = format!(
-                    "Downloaded '{}' has no SKILL.md or README.md (likely a placeholder dir)",
-                    candidate
-                );
-            }
-            Err(e) => {
-                last_err = e;
-            }
-        }
-    }
-
-    // Final fallback: if every static candidate missed (or all turned out
-    // to be placeholder dirs), search the repo's tree for the actual
-    // location of `<skillId>/SKILL.md` and try that path.
-    if !ok && !item.skill_id.is_empty() {
-        if let Some(found_path) =
-            find_skill_path_via_tree_search(&owner, &repo, &item.skill_id).await
-        {
-            let _ = fs::remove_dir_all(&target_dir);
-            match download_skill_recursive(&owner, &repo, &found_path, &target_dir).await {
-                Ok(()) => {
-                    if target_dir.join("SKILL.md").exists()
-                        || target_dir.join("README.md").exists()
-                    {
-                        ok = true;
-                    } else {
-                        last_err = format!(
-                            "Tree-search located '{}' but SKILL.md still missing",
-                            found_path
-                        );
-                    }
-                }
-                Err(e) => {
-                    last_err = format!("Tree-search path '{}' download failed: {}", found_path, e);
-                }
-            }
-        }
-    }
-
-    if !ok {
+    let _ = fs::remove_dir_all(&target_dir);
+    if let Err(e) = install_skill_via_codeload(
+        &owner,
+        &repo,
+        &candidate_paths,
+        &item.skill_id,
+        &target_dir,
+    )
+    .await
+    {
         let _ = fs::remove_dir_all(&target_dir);
         return Ok(InstallOutcome::Failed {
-            reason: format!("Could not locate skill in repo; last error: {}", last_err),
+            reason: format!("Could not install skill: {}", e),
+        });
+    }
+
+    // Defence in depth: the codeload helper only selects a base prefix
+    // when it sees SKILL.md / README.md among the tarball entries, but
+    // re-verify in case per-component sanitization dropped them.
+    if !target_dir.join("SKILL.md").exists() && !target_dir.join("README.md").exists() {
+        let _ = fs::remove_dir_all(&target_dir);
+        return Ok(InstallOutcome::Failed {
+            reason: "Install completed but no SKILL.md / README.md in target dir".to_string(),
         });
     }
 
     finalize_skill_install(app, &item, target_dir).await
-}
-
-/// Search the repo's git tree for a directory whose path ends in
-/// `<skill_id>` and contains a `SKILL.md` at the dir's top level.
-/// Returns the directory path (relative to repo root) on first match.
-///
-/// Used as a last-resort fallback when both `skills/<id>` and `<id>` (root)
-/// candidate paths miss — e.g. for repos that house skills under
-/// `.github/plugins/.../skills/<id>` plugin sub-trees.
-///
-/// One API call per invocation (the recursive trees endpoint), so we only
-/// reach for it after the cheap candidate paths have failed.
-async fn find_skill_path_via_tree_search(
-    owner: &str,
-    repo: &str,
-    skill_id: &str,
-) -> Option<String> {
-    #[derive(Deserialize)]
-    struct TreeResp {
-        tree: Vec<TreeEntry>,
-    }
-    #[derive(Deserialize)]
-    struct TreeEntry {
-        path: String,
-        #[serde(rename = "type")]
-        kind: String,
-    }
-    let url = format!(
-        "https://api.github.com/repos/{}/{}/git/trees/HEAD?recursive=1",
-        owner, repo
-    );
-    let resp: TreeResp = github_get_json(&url).await.ok()?;
-    // First pass: find a blob path that ends in `<skill_id>/SKILL.md`.
-    let needle_md = format!("/{}/SKILL.md", skill_id);
-    let needle_md_lower = needle_md.to_lowercase();
-    for entry in &resp.tree {
-        if entry.kind != "blob" {
-            continue;
-        }
-        let path_lower = entry.path.to_lowercase();
-        if path_lower.ends_with(&needle_md_lower) {
-            // Strip "/SKILL.md" suffix to get the skill's directory path.
-            return entry.path.rsplitn(2, '/').nth(1).map(|s| s.to_string());
-        }
-    }
-    None
 }
 
 async fn finalize_skill_install(
@@ -2877,12 +2790,6 @@ fn ensure_category(
 mod tests {
     use super::*;
 
-    #[test]
-    fn base64_roundtrip_basic() {
-        let bytes = decode_base64("SGVsbG8sIFdvcmxkIQ==").unwrap();
-        assert_eq!(String::from_utf8(bytes).unwrap(), "Hello, World!");
-    }
-
     /// Live MCP Registry v0.1 response — fixture captured via curl on
     /// 2026-05-11. V2 paginated shape includes `metadata.nextCursor`; the
     /// nested `{ "server": {...}, "_meta": {...} }` envelope is unchanged.
@@ -3107,21 +3014,6 @@ mod tests {
             "first item mcp_type should be stdio or http, got {:?}",
             first.mcp_type
         );
-    }
-
-    #[test]
-    fn base64_handles_url_safe_and_whitespace() {
-        let bytes = decode_base64("SGVsbG8s\nIFdvcmxkIQ==").unwrap();
-        assert_eq!(String::from_utf8(bytes).unwrap(), "Hello, World!");
-        let bytes2 = decode_base64("SGVsbG8s_w").unwrap();
-        // _ is mapped to 63 (same as /); this just verifies the alphabet
-        // is accepted without panicking.
-        assert!(!bytes2.is_empty());
-    }
-
-    #[test]
-    fn base64_rejects_invalid() {
-        assert!(decode_base64("@@@invalid@@@").is_err());
     }
 
     #[test]
@@ -3514,6 +3406,89 @@ mod tests {
             resp.skills.len(),
             resp.search_type,
             resp.duration_ms
+        );
+    }
+
+    /// Live codeload tarball install — end-to-end test that the
+    /// `install_skill_via_codeload` flow can locate and extract a real
+    /// skill from a real public repo without touching `api.github.com`.
+    /// Guards against regressions in: codeload URL form, tarball top-level
+    /// dir naming, the candidate-path → tree-search fallback chain,
+    /// per-component sanitization. Marked `#[ignore]` so default
+    /// `cargo test` skips it; run manually:
+    ///
+    ///   cargo test --lib -- --ignored live_codeload_install --nocapture
+    #[test]
+    #[ignore = "requires network access to codeload.github.com"]
+    fn live_codeload_install() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dest = tmp.path().join("azure-ai");
+
+        // microsoft/azure-skills hosts `azure-ai` under `skills/<id>/`.
+        // The candidate list mirrors what install_marketplace_skill builds
+        // for a bare-short-name skillId from the skills.sh catalog.
+        let candidates = vec![
+            "skills/azure-ai".to_string(),
+            "azure-ai".to_string(),
+        ];
+        rt.block_on(install_skill_via_codeload(
+            "microsoft",
+            "azure-skills",
+            &candidates,
+            "azure-ai",
+            &dest,
+        ))
+        .expect("codeload install should succeed for microsoft/azure-skills:azure-ai");
+
+        assert!(
+            dest.join("SKILL.md").exists(),
+            "SKILL.md missing under {:?}",
+            dest
+        );
+        eprintln!(
+            "Live codeload install: extracted azure-ai with SKILL.md at {:?}",
+            dest.join("SKILL.md")
+        );
+    }
+
+    /// Live codeload tree-search fallback — covers the
+    /// `microsoft/azure-skills/microsoft-foundry` case where the catalog's
+    /// `skillId` is `microsoft-foundry` but the actual SKILL.md lives at
+    /// `.github/plugins/azure-skills/skills/microsoft-foundry/SKILL.md`.
+    /// Both `skills/<id>` and `<id>` candidate paths miss; the fallback
+    /// search of all tarball paths for `/<id>/SKILL.md` finds it.
+    #[test]
+    #[ignore = "requires network access to codeload.github.com"]
+    fn live_codeload_install_plugin_nested() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dest = tmp.path().join("microsoft-foundry");
+        let candidates = vec![
+            "skills/microsoft-foundry".to_string(),
+            "microsoft-foundry".to_string(),
+        ];
+        rt.block_on(install_skill_via_codeload(
+            "microsoft",
+            "azure-skills",
+            &candidates,
+            "microsoft-foundry",
+            &dest,
+        ))
+        .expect("codeload install should locate plugin-nested microsoft-foundry");
+
+        assert!(
+            dest.join("SKILL.md").exists(),
+            "SKILL.md missing for plugin-nested microsoft-foundry under {:?}",
+            dest
         );
     }
 }

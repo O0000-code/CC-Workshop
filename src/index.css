@@ -761,3 +761,17 @@ body {
     animation: none !important;
   }
 }
+
+/* === ViewOptionsMenu reduced-motion fallback === */
+/* Trigger carries hover transition-colors + inline chevron transform; popover
+   inherits hover transition-colors on each menuitem. Both degrade to instant
+   when the user prefers reduced motion (design-language Rule). */
+@media (prefers-reduced-motion: reduce) {
+  [data-view-options-menu],
+  [data-view-options-menu] *,
+  [data-view-options-menu-popover],
+  [data-view-options-menu-popover] * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

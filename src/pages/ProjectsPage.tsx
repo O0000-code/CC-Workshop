@@ -1,12 +1,50 @@
 import React, { useMemo, useState } from 'react';
 import { Plus, Folder } from 'lucide-react';
 import { PageHeader, SlidePanel } from '../components/layout';
-import { Button, EmptyState, IconPicker } from '../components/common';
+import {
+  Button,
+  EmptyState,
+  IconPicker,
+  ViewOptionsMenu,
+  type ViewOption,
+} from '../components/common';
 import { NewProjectItem, ProjectConfigPanel, ProjectCard } from '../components/projects';
 import { useProjectsStore } from '../stores/projectsStore';
 import { useScenesStore } from '../stores/scenesStore';
+import { useSortPreferencesStore } from '../stores/sortPreferencesStore';
 import { safeInvoke } from '@/utils/tauri';
-import type { Scene } from '../types';
+import type { Project, Scene } from '../types';
+
+// ============================================================================
+// Sort options (no Group — Projects have no category/tags fields).
+// ============================================================================
+// Project has no `createdAt` (it's a registry of managed paths, not a content
+// entity), so the time-based option keys on `lastSynced`.
+const PROJECTS_SORT_OPTIONS: ViewOption[] = [
+  { value: 'name', label: 'Name (A → Z)' },
+  { value: 'recent-sync', label: 'Recently synced' },
+];
+
+function applyProjectsSort(items: Project[], sortBy: string): Project[] {
+  const sorted = [...items];
+  switch (sortBy) {
+    case 'name':
+      sorted.sort((a, b) => a.name.localeCompare(b.name));
+      break;
+    case 'recent-sync':
+      sorted.sort((a, b) => {
+        const ax = a.lastSynced ?? '';
+        const bx = b.lastSynced ?? '';
+        if (ax && !bx) return -1;
+        if (!ax && bx) return 1;
+        return bx.localeCompare(ax);
+      });
+      break;
+    default:
+      sorted.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  return sorted;
+}
 
 // ============================================================================
 // ProjectsPage Component
@@ -105,27 +143,41 @@ export function ProjectsPage() {
     }
   };
 
-  // Filter projects based on search
+  const sortBy = useSortPreferencesStore((s) => s.sort.projects);
+  const setSortFor = useSortPreferencesStore((s) => s.setSortFor);
+
+  // Filter projects based on search, then apply user-chosen sort.
   const filteredProjects = useMemo(() => {
-    if (!filter.search) return projects;
-    const query = filter.search.toLowerCase();
-    return projects.filter(
-      (p) =>
-        p.name.toLowerCase().includes(query) ||
-        p.path.toLowerCase().includes(query)
-    );
-  }, [projects, filter.search]);
+    const base = !filter.search
+      ? projects
+      : (() => {
+          const query = filter.search.toLowerCase();
+          return projects.filter(
+            (p) => p.name.toLowerCase().includes(query) || p.path.toLowerCase().includes(query),
+          );
+        })();
+    return applyProjectsSort(base, sortBy);
+  }, [projects, filter.search, sortBy]);
+
+  // Status text — "{N} projects · {M} synced".
+  const statusText = useMemo(() => {
+    const count = filteredProjects.length;
+    const syncedCount = filteredProjects.filter((p) => !!p.lastSynced).length;
+    const projectsLabel = `${count} ${count === 1 ? 'project' : 'projects'}`;
+    if (count === 0) return projectsLabel;
+    return `${projectsLabel} · ${syncedCount} synced`;
+  }, [filteredProjects]);
 
   // Get selected project
   const selectedProject = useMemo(
     () => projects.find((p) => p.id === selectedProjectId) || null,
-    [projects, selectedProjectId]
+    [projects, selectedProjectId],
   );
 
   // Get scene for selected project
   const selectedScene = useMemo(
     (): Scene | undefined => scenes.find((s) => s.id === selectedProject?.sceneId),
-    [selectedProject, scenes]
+    [selectedProject, scenes],
   );
 
   // Check if detail panel should be open
@@ -144,12 +196,7 @@ export function ProjectsPage() {
         <PageHeader
           title="Projects"
           actions={
-            <Button
-              variant="primary"
-              size="small"
-              icon={<Plus />}
-              onClick={startCreating}
-            >
+            <Button variant="primary" size="small" icon={<Plus />} onClick={startCreating}>
               New Project
             </Button>
           }
@@ -159,10 +206,7 @@ export function ProjectsPage() {
         <div className="flex flex-1 items-center justify-center">
           <div className="flex flex-col items-center gap-5">
             {/* Folder Icon */}
-            <Folder
-              className="h-8 w-8 text-[#D4D4D8]"
-              strokeWidth={1.5}
-            />
+            <Folder className="h-8 w-8 text-[#D4D4D8]" strokeWidth={1.5} />
             {/* Text Group */}
             <div className="flex flex-col items-center gap-1.5">
               <span className="text-sm font-medium tracking-[-0.2px] text-[#A1A1AA]">
@@ -186,13 +230,9 @@ export function ProjectsPage() {
 
   // Detail Header content
   const detailHeader = isCreating ? (
-    <h2 className="text-[16px] font-semibold text-[#18181B]">
-      New Project Configuration
-    </h2>
+    <h2 className="text-[16px] font-semibold text-[#18181B]">New Project Configuration</h2>
   ) : selectedProject ? (
-    <h2 className="text-[16px] font-semibold text-[#18181B]">
-      Project Configuration
-    </h2>
+    <h2 className="text-[16px] font-semibold text-[#18181B]">Project Configuration</h2>
   ) : null;
 
   // Detail Header right content
@@ -260,12 +300,7 @@ export function ProjectsPage() {
         onSearchChange={(value) => setFilter({ search: value })}
         searchPlaceholder="Search projects..."
         actions={
-          <Button
-            variant="primary"
-            size="small"
-            icon={<Plus />}
-            onClick={startCreating}
-          >
+          <Button variant="primary" size="small" icon={<Plus />} onClick={startCreating}>
             New Project
           </Button>
         }
@@ -279,6 +314,26 @@ export function ProjectsPage() {
           ${isDetailOpen ? 'mr-[800px]' : ''}
         `}
       >
+        {/* Status line — count + context | View Options (Sort only; no Group).
+            Hidden while the user is in the "create new project" flow so the
+            inline NewProjectItem stays visually anchored. */}
+        {!isCreating && filteredProjects.length > 0 && (
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <span className="text-[11px] text-[#A1A1AA]">{statusText}</span>
+            <ViewOptionsMenu
+              sections={[
+                {
+                  id: 'sort',
+                  label: 'SORT BY',
+                  options: PROJECTS_SORT_OPTIONS,
+                  value: sortBy,
+                  onChange: (v) => setSortFor('projects', v),
+                },
+              ]}
+            />
+          </div>
+        )}
+
         {/* Project Cards */}
         <div className="flex flex-col gap-3">
           {/* New Project Item (when creating) */}

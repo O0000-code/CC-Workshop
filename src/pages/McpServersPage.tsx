@@ -30,6 +30,8 @@ import {
   CategoryTreeDropdown,
   ScopeSelector,
   Button,
+  ViewOptionsMenu,
+  type ViewOption,
 } from '@/components/common';
 import { MarketplaceSourceBadge } from '@/components/marketplace/MarketplaceSourceBadge';
 import { McpListItem } from '@/components/mcps/McpListItem';
@@ -39,8 +41,150 @@ import { useAppStore } from '@/stores/appStore';
 import { useImportStore } from '@/stores/importStore';
 import { useScenesStore } from '@/stores/scenesStore';
 import { usePluginsStore } from '@/stores/pluginsStore';
+import { useSortPreferencesStore } from '@/stores/sortPreferencesStore';
 import { safeInvoke } from '@/utils/tauri';
-import type { Tool } from '@/types';
+import type { Category, McpServer, Tag, Tool } from '@/types';
+
+// ============================================================================
+// Sort + Group options
+// ============================================================================
+// Plugin-sink is an implicit secondary key in every sort option (see SkillsPage
+// for the same pattern + rationale). Group buckets follow sidebar order; see
+// SkillsPage `groupSkills` for the parallel implementation rationale.
+const MCPS_SORT_OPTIONS: ViewOption[] = [
+  { value: 'name', label: 'Name (A → Z)' },
+  { value: 'recent', label: 'Recently added' },
+  { value: 'used', label: 'Recently used' },
+  { value: 'most-used', label: 'Most used' },
+];
+
+const MCPS_GROUP_OPTIONS: ViewOption[] = [
+  { value: 'none', label: 'None' },
+  { value: 'categories', label: 'Categories' },
+  { value: 'tags', label: 'Tags' },
+];
+
+interface GroupBucket<T> {
+  group: { id: string; label: string; count: number } | null;
+  items: T[];
+}
+
+function groupMcps(
+  items: McpServer[],
+  groupBy: string,
+  categories: Category[],
+  appTags: Tag[],
+): GroupBucket<McpServer>[] {
+  if (groupBy === 'categories') {
+    const buckets = new Map<string, McpServer[]>();
+    for (const item of items) {
+      const key = item.categoryId || '';
+      const list = buckets.get(key) ?? [];
+      list.push(item);
+      buckets.set(key, list);
+    }
+    const out: GroupBucket<McpServer>[] = [];
+    for (const cat of categories) {
+      const bucket = buckets.get(cat.id);
+      if (bucket && bucket.length > 0) {
+        out.push({
+          group: { id: cat.id, label: cat.name.toUpperCase(), count: bucket.length },
+          items: bucket,
+        });
+      }
+    }
+    const uncategorized = buckets.get('') ?? [];
+    if (uncategorized.length > 0) {
+      out.push({
+        group: { id: '__uncategorized__', label: 'UNCATEGORIZED', count: uncategorized.length },
+        items: uncategorized,
+      });
+    }
+    return out;
+  }
+  if (groupBy === 'tags') {
+    const buckets = new Map<string, McpServer[]>();
+    const untagged: McpServer[] = [];
+    for (const item of items) {
+      const tags = item.tags ?? [];
+      if (tags.length === 0) {
+        untagged.push(item);
+        continue;
+      }
+      for (const tagName of tags) {
+        const list = buckets.get(tagName) ?? [];
+        list.push(item);
+        buckets.set(tagName, list);
+      }
+    }
+    const out: GroupBucket<McpServer>[] = [];
+    const seen = new Set<string>();
+    for (const tag of appTags) {
+      const bucket = buckets.get(tag.name);
+      if (bucket && bucket.length > 0) {
+        out.push({
+          group: { id: tag.id, label: tag.name.toUpperCase(), count: bucket.length },
+          items: bucket,
+        });
+        seen.add(tag.name);
+      }
+    }
+    const orphans = Array.from(buckets.keys())
+      .filter((name) => !seen.has(name))
+      .sort((a, b) => a.localeCompare(b));
+    for (const name of orphans) {
+      const bucket = buckets.get(name)!;
+      out.push({
+        group: { id: `__tag__${name}`, label: name.toUpperCase(), count: bucket.length },
+        items: bucket,
+      });
+    }
+    if (untagged.length > 0) {
+      out.push({
+        group: { id: '__untagged__', label: 'UNTAGGED', count: untagged.length },
+        items: untagged,
+      });
+    }
+    return out;
+  }
+  return [{ group: null, items }];
+}
+
+function applyMcpsSort(items: McpServer[], sortBy: string): McpServer[] {
+  const pluginSink =
+    (cmp: (a: McpServer, b: McpServer) => number) => (a: McpServer, b: McpServer) => {
+      const aP = a.installSource === 'plugin';
+      const bP = b.installSource === 'plugin';
+      if (aP !== bP) return aP ? 1 : -1;
+      return cmp(a, b);
+    };
+  const sorted = [...items];
+  switch (sortBy) {
+    case 'name':
+      sorted.sort(pluginSink((a, b) => a.name.localeCompare(b.name)));
+      break;
+    case 'recent':
+      sorted.sort(pluginSink((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '')));
+      break;
+    case 'used':
+      sorted.sort(
+        pluginSink((a, b) => {
+          const ax = a.lastUsed ?? '';
+          const bx = b.lastUsed ?? '';
+          if (ax && !bx) return -1;
+          if (!ax && bx) return 1;
+          return bx.localeCompare(ax);
+        }),
+      );
+      break;
+    case 'most-used':
+      sorted.sort(pluginSink((a, b) => (b.usageCount ?? 0) - (a.usageCount ?? 0)));
+      break;
+    default:
+      sorted.sort(pluginSink((a, b) => a.name.localeCompare(b.name)));
+  }
+  return sorted;
+}
 
 // ============================================================================
 // Icon Mapping and Helper Functions (from McpDetailPage.tsx)
@@ -204,7 +348,46 @@ export const McpServersPage: React.FC = () => {
     loadInstalledPlugins();
   }, [loadUsageStats, loadInstalledPlugins]);
 
-  const filteredMcps = getFilteredMcps();
+  const sortBy = useSortPreferencesStore((s) => s.sort.mcps);
+  const groupBy = useSortPreferencesStore((s) => s.group.mcps);
+  const setSortFor = useSortPreferencesStore((s) => s.setSortFor);
+  const setGroupFor = useSortPreferencesStore((s) => s.setGroupFor);
+
+  const baseFilteredMcps = getFilteredMcps();
+  const filteredMcps = useMemo(
+    () => applyMcpsSort(baseFilteredMcps, sortBy),
+    [baseFilteredMcps, sortBy],
+  );
+
+  const groupedMcps = useMemo(
+    () => groupMcps(filteredMcps, groupBy, categories, appTags),
+    [filteredMcps, groupBy, categories, appTags],
+  );
+
+  // Status text. Plain mode: "{N} servers · {M} enabled". Group modes shift
+  // to "{N} servers across {K} categories|tags" so the count stays honest
+  // when an item shows up in multiple buckets (Tags is multi-valued).
+  const statusText = useMemo(() => {
+    const count = filteredMcps.length;
+    const serversLabel = `${count} ${count === 1 ? 'server' : 'servers'}`;
+    if (count === 0) return serversLabel;
+    if (groupBy === 'tags') {
+      const tagBuckets = groupedMcps.filter((b) => b.group && b.group.id !== '__untagged__');
+      if (tagBuckets.length === 0) return serversLabel;
+      return `${serversLabel} across ${tagBuckets.length} ${
+        tagBuckets.length === 1 ? 'tag' : 'tags'
+      }`;
+    }
+    if (groupBy === 'categories') {
+      const catBuckets = groupedMcps.filter((b) => b.group && b.group.id !== '__uncategorized__');
+      if (catBuckets.length === 0) return serversLabel;
+      return `${serversLabel} across ${catBuckets.length} ${
+        catBuckets.length === 1 ? 'category' : 'categories'
+      }`;
+    }
+    const enabledCount = filteredMcps.filter((m) => m.enabled).length;
+    return `${serversLabel} · ${enabledCount} enabled`;
+  }, [filteredMcps, groupBy, groupedMcps]);
 
   // Get selected MCP data using useMemo
   const selectedMcp = useMemo(
@@ -825,6 +1008,31 @@ export const McpServersPage: React.FC = () => {
           ${selectedMcpId ? 'mr-[800px]' : ''}
         `}
       >
+        {/* Status line — count + context | View Options (Group + Sort) */}
+        {filteredMcps.length > 0 && (
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <span className="text-[11px] text-[#A1A1AA]">{statusText}</span>
+            <ViewOptionsMenu
+              sections={[
+                {
+                  id: 'group',
+                  label: 'GROUP BY',
+                  options: MCPS_GROUP_OPTIONS,
+                  value: groupBy,
+                  onChange: (v) => setGroupFor('mcps', v),
+                },
+                {
+                  id: 'sort',
+                  label: 'SORT BY',
+                  options: MCPS_SORT_OPTIONS,
+                  value: sortBy,
+                  onChange: (v) => setSortFor('mcps', v),
+                },
+              ]}
+            />
+          </div>
+        )}
+
         {/* No results for search */}
         {filteredMcps.length === 0 && filter.search ? (
           <div className="flex h-full items-center justify-center">
@@ -835,18 +1043,36 @@ export const McpServersPage: React.FC = () => {
             />
           </div>
         ) : (
-          /* MCP Server List - Unified component with smooth transitions */
-          <div className="flex flex-col gap-3">
-            {filteredMcps.map((mcp) => (
-              <McpListItem
-                key={mcp.id}
-                mcp={mcp}
-                compact={!!selectedMcpId}
-                selected={mcp.id === selectedMcpId}
-                onDelete={handleDelete}
-                onClick={handleMcpClick}
-                onIconClick={(ref) => handleIconClick(mcp.id, ref)}
-              />
+          /* MCP Server List — flat when groupBy === 'none', sectioned
+             otherwise. Section header style mirrors the sidebar's
+             MARKETPLACE / LIBRARY labels. */
+          <div className="flex flex-col">
+            {groupedMcps.map((bucket, idx) => (
+              <section key={bucket.group?.id ?? '__all__'} className={idx > 0 ? 'mt-7' : ''}>
+                {bucket.group && (
+                  <header className="mb-3 flex items-baseline gap-1.5">
+                    <h3 className="text-[10px] font-semibold uppercase tracking-[0.8px] text-[#A1A1AA]">
+                      {bucket.group.label}
+                    </h3>
+                    <span className="text-[10px] font-semibold tracking-[0.8px] text-[#A1A1AA]">
+                      · {bucket.group.count}
+                    </span>
+                  </header>
+                )}
+                <div className="flex flex-col gap-3">
+                  {bucket.items.map((mcp) => (
+                    <McpListItem
+                      key={`${bucket.group?.id ?? 'all'}::${mcp.id}`}
+                      mcp={mcp}
+                      compact={!!selectedMcpId}
+                      selected={mcp.id === selectedMcpId}
+                      onDelete={handleDelete}
+                      onClick={handleMcpClick}
+                      onIconClick={(ref) => handleIconClick(mcp.id, ref)}
+                    />
+                  ))}
+                </div>
+              </section>
             ))}
           </div>
         )}

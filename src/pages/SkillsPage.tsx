@@ -27,7 +27,14 @@ import { parseDescription } from '@/utils/parseDescription';
 import Badge from '@/components/common/Badge';
 import Button from '@/components/common/Button';
 import EmptyState from '@/components/common/EmptyState';
-import { IconPicker, ICON_MAP, CategoryTreeDropdown, ScopeSelector } from '@/components/common';
+import {
+  IconPicker,
+  ICON_MAP,
+  CategoryTreeDropdown,
+  ScopeSelector,
+  ViewOptionsMenu,
+  type ViewOption,
+} from '@/components/common';
 import { MarketplaceSourceBadge } from '@/components/marketplace/MarketplaceSourceBadge';
 import { SkillListItem } from '@/components/skills/SkillListItem';
 import { ImportSkillsModal } from '@/components/modals';
@@ -36,8 +43,166 @@ import { useAppStore } from '@/stores/appStore';
 import { useImportStore } from '@/stores/importStore';
 import { useScenesStore } from '@/stores/scenesStore';
 import { usePluginsStore } from '@/stores/pluginsStore';
+import { useSortPreferencesStore } from '@/stores/sortPreferencesStore';
 import { safeInvoke } from '@/utils/tauri';
-import type { Skill } from '@/types';
+import type { Category, Skill, Tag } from '@/types';
+
+// ============================================================================
+// Sort + Group options
+// ============================================================================
+// Sort: every option folds in plugin-sink as an implicit secondary key so
+// user-installed items always rank above plugin-imported ones inside
+// whatever primary axis the user chose. `applySkillsSort` returns a new
+// array; input is never mutated.
+const SKILLS_SORT_OPTIONS: ViewOption[] = [
+  { value: 'name', label: 'Name (A → Z)' },
+  { value: 'recent', label: 'Recently added' },
+  { value: 'used', label: 'Recently used' },
+  { value: 'most-used', label: 'Most used' },
+];
+
+const SKILLS_GROUP_OPTIONS: ViewOption[] = [
+  { value: 'none', label: 'None' },
+  { value: 'categories', label: 'Categories' },
+  { value: 'tags', label: 'Tags' },
+];
+
+function applySkillsSort(items: Skill[], sortBy: string): Skill[] {
+  const pluginSink = (cmp: (a: Skill, b: Skill) => number) => (a: Skill, b: Skill) => {
+    const aP = a.installSource === 'plugin';
+    const bP = b.installSource === 'plugin';
+    if (aP !== bP) return aP ? 1 : -1;
+    return cmp(a, b);
+  };
+  const sorted = [...items];
+  switch (sortBy) {
+    case 'name':
+      sorted.sort(pluginSink((a, b) => a.name.localeCompare(b.name)));
+      break;
+    case 'recent':
+      sorted.sort(pluginSink((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '')));
+      break;
+    case 'used':
+      sorted.sort(
+        pluginSink((a, b) => {
+          const ax = a.lastUsed ?? '';
+          const bx = b.lastUsed ?? '';
+          if (ax && !bx) return -1;
+          if (!ax && bx) return 1;
+          return bx.localeCompare(ax);
+        }),
+      );
+      break;
+    case 'most-used':
+      sorted.sort(pluginSink((a, b) => (b.usageCount ?? 0) - (a.usageCount ?? 0)));
+      break;
+    default:
+      sorted.sort(pluginSink((a, b) => a.name.localeCompare(b.name)));
+  }
+  return sorted;
+}
+
+// ============================================================================
+// Group helpers
+// ============================================================================
+// `groupSkills` produces an ordered list of `{ group, items }` buckets. When
+// `groupBy === 'none'` the whole list is returned as a single anonymous
+// bucket (`group: null`), so the renderer can iterate uniformly.
+//
+// Group ordering follows the user's category / tag arrangement in the
+// sidebar (the `categories` / `appTags` arrays are already sorted by store
+// reorder logic), so the page mirrors that mental model. Items with no
+// category / no tags fall into the trailing UNCATEGORIZED / UNTAGGED
+// bucket. For Tags grouping (multi-valued), an item appears once in every
+// bucket whose tag it carries — Linear/Notion style multi-tag pivot.
+
+export interface GroupBucket<T> {
+  group: { id: string; label: string; count: number } | null;
+  items: T[];
+}
+
+function groupSkills(
+  items: Skill[],
+  groupBy: string,
+  categories: Category[],
+  appTags: Tag[],
+): GroupBucket<Skill>[] {
+  if (groupBy === 'categories') {
+    const buckets = new Map<string, Skill[]>();
+    for (const item of items) {
+      const key = item.categoryId || '';
+      const list = buckets.get(key) ?? [];
+      list.push(item);
+      buckets.set(key, list);
+    }
+    const out: GroupBucket<Skill>[] = [];
+    for (const cat of categories) {
+      const bucket = buckets.get(cat.id);
+      if (bucket && bucket.length > 0) {
+        out.push({
+          group: { id: cat.id, label: cat.name.toUpperCase(), count: bucket.length },
+          items: bucket,
+        });
+      }
+    }
+    const uncategorized = buckets.get('') ?? [];
+    if (uncategorized.length > 0) {
+      out.push({
+        group: { id: '__uncategorized__', label: 'UNCATEGORIZED', count: uncategorized.length },
+        items: uncategorized,
+      });
+    }
+    return out;
+  }
+  if (groupBy === 'tags') {
+    const buckets = new Map<string, Skill[]>();
+    const untagged: Skill[] = [];
+    for (const item of items) {
+      const tags = item.tags ?? [];
+      if (tags.length === 0) {
+        untagged.push(item);
+        continue;
+      }
+      for (const tagName of tags) {
+        const list = buckets.get(tagName) ?? [];
+        list.push(item);
+        buckets.set(tagName, list);
+      }
+    }
+    const out: GroupBucket<Skill>[] = [];
+    // Use sidebar tag order first; any tag the user has used but that is not
+    // in the global tag list (legacy / inline-created) trails alphabetically.
+    const seen = new Set<string>();
+    for (const tag of appTags) {
+      const bucket = buckets.get(tag.name);
+      if (bucket && bucket.length > 0) {
+        out.push({
+          group: { id: tag.id, label: tag.name.toUpperCase(), count: bucket.length },
+          items: bucket,
+        });
+        seen.add(tag.name);
+      }
+    }
+    const orphans = Array.from(buckets.keys())
+      .filter((name) => !seen.has(name))
+      .sort((a, b) => a.localeCompare(b));
+    for (const name of orphans) {
+      const bucket = buckets.get(name)!;
+      out.push({
+        group: { id: `__tag__${name}`, label: name.toUpperCase(), count: bucket.length },
+        items: bucket,
+      });
+    }
+    if (untagged.length > 0) {
+      out.push({
+        group: { id: '__untagged__', label: 'UNTAGGED', count: untagged.length },
+        items: untagged,
+      });
+    }
+    return out;
+  }
+  return [{ group: null, items }];
+}
 
 // ============================================================================
 // Icon Mapping
@@ -208,7 +373,51 @@ export function SkillsPage() {
 
   const { loadInstalledPlugins } = usePluginsStore();
 
-  const filteredSkills = getFilteredSkills();
+  const sortBy = useSortPreferencesStore((s) => s.sort.skills);
+  const groupBy = useSortPreferencesStore((s) => s.group.skills);
+  const setSortFor = useSortPreferencesStore((s) => s.setSortFor);
+  const setGroupFor = useSortPreferencesStore((s) => s.setGroupFor);
+
+  const baseFiltered = getFilteredSkills();
+  const filteredSkills = useMemo(
+    () => applySkillsSort(baseFiltered, sortBy),
+    [baseFiltered, sortBy],
+  );
+
+  const groupedSkills = useMemo(
+    () => groupSkills(filteredSkills, groupBy, categories, appTags),
+    [filteredSkills, groupBy, categories, appTags],
+  );
+
+  // Status line text. Mirrors the Marketplace pattern: count + secondary
+  // context. When grouping by Tags the displayed total exceeds unique items
+  // (one item shows up in every tag bucket it belongs to), so the status
+  // text switches to "X skills across Y tags" to keep the count honest.
+  const statusText = useMemo(() => {
+    const count = filteredSkills.length;
+    const skillsLabel = `${count} ${count === 1 ? 'skill' : 'skills'}`;
+    if (groupBy === 'tags') {
+      const tagBuckets = groupedSkills.filter((b) => b.group && b.group.id !== '__untagged__');
+      if (tagBuckets.length === 0) return skillsLabel;
+      return `${skillsLabel} across ${tagBuckets.length} ${
+        tagBuckets.length === 1 ? 'tag' : 'tags'
+      }`;
+    }
+    if (groupBy === 'categories') {
+      const catBuckets = groupedSkills.filter((b) => b.group && b.group.id !== '__uncategorized__');
+      if (catBuckets.length === 0) return skillsLabel;
+      return `${skillsLabel} across ${catBuckets.length} ${
+        catBuckets.length === 1 ? 'category' : 'categories'
+      }`;
+    }
+    const categoryCount = new Set(
+      filteredSkills
+        .map((s) => s.categoryId || s.category)
+        .filter((c) => c && c !== 'uncategorized'),
+    ).size;
+    if (categoryCount === 0) return skillsLabel;
+    return `${skillsLabel} · ${categoryCount} ${categoryCount === 1 ? 'category' : 'categories'}`;
+  }, [filteredSkills, groupBy, groupedSkills]);
 
   // Load usage stats and plugin enabled status on mount
   useEffect(() => {
@@ -772,6 +981,33 @@ export function SkillsPage() {
           ${selectedSkillId ? 'mr-[800px]' : ''}
         `}
       >
+        {/* Status line — count + secondary context on the left, View Options
+            (Group + Sort) on the right. Mirrors the Marketplace pattern
+            (see SkillMarketplacePage). */}
+        {filteredSkills.length > 0 && (
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <span className="text-[11px] text-[#A1A1AA]">{statusText}</span>
+            <ViewOptionsMenu
+              sections={[
+                {
+                  id: 'group',
+                  label: 'GROUP BY',
+                  options: SKILLS_GROUP_OPTIONS,
+                  value: groupBy,
+                  onChange: (v) => setGroupFor('skills', v),
+                },
+                {
+                  id: 'sort',
+                  label: 'SORT BY',
+                  options: SKILLS_SORT_OPTIONS,
+                  value: sortBy,
+                  onChange: (v) => setSortFor('skills', v),
+                },
+              ]}
+            />
+          </div>
+        )}
+
         {filteredSkills.length === 0 ? (
           <div className="flex h-full items-center justify-center">
             <EmptyState
@@ -785,18 +1021,37 @@ export function SkillsPage() {
             />
           </div>
         ) : (
-          /* Skill List - Unified component with smooth transitions */
-          <div className="flex flex-col gap-3">
-            {filteredSkills.map((skill) => (
-              <SkillListItem
-                key={skill.id}
-                skill={skill}
-                compact={!!selectedSkillId}
-                selected={skill.id === selectedSkillId}
-                onClick={() => handleSkillClick(skill.id)}
-                onDelete={() => handleDelete(skill.id)}
-                onIconClick={(ref) => handleIconClick(skill.id, ref)}
-              />
+          /* Skill List — flat when groupBy === 'none', sectioned otherwise.
+             Section header style mirrors the sidebar's MARKETPLACE / LIBRARY
+             labels (10px font-semibold uppercase tracking-[0.8px] text-
+             [#A1A1AA]) for cross-surface visual coherence. */
+          <div className="flex flex-col">
+            {groupedSkills.map((bucket, idx) => (
+              <section key={bucket.group?.id ?? '__all__'} className={idx > 0 ? 'mt-7' : ''}>
+                {bucket.group && (
+                  <header className="mb-3 flex items-baseline gap-1.5">
+                    <h3 className="text-[10px] font-semibold uppercase tracking-[0.8px] text-[#A1A1AA]">
+                      {bucket.group.label}
+                    </h3>
+                    <span className="text-[10px] font-semibold tracking-[0.8px] text-[#A1A1AA]">
+                      · {bucket.group.count}
+                    </span>
+                  </header>
+                )}
+                <div className="flex flex-col gap-3">
+                  {bucket.items.map((skill) => (
+                    <SkillListItem
+                      key={`${bucket.group?.id ?? 'all'}::${skill.id}`}
+                      skill={skill}
+                      compact={!!selectedSkillId}
+                      selected={skill.id === selectedSkillId}
+                      onClick={() => handleSkillClick(skill.id)}
+                      onDelete={() => handleDelete(skill.id)}
+                      onIconClick={(ref) => handleIconClick(skill.id, ref)}
+                    />
+                  ))}
+                </div>
+              </section>
             ))}
           </div>
         )}

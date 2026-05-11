@@ -27,12 +27,46 @@ import { SlidePanel } from '@/components/layout/SlidePanel';
 import { Button } from '@/components/common/Button';
 import { Badge } from '@/components/common/Badge';
 import { EmptyState } from '@/components/common/EmptyState';
-import { IconPicker } from '@/components/common';
+import { IconPicker, ViewOptionsMenu, type ViewOption } from '@/components/common';
 import { SceneListItem } from '@/components/scenes/SceneListItem';
 import { CreateSceneModal } from '@/components/scenes/CreateSceneModal';
 import { useScenesStore } from '@/stores/scenesStore';
 import { useSkillsStore } from '@/stores/skillsStore';
 import { useMcpsStore } from '@/stores/mcpsStore';
+import { useSortPreferencesStore } from '@/stores/sortPreferencesStore';
+
+// ============================================================================
+// Sort options (no Group — Scenes have no category/tags fields).
+// ============================================================================
+const SCENES_SORT_OPTIONS: ViewOption[] = [
+  { value: 'name', label: 'Name (A → Z)' },
+  { value: 'recent', label: 'Recently created' },
+  { value: 'used', label: 'Recently used' },
+];
+
+function applyScenesSort(items: Scene[], sortBy: string): Scene[] {
+  const sorted = [...items];
+  switch (sortBy) {
+    case 'name':
+      sorted.sort((a, b) => a.name.localeCompare(b.name));
+      break;
+    case 'recent':
+      sorted.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
+      break;
+    case 'used':
+      sorted.sort((a, b) => {
+        const ax = a.lastUsed ?? '';
+        const bx = b.lastUsed ?? '';
+        if (ax && !bx) return -1;
+        if (!ax && bx) return 1;
+        return bx.localeCompare(ax);
+      });
+      break;
+    default:
+      sorted.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  return sorted;
+}
 import { useProjectsStore } from '@/stores/projectsStore';
 import type { Skill, McpServer } from '@/types';
 
@@ -68,7 +102,6 @@ const mcpIconMap: Record<string, React.FC<{ className?: string }>> = {
 const getSceneIcon = (iconName: string) => sceneIconMap[iconName] || Layers;
 const getSkillIcon = (category: string) => skillIconMap[category] || skillIconMap.default;
 const getMcpIcon = (category: string) => mcpIconMap[category] || mcpIconMap.default;
-
 
 // Format date
 const formatDate = (dateStr: string) => {
@@ -161,22 +194,34 @@ export const ScenesPage: React.FC = () => {
     triggerRef: React.RefObject<HTMLDivElement> | null;
   }>({ isOpen: false, sceneId: null, triggerRef: null });
 
-  // Filter scenes based on search
-  const filteredScenes = useMemo(() => {
-    if (!filter.search) return scenes;
+  const sortBy = useSortPreferencesStore((s) => s.sort.scenes);
+  const setSortFor = useSortPreferencesStore((s) => s.setSortFor);
 
-    const query = filter.search.toLowerCase();
-    return scenes.filter(
-      (scene) =>
-        scene.name.toLowerCase().includes(query) ||
-        scene.description.toLowerCase().includes(query)
-    );
-  }, [scenes, filter.search]);
+  // Filter scenes based on search, then apply user-chosen sort.
+  const filteredScenes = useMemo(() => {
+    const base = !filter.search
+      ? scenes
+      : (() => {
+          const query = filter.search.toLowerCase();
+          return scenes.filter(
+            (scene) =>
+              scene.name.toLowerCase().includes(query) ||
+              scene.description.toLowerCase().includes(query),
+          );
+        })();
+    return applyScenesSort(base, sortBy);
+  }, [scenes, filter.search, sortBy]);
+
+  // Status text — "{N} scenes".
+  const statusText = useMemo(() => {
+    const count = filteredScenes.length;
+    return `${count} ${count === 1 ? 'scene' : 'scenes'}`;
+  }, [filteredScenes]);
 
   // Get selected scene
   const selectedScene = useMemo(
     () => scenes.find((s) => s.id === selectedSceneId) || null,
-    [scenes, selectedSceneId]
+    [scenes, selectedSceneId],
   );
 
   // Get skills and MCPs for selected scene
@@ -245,7 +290,7 @@ export const ScenesPage: React.FC = () => {
       skillIds: string[];
       mcpIds: string[];
       claudeMdIds?: string[];
-    }
+    },
   ) => {
     try {
       await safeInvoke('update_scene', {
@@ -269,8 +314,8 @@ export const ScenesPage: React.FC = () => {
                 mcpIds: sceneData.mcpIds,
                 claudeMdIds: sceneData.claudeMdIds,
               }
-            : scene
-        )
+            : scene,
+        ),
       );
     } catch (error) {
       console.error('Failed to update scene:', error);
@@ -294,7 +339,9 @@ export const ScenesPage: React.FC = () => {
     // Check if any real projects are using this scene
     const projectsUsingScene = projects.filter((p) => p.sceneId === id);
     if (projectsUsingScene.length > 0) {
-      window.alert(`Cannot delete "${scene.name}" because it is being used by ${projectsUsingScene.length} project(s).`);
+      window.alert(
+        `Cannot delete "${scene.name}" because it is being used by ${projectsUsingScene.length} project(s).`,
+      );
       return;
     }
 
@@ -336,7 +383,7 @@ export const ScenesPage: React.FC = () => {
       const scene = scenes.find((s) => s.id === iconPickerState.sceneId);
       if (scene) {
         const updatedScenes = scenes.map((s) =>
-          s.id === iconPickerState.sceneId ? { ...s, icon: iconName } : s
+          s.id === iconPickerState.sceneId ? { ...s, icon: iconName } : s,
         );
         useScenesStore.getState().setScenes(updatedScenes);
       }
@@ -380,11 +427,27 @@ export const ScenesPage: React.FC = () => {
           ${selectedSceneId ? 'mr-[800px]' : ''}
         `}
       >
+        {/* Status line — count | View Options (Sort only; no Group) */}
+        {filteredScenes.length > 0 && (
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <span className="text-[11px] text-[#A1A1AA]">{statusText}</span>
+            <ViewOptionsMenu
+              sections={[
+                {
+                  id: 'sort',
+                  label: 'SORT BY',
+                  options: SCENES_SORT_OPTIONS,
+                  value: sortBy,
+                  onChange: (v) => setSortFor('scenes', v),
+                },
+              ]}
+            />
+          </div>
+        )}
+
         {filteredScenes.length > 0 ? (
           /* Scene List - Unified SceneListItem with animated compact mode */
-          <div
-            className="flex flex-col gap-3"
-          >
+          <div className="flex flex-col gap-3">
             {filteredScenes.map((scene) => (
               <SceneListItem
                 key={scene.id}
@@ -438,10 +501,11 @@ export const ScenesPage: React.FC = () => {
                 <SceneIconComponent className="h-[18px] w-[18px] text-[#18181B]" />
               </div>
               <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <h2 className="text-base font-semibold text-[#18181B]">
-                  {selectedScene.name}
-                </h2>
-                <p className="w-full truncate text-xs font-normal text-[#71717A]" title={selectedScene.description}>
+                <h2 className="text-base font-semibold text-[#18181B]">{selectedScene.name}</h2>
+                <p
+                  className="w-full truncate text-xs font-normal text-[#71717A]"
+                  title={selectedScene.description}
+                >
                   {selectedScene.description}
                 </p>
               </div>
@@ -507,7 +571,9 @@ export const ScenesPage: React.FC = () => {
               <h3 className="text-sm font-semibold text-[#18181B]">Description</h3>
               <div className="rounded-lg border border-[#E5E5E5] p-4">
                 <p className="text-xs text-[#52525B] leading-[1.6]">
-                  {selectedScene.description || <span className="text-[#A1A1AA] italic">No description</span>}
+                  {selectedScene.description || (
+                    <span className="text-[#A1A1AA] italic">No description</span>
+                  )}
                 </p>
               </div>
             </div>

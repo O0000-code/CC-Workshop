@@ -7,8 +7,135 @@ import { ClaudeMdCard } from '@/components/claude-md/ClaudeMdCard';
 import { ClaudeMdDetailPanel } from '@/components/claude-md/ClaudeMdDetailPanel';
 import { ImportClaudeMdModal } from '@/components/modals/ImportClaudeMdModal';
 import { ScanClaudeMdModal } from '@/components/modals/ScanClaudeMdModal';
-import { IconPicker, Button } from '@/components/common';
+import { IconPicker, Button, ViewOptionsMenu, type ViewOption } from '@/components/common';
 import { useClaudeMdStore } from '@/stores/claudeMdStore';
+import { useAppStore } from '@/stores/appStore';
+import { useSortPreferencesStore } from '@/stores/sortPreferencesStore';
+import type { Category, Tag } from '@/types';
+import type { ClaudeMdFile } from '@/types/claudeMd';
+
+// ============================================================================
+// Sort + Group options
+// ============================================================================
+// Global-first is an implicit secondary key in every sort option so the
+// global CLAUDE.md always pins to the top regardless of the chosen primary
+// axis. Group buckets follow sidebar order (categories) / explicit tag order
+// (tags); see SkillsPage for the parallel rationale.
+const CLAUDE_MD_SORT_OPTIONS: ViewOption[] = [
+  { value: 'name', label: 'Name (A → Z)' },
+  { value: 'recent', label: 'Recently created' },
+  { value: 'updated', label: 'Recently updated' },
+];
+
+const CLAUDE_MD_GROUP_OPTIONS: ViewOption[] = [
+  { value: 'none', label: 'None' },
+  { value: 'categories', label: 'Categories' },
+  { value: 'tags', label: 'Tags' },
+];
+
+interface GroupBucket<T> {
+  group: { id: string; label: string; count: number } | null;
+  items: T[];
+}
+
+function groupClaudeMdFiles(
+  items: ClaudeMdFile[],
+  groupBy: string,
+  categories: Category[],
+  appTags: Tag[],
+): GroupBucket<ClaudeMdFile>[] {
+  if (groupBy === 'categories') {
+    const buckets = new Map<string, ClaudeMdFile[]>();
+    for (const item of items) {
+      const key = item.categoryId || '';
+      const list = buckets.get(key) ?? [];
+      list.push(item);
+      buckets.set(key, list);
+    }
+    const out: GroupBucket<ClaudeMdFile>[] = [];
+    for (const cat of categories) {
+      const bucket = buckets.get(cat.id);
+      if (bucket && bucket.length > 0) {
+        out.push({
+          group: { id: cat.id, label: cat.name.toUpperCase(), count: bucket.length },
+          items: bucket,
+        });
+      }
+    }
+    const uncategorized = buckets.get('') ?? [];
+    if (uncategorized.length > 0) {
+      out.push({
+        group: { id: '__uncategorized__', label: 'UNCATEGORIZED', count: uncategorized.length },
+        items: uncategorized,
+      });
+    }
+    return out;
+  }
+  if (groupBy === 'tags') {
+    // CLAUDE.md uses tagIds (not tag names), so resolve each id to its Tag
+    // object via the global appStore tag list before bucketing.
+    const tagById = new Map(appTags.map((t) => [t.id, t]));
+    const buckets = new Map<string, ClaudeMdFile[]>();
+    const untagged: ClaudeMdFile[] = [];
+    for (const item of items) {
+      const ids = item.tagIds ?? [];
+      if (ids.length === 0) {
+        untagged.push(item);
+        continue;
+      }
+      let placed = false;
+      for (const tagId of ids) {
+        if (!tagById.has(tagId)) continue;
+        const list = buckets.get(tagId) ?? [];
+        list.push(item);
+        buckets.set(tagId, list);
+        placed = true;
+      }
+      if (!placed) untagged.push(item);
+    }
+    const out: GroupBucket<ClaudeMdFile>[] = [];
+    for (const tag of appTags) {
+      const bucket = buckets.get(tag.id);
+      if (bucket && bucket.length > 0) {
+        out.push({
+          group: { id: tag.id, label: tag.name.toUpperCase(), count: bucket.length },
+          items: bucket,
+        });
+      }
+    }
+    if (untagged.length > 0) {
+      out.push({
+        group: { id: '__untagged__', label: 'UNTAGGED', count: untagged.length },
+        items: untagged,
+      });
+    }
+    return out;
+  }
+  return [{ group: null, items }];
+}
+
+function applyClaudeMdSort(items: ClaudeMdFile[], sortBy: string): ClaudeMdFile[] {
+  const globalFirst =
+    (cmp: (a: ClaudeMdFile, b: ClaudeMdFile) => number) => (a: ClaudeMdFile, b: ClaudeMdFile) => {
+      if (a.isGlobal !== b.isGlobal) return a.isGlobal ? -1 : 1;
+      return cmp(a, b);
+    };
+  const sorted = [...items];
+  switch (sortBy) {
+    case 'name':
+      sorted.sort(globalFirst((a, b) => a.name.localeCompare(b.name)));
+      break;
+    case 'recent':
+      sorted.sort(globalFirst((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '')));
+      break;
+    case 'updated':
+      sorted.sort(globalFirst((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '')));
+      break;
+    default:
+      sorted.sort(globalFirst((a, b) => a.name.localeCompare(b.name)));
+  }
+  return sorted;
+}
 
 // ============================================================================
 // Empty State Icon Component (Custom document icon matching design)
@@ -129,6 +256,13 @@ export function ClaudeMdPage() {
     triggerRef: React.RefObject<HTMLDivElement> | null;
   }>({ isOpen: false, fileId: null, triggerRef: null });
 
+  const sortBy = useSortPreferencesStore((s) => s.sort.claudeMd);
+  const groupBy = useSortPreferencesStore((s) => s.group.claudeMd);
+  const setSortFor = useSortPreferencesStore((s) => s.setSortFor);
+  const setGroupFor = useSortPreferencesStore((s) => s.setGroupFor);
+
+  const { categories, tags: appTags } = useAppStore();
+
   // Get filtered files - compute in component to ensure reactivity
   const filteredFiles = useMemo(() => {
     let filtered = [...files];
@@ -159,16 +293,41 @@ export function ClaudeMdPage() {
       filtered = filtered.filter((file) => file.isGlobal);
     }
 
-    // Sort: global first, then by name
-    filtered.sort((a, b) => {
-      if (a.isGlobal !== b.isGlobal) {
-        return a.isGlobal ? -1 : 1;
-      }
-      return a.name.localeCompare(b.name);
-    });
+    // Sorting is delegated to `applyClaudeMdSort`, which folds in the
+    // global-first secondary key for every option.
+    return applyClaudeMdSort(filtered, sortBy);
+  }, [files, filter, sortBy]);
 
-    return filtered;
-  }, [files, filter]);
+  const groupedFiles = useMemo(
+    () => groupClaudeMdFiles(filteredFiles, groupBy, categories, appTags),
+    [filteredFiles, groupBy, categories, appTags],
+  );
+
+  // Status text. Plain mode: "{N} files · {M} global". Group modes shift to
+  // "{N} files across {K} categories|tags" — the count is unique-by-file so
+  // the surfaced number stays honest even when Tags grouping multiplies the
+  // visible rows across buckets.
+  const statusText = useMemo(() => {
+    const count = filteredFiles.length;
+    const filesLabel = `${count} ${count === 1 ? 'file' : 'files'}`;
+    if (count === 0) return filesLabel;
+    if (groupBy === 'tags') {
+      const tagBuckets = groupedFiles.filter((b) => b.group && b.group.id !== '__untagged__');
+      if (tagBuckets.length === 0) return filesLabel;
+      return `${filesLabel} across ${tagBuckets.length} ${
+        tagBuckets.length === 1 ? 'tag' : 'tags'
+      }`;
+    }
+    if (groupBy === 'categories') {
+      const catBuckets = groupedFiles.filter((b) => b.group && b.group.id !== '__uncategorized__');
+      if (catBuckets.length === 0) return filesLabel;
+      return `${filesLabel} across ${catBuckets.length} ${
+        catBuckets.length === 1 ? 'category' : 'categories'
+      }`;
+    }
+    const globalCount = filteredFiles.filter((f) => f.isGlobal).length;
+    return `${filesLabel} · ${globalCount} global`;
+  }, [filteredFiles, groupBy, groupedFiles]);
 
   // Get selected file
   const selectedFile = useMemo(
@@ -322,6 +481,31 @@ export function ClaudeMdPage() {
           ${selectedFileId ? 'mr-[800px]' : ''}
         `}
       >
+        {/* Status line — count + context | View Options (Group + Sort) */}
+        {!isLoading && filteredFiles.length > 0 && (
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <span className="text-[11px] text-[#A1A1AA]">{statusText}</span>
+            <ViewOptionsMenu
+              sections={[
+                {
+                  id: 'group',
+                  label: 'GROUP BY',
+                  options: CLAUDE_MD_GROUP_OPTIONS,
+                  value: groupBy,
+                  onChange: (v) => setGroupFor('claudeMd', v),
+                },
+                {
+                  id: 'sort',
+                  label: 'SORT BY',
+                  options: CLAUDE_MD_SORT_OPTIONS,
+                  value: sortBy,
+                  onChange: (v) => setSortFor('claudeMd', v),
+                },
+              ]}
+            />
+          </div>
+        )}
+
         {/* Loading state */}
         {isLoading ? (
           <div className="flex h-full items-center justify-center">
@@ -342,17 +526,35 @@ export function ClaudeMdPage() {
             </div>
           </div>
         ) : (
-          /* File List */
-          <div className="flex flex-col gap-3">
-            {filteredFiles.map((file) => (
-              <ClaudeMdCard
-                key={file.id}
-                file={file}
-                compact={!!selectedFileId}
-                onClick={() => handleFileClick(file.id)}
-                onDelete={() => handleDelete(file.id)}
-                onIconClick={(ref) => handleIconClick(file.id, ref)}
-              />
+          /* File List — flat when groupBy === 'none', sectioned otherwise.
+             Section header style mirrors the sidebar's MARKETPLACE / LIBRARY
+             labels. */
+          <div className="flex flex-col">
+            {groupedFiles.map((bucket, idx) => (
+              <section key={bucket.group?.id ?? '__all__'} className={idx > 0 ? 'mt-7' : ''}>
+                {bucket.group && (
+                  <header className="mb-3 flex items-baseline gap-1.5">
+                    <h3 className="text-[10px] font-semibold uppercase tracking-[0.8px] text-[#A1A1AA]">
+                      {bucket.group.label}
+                    </h3>
+                    <span className="text-[10px] font-semibold tracking-[0.8px] text-[#A1A1AA]">
+                      · {bucket.group.count}
+                    </span>
+                  </header>
+                )}
+                <div className="flex flex-col gap-3">
+                  {bucket.items.map((file) => (
+                    <ClaudeMdCard
+                      key={`${bucket.group?.id ?? 'all'}::${file.id}`}
+                      file={file}
+                      compact={!!selectedFileId}
+                      onClick={() => handleFileClick(file.id)}
+                      onDelete={() => handleDelete(file.id)}
+                      onIconClick={(ref) => handleIconClick(file.id, ref)}
+                    />
+                  ))}
+                </div>
+              </section>
             ))}
           </div>
         )}

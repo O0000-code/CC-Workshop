@@ -30,3 +30,5 @@ export { TagsWithTooltip } from './TagsWithTooltip';
 export type { TagsWithTooltipProps } from './TagsWithTooltip';
 export { ColorPicker, PRESET_COLORS } from './ColorPicker';
 export type { ColorPickerProps } from './ColorPicker';
+export { ViewOptionsMenu, default as ViewOptionsMenuDefault } from './ViewOptionsMenu';
+export type { ViewOptionsMenuProps, ViewOption, ViewSection } from './ViewOptionsMenu';

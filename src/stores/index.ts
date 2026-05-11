@@ -9,3 +9,5 @@ export { useImportStore } from './importStore';
 export { useLauncherStore } from './launcherStore';
 export { usePluginsStore } from './pluginsStore';
 export { useTrashStore } from './trashStore';
+export { useSortPreferencesStore } from './sortPreferencesStore';
+export type { SortPage } from './sortPreferencesStore';

@@ -1960,6 +1960,14 @@ async fn download_skill_recursive(
     fs::create_dir_all(dest_dir).map_err(|e| format!("create dir: {}", e))?;
 
     for entry in entries {
+        // Silently skip dotfiles / dotdirs (.gitignore / .DS_Store /
+        // .github / etc.). They're never part of a skill's installable
+        // content, and `sanitize_resource_name` rejects them anyway; without
+        // this skip the whole install fails on any repo whose skill dir
+        // happens to ship a .gitignore.
+        if entry.name.starts_with('.') {
+            continue;
+        }
         tokio::time::sleep(Duration::from_millis(GITHUB_PACING_MS)).await;
         // B-P0-1 — security: every recursive `entry.name` must pass the
         // same alphabet check before being joined. GitHub Contents API does
@@ -2157,24 +2165,112 @@ pub async fn install_marketplace_skill(
         let _ = fs::remove_dir_all(&target_dir);
         match download_skill_recursive(&owner, &repo, candidate, &target_dir).await {
             Ok(()) => {
-                ok = true;
-                break;
+                // Verify the downloaded dir actually contains a SKILL.md
+                // (or a README.md as a permissive fallback for repos that
+                // don't follow the SKILL.md convention). An empty
+                // placeholder dir like `skills/microsoft-foundry/.gitignore`
+                // (real skill lives in `.github/plugins/...`) downloads
+                // cleanly but isn't usable — treat it as failure so we
+                // continue to the next candidate.
+                if target_dir.join("SKILL.md").exists()
+                    || target_dir.join("README.md").exists()
+                {
+                    ok = true;
+                    break;
+                }
+                last_err = format!(
+                    "Downloaded '{}' has no SKILL.md or README.md (likely a placeholder dir)",
+                    candidate
+                );
             }
             Err(e) => {
                 last_err = e;
-                // Continue to the next candidate. Only surface failure
-                // when every candidate misses.
             }
         }
     }
+
+    // Final fallback: if every static candidate missed (or all turned out
+    // to be placeholder dirs), search the repo's tree for the actual
+    // location of `<skillId>/SKILL.md` and try that path.
+    if !ok && !item.skill_id.is_empty() {
+        if let Some(found_path) =
+            find_skill_path_via_tree_search(&owner, &repo, &item.skill_id).await
+        {
+            let _ = fs::remove_dir_all(&target_dir);
+            match download_skill_recursive(&owner, &repo, &found_path, &target_dir).await {
+                Ok(()) => {
+                    if target_dir.join("SKILL.md").exists()
+                        || target_dir.join("README.md").exists()
+                    {
+                        ok = true;
+                    } else {
+                        last_err = format!(
+                            "Tree-search located '{}' but SKILL.md still missing",
+                            found_path
+                        );
+                    }
+                }
+                Err(e) => {
+                    last_err = format!("Tree-search path '{}' download failed: {}", found_path, e);
+                }
+            }
+        }
+    }
+
     if !ok {
         let _ = fs::remove_dir_all(&target_dir);
         return Ok(InstallOutcome::Failed {
-            reason: format!("All candidate paths failed; last error: {}", last_err),
+            reason: format!("Could not locate skill in repo; last error: {}", last_err),
         });
     }
 
     finalize_skill_install(app, &item, target_dir).await
+}
+
+/// Search the repo's git tree for a directory whose path ends in
+/// `<skill_id>` and contains a `SKILL.md` at the dir's top level.
+/// Returns the directory path (relative to repo root) on first match.
+///
+/// Used as a last-resort fallback when both `skills/<id>` and `<id>` (root)
+/// candidate paths miss — e.g. for repos that house skills under
+/// `.github/plugins/.../skills/<id>` plugin sub-trees.
+///
+/// One API call per invocation (the recursive trees endpoint), so we only
+/// reach for it after the cheap candidate paths have failed.
+async fn find_skill_path_via_tree_search(
+    owner: &str,
+    repo: &str,
+    skill_id: &str,
+) -> Option<String> {
+    #[derive(Deserialize)]
+    struct TreeResp {
+        tree: Vec<TreeEntry>,
+    }
+    #[derive(Deserialize)]
+    struct TreeEntry {
+        path: String,
+        #[serde(rename = "type")]
+        kind: String,
+    }
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/git/trees/HEAD?recursive=1",
+        owner, repo
+    );
+    let resp: TreeResp = github_get_json(&url).await.ok()?;
+    // First pass: find a blob path that ends in `<skill_id>/SKILL.md`.
+    let needle_md = format!("/{}/SKILL.md", skill_id);
+    let needle_md_lower = needle_md.to_lowercase();
+    for entry in &resp.tree {
+        if entry.kind != "blob" {
+            continue;
+        }
+        let path_lower = entry.path.to_lowercase();
+        if path_lower.ends_with(&needle_md_lower) {
+            // Strip "/SKILL.md" suffix to get the skill's directory path.
+            return entry.path.rsplitn(2, '/').nth(1).map(|s| s.to_string());
+        }
+    }
+    None
 }
 
 async fn finalize_skill_install(

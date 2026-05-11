@@ -734,25 +734,34 @@ export default function MainLayout() {
 
         {/* Main Content */}
         <main className="flex-1 overflow-hidden flex flex-col">
-          {/* Marketplace install short-cut banner (task card C6 + C8 / D-Imp-6).
-              Visibility is driven entirely by `marketplaceStore.shortcutBannerState.visible`,
-              which the install actions raise after a successful install and
-              `dismissShortcutBanner` / navigation tear down. Rendering at the
-              MainLayout level (rather than inside individual pages) keeps the
-              banner visible across the navigation triggered by its own
-              "View in Skills →" link.
-              The wrapper <div> only mounts when the banner is visible so the
-              padding doesn't sit above page content unnecessarily. */}
-          {isShortcutBannerVisible && (
-            <div className="px-7 pt-4 flex-shrink-0">
-              <MarketplaceShortcutBanner />
-            </div>
-          )}
           <ErrorBoundary>
             <Outlet />
           </ErrorBoundary>
         </main>
       </div>
+
+      {/* Marketplace install short-cut banner — floating toast in the
+          viewport's bottom-right corner. Originally rendered inline at the
+          top of <main> as a horizontal banner, but inline rendering pushed
+          the PageHeader down ~48px the moment it appeared (and snapped
+          back when it dismissed), which was visually jarring whenever the
+          user installed a Skill / MCP and returned to a Marketplace page.
+          Floating fixed-position keeps the underlying page layout stable
+          while still surfacing the install actions ("View in Skills →" /
+          "Add to active Scene") prominently. Visibility is still driven by
+          `marketplaceStore.shortcutBannerState.visible` — install actions
+          raise it, `dismissShortcutBanner` / navigation tear down. */}
+      {isShortcutBannerVisible && (
+        <div
+          className="fixed bottom-6 right-6 z-50 rounded-lg"
+          style={{
+            width: 'min(640px, calc(100vw - 48px))',
+            boxShadow: 'var(--shadow-dropdown)',
+          }}
+        >
+          <MarketplaceShortcutBanner />
+        </div>
+      )}
 
       {/* Add-to-Scene popover — portal-rendered, anchored to its triggerRect.
           Lives at the layout level so the popover survives mid-flow page

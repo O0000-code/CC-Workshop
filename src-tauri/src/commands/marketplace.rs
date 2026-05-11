@@ -39,12 +39,21 @@
 //! enabled (Cargo.toml `features = ["json", "gzip"]`) — the upstream
 //! always serves gzip and rejects clients that cannot decode it.
 //!
-//! ## MCP marketplace (unchanged)
+//! ## MCP marketplace (V2 — realtime mirror, 2026-05-11)
 //!
-//! MCPs use the Official MCP Registry's `/v0.1/servers` endpoint
-//! (single GET, ~200KB, no pagination) merged with the well-known seed
-//! in `marketplace_seed::MCP_SEED`. Cache lives at
-//! `~/.ensemble/marketplace-cache/mcps-catalog-v2.json` with a 24h TTL.
+//! MCPs mirror the Official MCP Registry website (`registry.modelcontextprotocol.io/`)
+//! one-for-one: a top "Recently Updated" strip + a paginated main list with
+//! explicit Previous / Next buttons. Three IPCs back this:
+//!
+//! - `list_marketplace_mcps_page(cursor, limit)` — `?limit=N&version=latest[&cursor=...]`,
+//!   page 1 merges `MCP_SEED` at the top (name dedupe).
+//! - `list_recently_updated_mcps(hours_back, limit)` — `?updated_since=<RFC3339>&limit=N&version=latest`.
+//! - `search_marketplace_mcps(query, cursor, limit)` — server-side `?search=<q>` substring on `name`.
+//!
+//! V1's full-catalog GET / 24h file cache (`mcps-catalog-v2.json`) /
+//! client-side `isLatest` filter / HashSet name dedupe are removed:
+//! `?version=latest` server-side replaces them; cursor pagination replaces
+//! the single GET; the cache file is reaped at startup (`lib.rs::setup`).
 //!
 //! ## DATA_MUTEX discipline
 //!
@@ -80,9 +89,9 @@
 use crate::commands::classify::{auto_classify, ClassifyItem, ClassifyResult, ExistingCategory};
 use crate::commands::data::{read_app_data, write_app_data, DATA_MUTEX};
 use crate::types::{
-    AppData, ConflictAction, EnvVarSpec, HttpMcpConfig, InstallOutcome, MarketplaceCatalog,
-    MarketplaceMcpItem, MarketplaceSkillItem, MarketplaceSource, McpConfigFile, McpMetadata,
-    SkillMetadata, StdioMcpConfig, TrashedItemBrief,
+    AppData, ConflictAction, EnvVarSpec, HttpMcpConfig, InstallOutcome, MarketplaceMcpItem,
+    MarketplaceSkillItem, MarketplaceSource, McpConfigFile, McpMetadata, SkillMetadata,
+    StdioMcpConfig, TrashedItemBrief,
 };
 use crate::utils::{ensure_dir, get_app_data_dir};
 use base64_simple::decode_base64;
@@ -97,11 +106,6 @@ use tauri::{AppHandle, Emitter};
 // ============================================================================
 // Constants
 // ============================================================================
-
-/// Cache TTL gate. Used by MCP catalog. Skills are fresh-fetched per call
-/// (the internal API is fast enough that catalog cache is not needed; in-memory
-/// README cache below is sufficient).
-const CACHE_TTL_SECS: i64 = 24 * 60 * 60;
 
 /// HTTP client timeout for upstream catalog requests.
 const HTTP_TIMEOUT_SECS: u64 = 15;
@@ -128,15 +132,17 @@ const README_CACHE_TTL_SECS: i64 = 5 * 60;
 /// browse pattern; the LRU upgrade is in V1.5 backlog).
 const README_CACHE_MAX_ENTRIES: usize = 64;
 
-/// Display label baked into the MCP catalog file's `source` field. Useful
-/// for dev logs but not surfaced in the UI.
-const SOURCE_TAG_MCPS: &str = "mcp-registry-v0.1";
-
 /// User-Agent string sent to skills.sh — must look like a browser. The
 /// upstream rejects requests whose UA matches `*reqwest*` or empty UA.
 /// Verified 2026-05-10 via curl.
 const SKILLS_SH_USER_AGENT: &str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15";
+
+/// Default page size for MCP Registry list calls. The Registry website itself
+/// uses 96 (< API max 100); we mirror that. Used as the default `limit` by the
+/// frontend store; the IPC accepts any 1-100 value.
+#[allow(dead_code)]
+const MCP_REGISTRY_PAGE_SIZE: u32 = 96;
 
 // ============================================================================
 // Resource-name sanitisation (B-P0-1 — security)
@@ -240,59 +246,36 @@ fn skills_sh_request(url: &str) -> reqwest::RequestBuilder {
 /// Ensure `~/.ensemble/marketplace-cache/` exists. Calls `get_app_data_dir`
 /// so the `cfg(test)` panic guard fires whenever tests forget to scope
 /// `ENSEMBLE_DATA_DIR` (R-2 / fallback-path-must-be-unreachable-in-test).
+///
+/// V2 (2026-05-11): no longer called from any production path — MCP cache is
+/// removed and Skills V2 has no cache. Kept `pub` for future cache reintroduction
+/// and as a stable utility surface.
+#[allow(dead_code)]
 pub fn ensure_marketplace_cache_dir() -> Result<PathBuf, String> {
     let dir = get_app_data_dir().join("marketplace-cache");
     ensure_dir(&dir).map_err(|e| format!("Failed to create marketplace-cache dir: {}", e))?;
     Ok(dir)
 }
 
-// Cache filename version. Bumped when the cache schema changes shape so
-// older entries become orphaned (and harmless — they sit on disk untouched
-// until the user clears `~/.ensemble/marketplace-cache/`).
+// ============================================================================
+// V2 cache cleanup (called from lib.rs::setup)
+// ============================================================================
 //
-// V2 (Phase I 2026-05-10): the Skills cache is **gone**. The skills.sh
-// internal API responds in < 1s for any page; reading from a cache instead
-// adds complexity (TTL invalidation, schema migration, stale data) for
-// no observable benefit. MCP cache stays — the registry merge is heavier
-// and the result is stable across hours.
-fn mcps_catalog_path() -> Result<PathBuf, String> {
-    Ok(ensure_marketplace_cache_dir()?.join("mcps-catalog-v2.json"))
-}
+// V2 (2026-05-11) deletes the MCP catalog cache permanently. `cleanup_legacy_mcp_cache`
+// is invoked during app startup; it silently removes
+// `~/.ensemble/marketplace-cache/mcps-catalog-v2.json` if present. Failure is
+// ignored — the cache file becoming undeletable for some reason should not
+// block app launch, and the new IPCs do not depend on it being absent.
 
-// ============================================================================
-// Cache I/O helpers (MCP only — Skills now fresh-fetch every call)
-// ============================================================================
-
-fn read_mcps_catalog() -> Option<MarketplaceCatalog<MarketplaceMcpItem>> {
-    let path = mcps_catalog_path().ok()?;
-    if !path.exists() {
-        return None;
-    }
-    let content = fs::read_to_string(&path).ok()?;
-    serde_json::from_str(&content).ok()
-}
-
-fn write_mcps_catalog(catalog: &MarketplaceCatalog<MarketplaceMcpItem>) -> Result<(), String> {
-    let path = mcps_catalog_path()?;
-    let json =
-        serde_json::to_string_pretty(catalog).map_err(|e| format!("serialize mcps catalog: {}", e))?;
-    fs::write(&path, json).map_err(|e| format!("write mcps catalog: {}", e))
-}
-
-/// Returns `Some(age_hours)` when the cache has expired (more than
-/// `CACHE_TTL_SECS` since `last_synced_at`), `None` while it is still
-/// fresh, and `Some(i64::MAX)` if `last_synced_at` cannot be parsed.
-fn cache_age_hours_if_stale(last_synced_at: &str) -> Option<i64> {
-    match chrono::DateTime::parse_from_rfc3339(last_synced_at) {
-        Ok(t) => {
-            let age = chrono::Utc::now().signed_duration_since(t.with_timezone(&chrono::Utc));
-            if age.num_seconds() > CACHE_TTL_SECS {
-                Some(age.num_hours())
-            } else {
-                None
-            }
-        }
-        Err(_) => Some(i64::MAX),
+/// Best-effort delete of the legacy V1 MCP catalog cache file. Idempotent;
+/// safe to call on every app start. Does not touch `skills-catalog-*.json`
+/// (Skills V2 has no cache layer to begin with — there is no file to clean).
+pub fn cleanup_legacy_mcp_cache() {
+    let path = get_app_data_dir()
+        .join("marketplace-cache")
+        .join("mcps-catalog-v2.json");
+    if path.exists() {
+        let _ = fs::remove_file(&path);
     }
 }
 
@@ -646,14 +629,26 @@ enum GitHubContentResponse {
 #[derive(Deserialize)]
 struct RegistryListResponse {
     /// Each element is `{ "server": {...}, "_meta": {...} }` per the live
-    /// v0.1 schema (verified via curl 2026-05-09). Older flat-array forms
-    /// are caught by the alternate parse paths in `fetch_mcp_registry`.
+    /// v0.1 schema (verified via curl 2026-05-09).
     #[serde(default)]
     servers: Vec<RegistryServerEnvelope>,
-    /// Pagination cursor — V1 ignores; the registry has ~500 entries.
+    /// Pagination metadata. Live v0.1 returns `metadata.nextCursor` (opaque
+    /// string when more pages exist; absent on the final page). The cursor
+    /// flows back into the IPC as the user clicks Next.
+    #[serde(default)]
+    metadata: Option<RegistryListMetadata>,
+}
+
+#[derive(Deserialize)]
+struct RegistryListMetadata {
+    /// Opaque cursor string. Pass back via `?cursor=<v>` to fetch the next
+    /// page. Absent / empty when the current response is the last page.
+    #[serde(default, rename = "nextCursor")]
+    next_cursor: Option<String>,
+    /// Server count in the current response. Surfaced in dev logs only.
     #[serde(default)]
     #[allow(dead_code)]
-    next_cursor: Option<String>,
+    count: Option<u32>,
 }
 
 /// Envelope wrapping each entry in the `/v0.1/servers` response.
@@ -1042,7 +1037,7 @@ async fn fetch_skill_readme_github(source: &str, skill_id: &str) -> Result<Strin
 }
 
 // ============================================================================
-// fetch_mcp_registry — single GET (D-Imp-2; unchanged from V1)
+// MCP Registry parsers + URL builder (V2, 2026-05-11)
 // ============================================================================
 
 /// Parse `(owner, repo)` from a GitHub repository URL.
@@ -1095,25 +1090,6 @@ fn parse_owner_repo_from_url(url: &str) -> (String, String) {
     (owner.to_string(), repo.to_string())
 }
 
-/// Whether a registry envelope is the latest version of its server.
-///
-/// The live registry returns one envelope per `(name, version)` tuple
-/// — many entries appear 2-5 times (e.g. ac.tandem/docs-mcp returned
-/// 3 versions in user testing). We only want the most recent one.
-///
-/// `_meta.io.modelcontextprotocol.registry/official.isLatest` is the
-/// official flag. Defaults to `true` when meta is absent (legacy
-/// responses) so older / non-official registries don't get filtered
-/// out wholesale.
-fn is_latest_envelope(env: &RegistryServerEnvelope) -> bool {
-    env.meta
-        .as_ref()
-        .and_then(|m| m.get("io.modelcontextprotocol.registry/official"))
-        .and_then(|o| o.get("isLatest"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true)
-}
-
 /// Strip a reverse-DNS namespace prefix from an MCP server name for
 /// human display. The Official Registry uses names like
 /// `ac.tandem/docs-mcp` or `io.modelcontextprotocol/everything`; the
@@ -1132,135 +1108,167 @@ fn strip_reverse_dns_prefix(full: &str) -> String {
     full.to_string()
 }
 
-async fn fetch_mcp_registry() -> Result<Vec<MarketplaceMcpItem>, String> {
-    let url = "https://registry.modelcontextprotocol.io/v0.1/servers";
+/// Convert a single registry envelope into our `MarketplaceMcpItem`. Returns
+/// `None` for servers with neither `packages` nor `remotes` — there is nothing
+/// we could install from those.
+fn envelope_to_item(s: RegistryServer, now: &str) -> Option<MarketplaceMcpItem> {
+    let repo_url = s
+        .repository
+        .as_ref()
+        .and_then(|r| r.url.clone())
+        .unwrap_or_default();
+    let (owner, repo) = parse_owner_repo_from_url(&repo_url);
+
+    // Determine type: HTTP wins over stdio when both are present
+    // (D-Imp-2 spec note — easier UX on the install side).
+    let (mcp_type, stdio_config, http_config) = if let Some(remote) = s.remotes.first() {
+        (
+            "http".to_string(),
+            None,
+            Some(HttpMcpConfig {
+                url: remote.url.clone(),
+                transport: remote.transport.clone().unwrap_or_else(|| "sse".to_string()),
+                oauth_authorization_url: remote.oauth_authorization_url.clone(),
+            }),
+        )
+    } else if let Some(pkg) = s.packages.first() {
+        let command = pkg
+            .runtime_hint
+            .clone()
+            .unwrap_or_else(|| "node".to_string());
+        let args: Vec<String> = pkg
+            .package_arguments
+            .iter()
+            .filter_map(|a| a.value.clone())
+            .collect();
+        let required_env_vars: Vec<EnvVarSpec> = pkg
+            .package_environment_variables
+            .iter()
+            .filter(|e| e.is_required)
+            .map(|e| EnvVarSpec {
+                name: e.name.clone(),
+                description: e.description.clone(),
+                where_to_find: e.description.clone(),
+            })
+            .collect();
+        (
+            "stdio".to_string(),
+            Some(StdioMcpConfig {
+                command,
+                args,
+                required_env_vars,
+            }),
+            None,
+        )
+    } else {
+        return None;
+    };
+
+    Some(MarketplaceMcpItem {
+        // `id` keeps the full reverse-DNS form for uniqueness across the
+        // registry's namespace; `name` is stripped for display.
+        id: s.name.clone(),
+        name: strip_reverse_dns_prefix(&s.name),
+        description: s.description.unwrap_or_default(),
+        readme_markdown: String::new(),
+        author: owner,
+        // B-P0-3: persist the parsed GitHub `repo` so install metadata can
+        // write a real `(owner, repo, name)` triple instead of the legacy
+        // `(author, author, name)` placeholder. Empty when the upstream URL
+        // is not parseable; install paths fall back to the author for
+        // backward compatibility.
+        repo,
+        repository_url: repo_url,
+        last_updated_at: now.to_string(),
+        stars: 0,
+        categories: s.categories,
+        tags: s.tags,
+        license: None,
+        mcp_type,
+        stdio_config,
+        http_config,
+    })
+}
+
+/// Wire response shape for the V2 page-mode IPCs. Mirrors TypeScript
+/// `McpsPageResponse`. `next_cursor` is `None` when the upstream signals
+/// "no more pages"; `has_more` mirrors `next_cursor.is_some()` for UI
+/// consumption convenience.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpsPageResponse {
+    pub items: Vec<MarketplaceMcpItem>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+}
+
+/// Build the URL for one page of the live registry. `version=latest` is
+/// always set (server-side dedupe of multi-version entries; replaces V1's
+/// client-side filter). `cursor`, `search`, and `updated_since` are passed
+/// through when present.
+fn build_registry_url(
+    cursor: Option<&str>,
+    limit: u32,
+    search: Option<&str>,
+    updated_since: Option<&str>,
+) -> String {
+    let mut url = String::from("https://registry.modelcontextprotocol.io/v0.1/servers?");
+    let limit = limit.clamp(1, 100);
+    url.push_str(&format!("limit={}", limit));
+    url.push_str("&version=latest");
+    if let Some(c) = cursor {
+        if !c.is_empty() {
+            url.push_str(&format!("&cursor={}", urlencoding::encode(c)));
+        }
+    }
+    if let Some(q) = search {
+        if !q.is_empty() {
+            url.push_str(&format!("&search={}", urlencoding::encode(q)));
+        }
+    }
+    if let Some(t) = updated_since {
+        if !t.is_empty() {
+            url.push_str(&format!("&updated_since={}", urlencoding::encode(t)));
+        }
+    }
+    url
+}
+
+/// Fetch one page of the live registry. Centralises HTTP + parse + envelope
+/// → `MarketplaceMcpItem` conversion. Returns `(items, next_cursor)`.
+async fn fetch_registry_page(
+    cursor: Option<&str>,
+    limit: u32,
+    search: Option<&str>,
+    updated_since: Option<&str>,
+) -> Result<(Vec<MarketplaceMcpItem>, Option<String>), String> {
+    let url = build_registry_url(cursor, limit, search, updated_since);
     let resp = marketplace_http()
-        .get(url)
+        .get(&url)
         .header("Accept", "application/json")
         .send()
         .await
         .map_err(|e| format!("Network error: {}", e))?;
-
     if !resp.status().is_success() {
         return Err(format!("MCP Registry HTTP {}", resp.status()));
     }
-    // The live v0.1 response is `{ "servers": [{ "server": {...}, "_meta": {...} }] }`.
-    // We additionally accept legacy raw-array forms (early registry releases)
-    // and a "list of envelopes without the wrapper" shape — same goal each
-    // way: end up with `Vec<RegistryServer>`.
     let body = resp
         .text()
         .await
         .map_err(|e| format!("Read MCP Registry body: {}", e))?;
-    let envelopes: Vec<RegistryServerEnvelope> = if let Ok(env) =
-        serde_json::from_str::<RegistryListResponse>(&body)
-    {
-        env.servers
-    } else if let Ok(raw) = serde_json::from_str::<Vec<RegistryServerEnvelope>>(&body) {
-        raw
-    } else if let Ok(legacy) = serde_json::from_str::<Vec<RegistryServer>>(&body) {
-        legacy
-            .into_iter()
-            .map(|s| RegistryServerEnvelope { server: s, meta: None })
-            .collect()
-    } else {
-        return Err("Unrecognised MCP Registry response shape".to_string());
-    };
-    // Filter to latest version only (drops 60-80% of envelopes when the
-    // registry serves multi-version histories) + dedupe by canonical
-    // name (defence-in-depth — if two envelopes claim isLatest=true for
-    // the same name we keep the first).
-    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let servers: Vec<RegistryServer> = envelopes
-        .into_iter()
-        .filter(is_latest_envelope)
-        .map(|e| e.server)
-        .filter(|s| seen_names.insert(s.name.clone()))
-        .collect();
-
+    let parsed: RegistryListResponse = serde_json::from_str(&body)
+        .map_err(|e| format!("Parse MCP Registry response: {}", e))?;
+    let next_cursor = parsed
+        .metadata
+        .and_then(|m| m.next_cursor)
+        .filter(|c| !c.is_empty());
     let now = chrono::Utc::now().to_rfc3339();
-    let mut items = Vec::with_capacity(servers.len());
-    for s in servers {
-        let repo_url = s
-            .repository
-            .as_ref()
-            .and_then(|r| r.url.clone())
-            .unwrap_or_default();
-        let (owner, repo) = parse_owner_repo_from_url(&repo_url);
-
-        // Determine type: HTTP wins over stdio when both are present
-        // (D-Imp-2 spec note — easier UX on the install side).
-        let (mcp_type, stdio_config, http_config) = if let Some(remote) = s.remotes.first() {
-            (
-                "http".to_string(),
-                None,
-                Some(HttpMcpConfig {
-                    url: remote.url.clone(),
-                    transport: remote.transport.clone().unwrap_or_else(|| "sse".to_string()),
-                    oauth_authorization_url: remote.oauth_authorization_url.clone(),
-                }),
-            )
-        } else if let Some(pkg) = s.packages.first() {
-            let command = pkg
-                .runtime_hint
-                .clone()
-                .unwrap_or_else(|| "node".to_string());
-            let args: Vec<String> = pkg
-                .package_arguments
-                .iter()
-                .filter_map(|a| a.value.clone())
-                .collect();
-            let required_env_vars: Vec<EnvVarSpec> = pkg
-                .package_environment_variables
-                .iter()
-                .filter(|e| e.is_required)
-                .map(|e| EnvVarSpec {
-                    name: e.name.clone(),
-                    description: e.description.clone(),
-                    where_to_find: e.description.clone(),
-                })
-                .collect();
-            (
-                "stdio".to_string(),
-                Some(StdioMcpConfig {
-                    command,
-                    args,
-                    required_env_vars,
-                }),
-                None,
-            )
-        } else {
-            // Skip servers with neither packages nor remotes — there is
-            // nothing we could install.
-            continue;
-        };
-
-        items.push(MarketplaceMcpItem {
-            // `id` keeps the full reverse-DNS form for uniqueness across
-            // the registry's namespace; `name` is stripped for display.
-            id: s.name.clone(),
-            name: strip_reverse_dns_prefix(&s.name),
-            description: s.description.unwrap_or_default(),
-            readme_markdown: String::new(),
-            author: owner.clone(),
-            // B-P0-3: persist the parsed GitHub `repo` so install metadata
-            // can write a real `(owner, repo, name)` triple instead of the
-            // legacy `(author, author, name)` placeholder. Empty when the
-            // upstream URL is not parseable; install paths fall back to the
-            // author for backward compatibility.
-            repo: repo.clone(),
-            repository_url: repo_url,
-            last_updated_at: now.clone(),
-            stars: 0,
-            categories: s.categories,
-            tags: s.tags,
-            license: None,
-            mcp_type,
-            stdio_config,
-            http_config,
-        });
-    }
-    Ok(items)
+    let items: Vec<MarketplaceMcpItem> = parsed
+        .servers
+        .into_iter()
+        .filter_map(|env| envelope_to_item(env.server, &now))
+        .collect();
+    Ok((items, next_cursor))
 }
 
 // ============================================================================
@@ -1403,18 +1411,19 @@ fn build_mcp_seed_items() -> Vec<MarketplaceMcpItem> {
         .collect()
 }
 
-/// Merge MCP_SEED with whatever Registry returned. Seed always wins on
-/// id collision (well-known config is more useful than the Registry's
-/// minimal entry). Registry items are appended after, dedup'd by id.
-fn merge_seed_with_registry(
+/// Prepend `MCP_SEED` items to the first page of registry results, deduping
+/// by canonical `name` (seed wins). Used only when the IPC is fetching
+/// page 1 (`cursor.is_none()`); subsequent pages return registry items as-is
+/// because the seed has already been served on the first page.
+fn merge_seed_at_top(
     seed: Vec<MarketplaceMcpItem>,
     registry: Vec<MarketplaceMcpItem>,
 ) -> Vec<MarketplaceMcpItem> {
     let mut out = seed;
-    let mut seen: std::collections::HashSet<String> =
-        out.iter().map(|i| i.id.clone()).collect();
+    let seen: std::collections::HashSet<String> =
+        out.iter().map(|i| i.name.clone()).collect();
     for r in registry {
-        if seen.insert(r.id.clone()) {
+        if !seen.contains(&r.name) {
             out.push(r);
         }
     }
@@ -1422,76 +1431,104 @@ fn merge_seed_with_registry(
 }
 
 // ============================================================================
-// IPC: list_marketplace_mcps (spec §3.2)
+// IPC: list_marketplace_mcps_page (V2, 2026-05-11)
 // ============================================================================
+//
+// Main paginated browse. Mirrors the Registry website's main list:
+// `?limit=N&version=latest[&cursor=...]`. Page 1 (no cursor) merges
+// `MCP_SEED` at the top so well-known servers show up first; later pages
+// return live registry items only.
 
 #[tauri::command]
-pub async fn list_marketplace_mcps(
+pub async fn list_marketplace_mcps_page(
     app: AppHandle,
-    refresh: bool,
-) -> Result<Vec<MarketplaceMcpItem>, String> {
-    let cache = read_mcps_catalog();
-
-    if !refresh {
-        if let Some(c) = &cache {
-            if cache_age_hours_if_stale(&c.last_synced_at).is_none() {
-                return Ok(c.items.clone());
-            }
-        }
-    }
-
-    let seed_items = build_mcp_seed_items();
-    match fetch_mcp_registry().await {
-        Ok(registry_items) => {
-            let merged = merge_seed_with_registry(seed_items, registry_items);
-            let new_catalog = MarketplaceCatalog {
-                items: merged.clone(),
-                last_synced_at: chrono::Utc::now().to_rfc3339(),
-                source: SOURCE_TAG_MCPS.to_string(),
+    cursor: Option<String>,
+    limit: u32,
+) -> Result<McpsPageResponse, String> {
+    let cursor_ref = cursor.as_deref();
+    match fetch_registry_page(cursor_ref, limit, None, None).await {
+        Ok((registry_items, next_cursor)) => {
+            // Merge seed only on the first page request.
+            let items = if cursor_ref.is_none() {
+                merge_seed_at_top(build_mcp_seed_items(), registry_items)
+            } else {
+                registry_items
             };
-            if let Err(e) = write_mcps_catalog(&new_catalog) {
-                eprintln!("[marketplace] write mcps catalog failed: {}", e);
-            }
-            Ok(merged)
+            Ok(McpsPageResponse {
+                has_more: next_cursor.is_some(),
+                items,
+                next_cursor,
+            })
         }
-        Err(registry_err) => {
-            // Registry fetch failed — degrade gracefully. Seed is
-            // hard-coded so it always works; we still return it.
-            eprintln!("[marketplace] registry fetch failed: {}", registry_err);
-            // Cache may also have older registry items merged with an
-            // older seed; prefer fresh seed-only over stale cache so
-            // users see the well-known servers (worst case) immediately.
-            if !seed_items.is_empty() {
-                let new_catalog = MarketplaceCatalog {
-                    items: seed_items.clone(),
-                    last_synced_at: chrono::Utc::now().to_rfc3339(),
-                    source: SOURCE_TAG_MCPS.to_string(),
-                };
-                if let Err(e) = write_mcps_catalog(&new_catalog) {
-                    eprintln!("[marketplace] write mcps catalog (seed-only) failed: {}", e);
-                }
-                let _ = app.emit(
-                    "marketplace:upstream-error",
-                    serde_json::json!({
-                        "source": "mcps",
-                        "error": format!("Registry unavailable; showing built-in seed only ({}).", registry_err),
-                    }),
-                );
-                return Ok(seed_items);
-            }
-            if let Some(c) = cache {
-                let age = cache_age_hours_if_stale(&c.last_synced_at).unwrap_or(0);
-                let _ = app.emit(
-                    "marketplace:stale-cache",
-                    serde_json::json!({"source": "mcps", "ageHours": age}),
-                );
-                return Ok(c.items);
-            }
+        Err(e) => {
             let _ = app.emit(
                 "marketplace:upstream-error",
-                serde_json::json!({"source": "mcps", "error": registry_err}),
+                serde_json::json!({"source": "mcps", "error": e}),
             );
-            Err("Marketplace temporarily unavailable.".to_string())
+            Err(e)
+        }
+    }
+}
+
+// ============================================================================
+// IPC: list_recently_updated_mcps (V2, 2026-05-11)
+// ============================================================================
+//
+// Top-of-page strip mirroring the Registry website's "Recently Updated"
+// section: `?updated_since=<RFC3339>&limit=N&version=latest`. No cursor
+// concept (the caller asks for the top N entries within the time window).
+
+#[tauri::command]
+pub async fn list_recently_updated_mcps(
+    app: AppHandle,
+    hours_back: u32,
+    limit: u32,
+) -> Result<Vec<MarketplaceMcpItem>, String> {
+    let since = chrono::Utc::now() - chrono::Duration::hours(hours_back.max(1) as i64);
+    let since_rfc = since.to_rfc3339();
+    match fetch_registry_page(None, limit, None, Some(&since_rfc)).await {
+        Ok((items, _next)) => Ok(items),
+        Err(e) => {
+            let _ = app.emit(
+                "marketplace:upstream-error",
+                serde_json::json!({"source": "mcps", "error": e}),
+            );
+            Err(e)
+        }
+    }
+}
+
+// ============================================================================
+// IPC: search_marketplace_mcps (V2, 2026-05-11)
+// ============================================================================
+//
+// Server-side substring search on `name` only (the Registry API does not
+// index description / tags). Cursor-paginated like the main listing; UI
+// hints to the user that the search field is narrower than full-text.
+
+#[tauri::command]
+pub async fn search_marketplace_mcps(
+    app: AppHandle,
+    query: String,
+    cursor: Option<String>,
+    limit: u32,
+) -> Result<McpsPageResponse, String> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Err("Query must be non-empty".to_string());
+    }
+    match fetch_registry_page(cursor.as_deref(), limit, Some(trimmed), None).await {
+        Ok((items, next_cursor)) => Ok(McpsPageResponse {
+            has_more: next_cursor.is_some(),
+            items,
+            next_cursor,
+        }),
+        Err(e) => {
+            let _ = app.emit(
+                "marketplace:upstream-error",
+                serde_json::json!({"source": "mcps", "error": e}),
+            );
+            Err(e)
         }
     }
 }
@@ -1558,7 +1595,12 @@ pub async fn refresh_marketplace_cache(app: AppHandle, source: String) -> Result
             Ok(())
         }
         "mcps" => {
-            list_marketplace_mcps(app, true).await?;
+            // V2 (2026-05-11): MCPs are paginated and fresh-fetched per call;
+            // there is no cache layer to invalidate. Frontend no longer calls
+            // this branch — the page driver re-runs `loadMcpsFirstPage` /
+            // `loadRecentlyUpdated` instead. Kept here so the IPC continues
+            // to accept "mcps" without erroring out for any in-flight legacy
+            // callers, but the body is a noop.
             Ok(())
         }
         other => Err(format!("Unknown marketplace source: {}", other)),
@@ -2377,13 +2419,11 @@ mod tests {
         assert_eq!(String::from_utf8(bytes).unwrap(), "Hello, World!");
     }
 
-    /// Live MCP Registry v0.1 response — fixture captured via
-    /// `curl https://registry.modelcontextprotocol.io/v0.1/servers` on
-    /// 2026-05-09. The shape is `{ "servers": [{ "server": {...}, "_meta": {...} }] }`,
-    /// which the original `RegistryListResponse` definition could not
-    /// parse; this test guards the envelope-fix from regressing.
+    /// Live MCP Registry v0.1 response — fixture captured via curl on
+    /// 2026-05-11. V2 paginated shape includes `metadata.nextCursor`; the
+    /// nested `{ "server": {...}, "_meta": {...} }` envelope is unchanged.
     #[test]
-    fn registry_list_response_parses_nested_envelope() {
+    fn registry_list_response_parses_paginated_envelope() {
         let body = r#"{
             "servers": [
                 {
@@ -2394,11 +2434,7 @@ mod tests {
                             { "type": "streamable-http", "url": "https://api.example.com/mcp" }
                         ]
                     },
-                    "_meta": {
-                        "io.modelcontextprotocol.registry/official": {
-                            "status": "active"
-                        }
-                    }
+                    "_meta": {}
                 },
                 {
                     "server": {
@@ -2411,14 +2447,36 @@ mod tests {
                     },
                     "_meta": {}
                 }
-            ]
+            ],
+            "metadata": {
+                "nextCursor": "ai.llmse%2Fmcp%3A1.3.12",
+                "count": 2
+            }
         }"#;
         let parsed: RegistryListResponse = serde_json::from_str(body)
-            .expect("nested-envelope shape must deserialise");
+            .expect("paginated envelope shape must deserialise");
         assert_eq!(parsed.servers.len(), 2);
         assert_eq!(parsed.servers[0].server.name, "ac.inference.sh/mcp");
         assert_eq!(parsed.servers[1].server.name, "ac.tandem/docs-mcp");
         assert!(parsed.servers[1].server.repository.is_some());
+        let meta = parsed.metadata.expect("metadata must be present");
+        assert_eq!(
+            meta.next_cursor.as_deref(),
+            Some("ai.llmse%2Fmcp%3A1.3.12")
+        );
+    }
+
+    /// Final-page response from the live registry has no `metadata.nextCursor`.
+    #[test]
+    fn registry_list_response_parses_final_page() {
+        let body = r#"{
+            "servers": [],
+            "metadata": { "count": 0 }
+        }"#;
+        let parsed: RegistryListResponse = serde_json::from_str(body)
+            .expect("final-page shape must deserialise");
+        let meta = parsed.metadata.expect("metadata present");
+        assert!(meta.next_cursor.is_none());
     }
 
     #[test]
@@ -2442,40 +2500,27 @@ mod tests {
     }
 
     #[test]
-    fn is_latest_envelope_defaults_true_when_meta_absent() {
-        let env = RegistryServerEnvelope {
-            server: RegistryServer {
-                name: "x".into(),
-                description: None,
-                repository: None,
-                packages: Vec::new(),
-                remotes: Vec::new(),
-                categories: Vec::new(),
-                tags: Vec::new(),
-            },
-            meta: None,
-        };
-        assert!(is_latest_envelope(&env));
-    }
-
-    #[test]
-    fn is_latest_envelope_filters_false() {
-        let meta = serde_json::json!({
-            "io.modelcontextprotocol.registry/official": { "isLatest": false }
-        });
-        let env = RegistryServerEnvelope {
-            server: RegistryServer {
-                name: "x".into(),
-                description: None,
-                repository: None,
-                packages: Vec::new(),
-                remotes: Vec::new(),
-                categories: Vec::new(),
-                tags: Vec::new(),
-            },
-            meta: Some(meta),
-        };
-        assert!(!is_latest_envelope(&env));
+    fn build_registry_url_clamps_limit_and_encodes_cursor() {
+        // Limit clamped into 1..=100.
+        let url = build_registry_url(None, 999, None, None);
+        assert!(url.contains("limit=100"));
+        let url = build_registry_url(None, 0, None, None);
+        assert!(url.contains("limit=1"));
+        // Default: version=latest is always set.
+        let url = build_registry_url(None, 96, None, None);
+        assert!(url.contains("version=latest"));
+        assert!(!url.contains("cursor="));
+        assert!(!url.contains("search="));
+        assert!(!url.contains("updated_since="));
+        // Cursor + search urlencoded.
+        let url = build_registry_url(Some("ac.foo/bar:1.0"), 96, Some("a b"), None);
+        assert!(url.contains("cursor=ac.foo%2Fbar%3A1.0"));
+        assert!(url.contains("search=a%20b"));
+        // Empty cursor / search ignored.
+        let url = build_registry_url(Some(""), 96, Some(""), Some(""));
+        assert!(!url.contains("cursor="));
+        assert!(!url.contains("search="));
+        assert!(!url.contains("updated_since="));
     }
 
     #[test]
@@ -2494,7 +2539,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_seed_with_registry_dedupes_by_id() {
+    fn merge_seed_at_top_dedupes_by_name() {
         let seed = vec![MarketplaceMcpItem {
             id: "npm:@playwright/mcp".into(),
             name: "playwright".into(),
@@ -2503,7 +2548,7 @@ mod tests {
             author: "microsoft".into(),
             repo: "playwright-mcp".into(),
             repository_url: "https://github.com/microsoft/playwright-mcp".into(),
-            last_updated_at: "2026-05-10T00:00:00Z".into(),
+            last_updated_at: "2026-05-11T00:00:00Z".into(),
             stars: 0,
             categories: vec![],
             tags: vec![],
@@ -2525,7 +2570,7 @@ mod tests {
                 author: "ac.tandem".into(),
                 repo: String::new(),
                 repository_url: String::new(),
-                last_updated_at: "2026-05-10T00:00:00Z".into(),
+                last_updated_at: "2026-05-11T00:00:00Z".into(),
                 stars: 0,
                 categories: vec![],
                 tags: vec![],
@@ -2534,16 +2579,17 @@ mod tests {
                 stdio_config: None,
                 http_config: None,
             },
-            // Conflict with seed — should be dropped.
+            // Conflict with seed (same display name) — should be dropped
+            // because seed wins on name dedupe.
             MarketplaceMcpItem {
-                id: "npm:@playwright/mcp".into(),
-                name: "playwright-conflicting".into(),
+                id: "registry/playwright".into(),
+                name: "playwright".into(),
                 description: "registry duplicate".into(),
                 readme_markdown: String::new(),
                 author: "x".into(),
                 repo: String::new(),
                 repository_url: String::new(),
-                last_updated_at: "2026-05-10T00:00:00Z".into(),
+                last_updated_at: "2026-05-11T00:00:00Z".into(),
                 stars: 0,
                 categories: vec![],
                 tags: vec![],
@@ -2553,7 +2599,7 @@ mod tests {
                 http_config: None,
             },
         ];
-        let merged = merge_seed_with_registry(seed, registry);
+        let merged = merge_seed_at_top(seed, registry);
         assert_eq!(merged.len(), 2);
         // Seed's playwright preserved; registry duplicate dropped.
         assert_eq!(merged[0].name, "playwright");
@@ -2561,41 +2607,22 @@ mod tests {
         assert_eq!(merged[1].name, "docs-mcp");
     }
 
-    /// Legacy flat-array shape — defensive support for older registry
-    /// versions that returned `[{...}, {...}]` directly. The
-    /// `fetch_mcp_registry` body has a fallback path for this; the
-    /// test guards that the parse paths still compose.
-    #[test]
-    fn registry_legacy_flat_array_shape_parses() {
-        let body = r#"[
-            { "name": "legacy-server", "description": "Old shape" }
-        ]"#;
-        let parsed: Vec<RegistryServer> =
-            serde_json::from_str(body).expect("flat array must deserialise");
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].name, "legacy-server");
-    }
-
-    /// End-to-end live network test for MCP Registry. Marked `#[ignore]`
-    /// so CI / `cargo test` defaults skip it; run manually:
+    /// Live network test for the V2 paginated registry IPC. Marked `#[ignore]`
+    /// so `cargo test` defaults skip it; run manually:
     ///
-    ///   cargo test -- --ignored fetch_mcp_registry_returns_real_data
+    ///   cargo test -- --ignored fetch_registry_page_returns_real_data
     ///
-    /// Guards against silent regressions in `fetch_mcp_registry` when
-    /// the upstream schema evolves (e.g. the envelope shape change
-    /// caught on 2026-05-09 that left users seeing
-    /// "Marketplace temporarily unavailable"). Uses a hand-built tokio
-    /// runtime to avoid the `macros` feature flag (tokio-macros version
-    /// resolution is unreliable in some local sandboxes).
+    /// Guards against silent regressions in `fetch_registry_page` when the
+    /// upstream schema evolves.
     #[test]
     #[ignore = "requires network access to registry.modelcontextprotocol.io"]
-    fn fetch_mcp_registry_returns_real_data() {
+    fn fetch_registry_page_returns_real_data() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("build tokio runtime");
-        let items = rt.block_on(async {
-            fetch_mcp_registry()
+        let (items, next_cursor) = rt.block_on(async {
+            fetch_registry_page(None, 96, None, None)
                 .await
                 .expect("MCP Registry fetch should succeed against live API")
         });
@@ -2604,7 +2631,11 @@ mod tests {
             "Live MCP Registry should return at least one server (got {} items)",
             items.len()
         );
-        eprintln!("Fetched {} servers from live MCP Registry", items.len());
+        eprintln!(
+            "Fetched {} servers, nextCursor present: {}",
+            items.len(),
+            next_cursor.is_some()
+        );
         let first = &items[0];
         assert!(!first.name.is_empty(), "first item must have a name");
         assert!(
@@ -2627,25 +2658,6 @@ mod tests {
     #[test]
     fn base64_rejects_invalid() {
         assert!(decode_base64("@@@invalid@@@").is_err());
-    }
-
-    #[test]
-    fn cache_age_returns_none_when_fresh() {
-        let now = chrono::Utc::now().to_rfc3339();
-        assert!(cache_age_hours_if_stale(&now).is_none());
-    }
-
-    #[test]
-    fn cache_age_returns_some_when_stale() {
-        let two_days_ago = (chrono::Utc::now() - chrono::Duration::hours(48)).to_rfc3339();
-        let age = cache_age_hours_if_stale(&two_days_ago).unwrap();
-        assert!(age >= 47 && age <= 49);
-    }
-
-    #[test]
-    fn cache_age_returns_max_on_unparseable() {
-        let age = cache_age_hours_if_stale("not-a-date").unwrap();
-        assert_eq!(age, i64::MAX);
     }
 
     #[test]

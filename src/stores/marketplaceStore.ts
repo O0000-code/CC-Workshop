@@ -12,6 +12,7 @@ import type {
   MarketplaceSkillItem,
   MarketplaceStaleCacheEvent,
   MarketplaceUpstreamErrorEvent,
+  McpsPageResponse,
   SkillsPageResponse,
   SkillsSearchResponse,
   SkillsView,
@@ -51,27 +52,6 @@ import { useTrashStore } from './trashStore';
 //   on first install attempt (R4 §6.2).
 // - Set defaults that are not user-interactive use the spec-mandated wire
 //   format (camelCase) so the wire is the source of truth.
-
-// ----- Filter / sort -------------------------------------------------------
-
-// MCP filter (V1 client-side filter still in use for the MCP marketplace —
-// MCP catalog is small enough that client-side sort/filter remains
-// appropriate). The Skill marketplace uses the V2 server-driven model below.
-type MarketplaceSort = 'popularity' | 'alphabet' | 'updated';
-
-interface MarketplaceFilter {
-  search: string;
-  categoryId: string | null;
-  tags: string[];
-  sort: MarketplaceSort;
-}
-
-const initialFilter: MarketplaceFilter = {
-  search: '',
-  categoryId: null,
-  tags: [],
-  sort: 'popularity',
-};
 
 // ----- Skill marketplace (V2: server-driven listing + search) -------------
 
@@ -121,6 +101,73 @@ export interface SkillsSearchState {
 export interface SkillReadmeEntry {
   content: string;
   loadedAt: string; // ISO timestamp
+}
+
+// ----- MCP marketplace (V2: cursor-paginated realtime mirror) -------------
+
+/** Default page size for both main listing and search. Matches the Registry
+ *  website's own page size (96 < API max 100). */
+export const MCP_REGISTRY_PAGE_SIZE = 96;
+
+/** Default item count for the Recently Updated strip. */
+export const MCP_RECENTLY_UPDATED_LIMIT = 9;
+
+/** Default time window for Recently Updated (hours back from now). */
+export const MCP_RECENTLY_UPDATED_HOURS = 24;
+
+/** Cursor-paginated MCP listing state. Shared shape between main listing
+ *  and search results. `prevCursors` is a stack of cursors that produced
+ *  earlier pages, walked back when the user clicks Previous so we can
+ *  re-fetch (or, when length === 0, return to the first-page state with
+ *  `cursor: undefined`). `currentCursor` is the cursor that was passed
+ *  into the request producing `items`; it is `null` for page 1. `page`
+ *  is a 1-indexed display value; not used for any backend call but
+ *  surfaced if the UI ever wants to show "Page N". */
+export interface McpsPaginatedState {
+  items: MarketplaceMcpItem[];
+  /** Cursor used to fetch `items`. `null` for page 1 (no cursor). */
+  currentCursor: string | null;
+  /** Stack of cursors that produced earlier pages. Length === pages walked
+   *  forward so far. `prevCursors[0] === null` always (page 1). */
+  prevCursors: Array<string | null>;
+  /** Cursor for the next page, or `null` when no more pages exist. */
+  nextCursor: string | null;
+  hasMore: boolean;
+  /** 1-indexed display page number. */
+  page: number;
+  loading: boolean;
+  error: string | null;
+}
+
+const initialMcpsListing: McpsPaginatedState = {
+  items: [],
+  currentCursor: null,
+  prevCursors: [],
+  nextCursor: null,
+  hasMore: false,
+  page: 1,
+  loading: false,
+  error: null,
+};
+
+/** Top-of-page Recently Updated strip state. No cursor concept — we ask
+ *  for the top N entries within the last `hoursBack` window. */
+export interface McpsRecentlyUpdatedState {
+  items: MarketplaceMcpItem[];
+  loading: boolean;
+  error: string | null;
+}
+
+const initialMcpsRecentlyUpdated: McpsRecentlyUpdatedState = {
+  items: [],
+  loading: false,
+  error: null,
+};
+
+/** Search-mode state — same paginated shape as the listing, plus the query
+ *  string that produced it. `null` when the page is in listing mode. */
+export interface McpsSearchState extends McpsPaginatedState {
+  query: string;
 }
 
 // ----- UI state shapes -----------------------------------------------------
@@ -198,14 +245,14 @@ export interface MarketplaceState {
   /** README load failures, keyed by `${source}/${skillId}`. */
   readmeErrors: Record<string, string>;
 
-  // MCP marketplace (V1 client-side filter — unchanged).
-  mcpsCatalog: MarketplaceMcpItem[];
-  /** ISO timestamp of the most recent successful MCP catalog sync. */
-  lastSyncedMcps?: string;
-  /** Set when the backend serves stale MCP cache. */
-  staleCacheMcps?: { ageHours: number };
-  isLoadingMcps: boolean;
-  upstreamErrorMcps: string | null;
+  // MCP marketplace (V2: cursor-paginated realtime mirror, 2026-05-11).
+  /** Main paginated list state (96/page by default). */
+  mcpsListing: McpsPaginatedState;
+  /** Top-of-page Recently Updated strip (9 items / last 24h by default). */
+  mcpsRecentlyUpdated: McpsRecentlyUpdatedState;
+  /** `null` = listing mode (show `mcpsListing.items`). Non-null = search
+   *  mode (show `mcpsSearch.items`). */
+  mcpsSearch: McpsSearchState | null;
 
   // Per-item progress (cross-view persistence; keyed by item React key —
   // `getSkillItemKey(item)` for skills, `item.id` for MCPs)
@@ -213,10 +260,6 @@ export interface MarketplaceState {
   installFailedItems: Record<string, { error: string; attemptedAt: string }>;
   classifyingItemIds: Set<string>;
   classifyFailedItemIds: Set<string>;
-
-  // MCP filter (Skill marketplace V2 has no client-side filter — server
-  // decides via view + search). Kept for MCP page only.
-  mcpsFilter: MarketplaceFilter;
 
   // Selection (drives SlidePanel detail)
   /** For Skill marketplace, this stores `getSkillItemKey(item)`
@@ -256,16 +299,33 @@ export interface MarketplaceState {
   /** Fetch a single skill's README. Memoised per `${source}/${skillId}`. */
   loadSkillReadme: (source: string, skillId: string) => Promise<void>;
 
-  // MCP catalog (unchanged — V1 client-side filter)
-  loadMcpsCatalog: (refresh?: boolean) => Promise<void>;
+  // MCP marketplace (V2 server-driven pagination)
+  /** Load page 1 of the main list (no cursor). Merges MCP_SEED at the top. */
+  loadMcpsFirstPage: () => Promise<void>;
+  /** Walk forward one page using the current `nextCursor`. Pushes the
+   *  current cursor onto `prevCursors`. */
+  loadMcpsNextPage: () => Promise<void>;
+  /** Walk back one page by popping `prevCursors` and re-fetching with that
+   *  cursor (or no cursor when the stack is empty → returns to page 1). */
+  loadMcpsPrevPage: () => Promise<void>;
+  /** Fetch the Recently Updated strip. */
+  loadRecentlyUpdated: () => Promise<void>;
+  /** Enter search mode and run page 1 of the server-side `?search=` query. */
+  searchMcps: (query: string) => Promise<void>;
+  /** Walk forward / back inside search mode. */
+  searchMcpsNextPage: () => Promise<void>;
+  searchMcpsPrevPage: () => Promise<void>;
+  /** Exit search mode (re-show listing + recently-updated). */
+  clearMcpsSearch: () => void;
+  /** Backwards-compat: existing pages call `refreshCatalog('skills')`; the
+   *  MCP branch is now a no-op (we just rerun the page-1 fetch). */
   refreshCatalog: (source: 'skills' | 'mcps') => Promise<void>;
 
   // Install
   installSkill: (item: MarketplaceSkillItem, conflictAction?: ConflictAction) => Promise<void>;
   installMcp: (item: MarketplaceMcpItem, conflictAction?: ConflictAction) => Promise<void>;
 
-  // MCP filter / select
-  setMcpsFilter: (filter: Partial<MarketplaceFilter>) => void;
+  // Select
   selectSkillItem: (id: string | null) => void;
   selectMcpItem: (id: string | null) => void;
 
@@ -306,7 +366,9 @@ export interface MarketplaceState {
   /** Visible Skill items. Returns `skillsSearch.results` in search mode,
    *  otherwise `skillsListing.items`. */
   getVisibleSkills: () => MarketplaceSkillItem[];
-  getFilteredMcps: () => MarketplaceMcpItem[];
+  /** Visible MCP items. Returns `mcpsSearch.items` in search mode,
+   *  otherwise `mcpsListing.items`. */
+  getVisibleMcps: () => MarketplaceMcpItem[];
 
   // Tauri event subscription (called once from MainLayout)
   initEventListeners: () => Promise<UnlistenFn>;
@@ -332,56 +394,6 @@ function computeInitialSceneIds(
     return scenes.filter((s) => s.skillIds.includes(targetItemId)).map((s) => s.id);
   }
   return scenes.filter((s) => s.mcpIds.includes(targetItemId)).map((s) => s.id);
-}
-
-/**
- * Apply the 4-axis filter (search / categoryId / tags / sort) to the MCP
- * marketplace catalog. The category / tag filters compare against
- * upstream-declared classification (display-only, never imported into
- * Ensemble's own taxonomy per D-15 / R-33). When a filter row has no
- * upstream-side data, it is treated as a no-op rather than an exclusion.
- *
- * NOTE: The Skill marketplace no longer routes through this filter — it
- * uses server-driven view + search via the skills.sh internal API. Only
- * the MCP marketplace consumes `applyFilter` in V2.
- */
-function applyMcpFilter(
-  items: MarketplaceMcpItem[],
-  filter: MarketplaceFilter,
-): MarketplaceMcpItem[] {
-  let result = items;
-
-  if (filter.search) {
-    const needle = filter.search.toLowerCase();
-    result = result.filter(
-      (item) =>
-        item.name.toLowerCase().includes(needle) || item.description.toLowerCase().includes(needle),
-    );
-  }
-
-  if (filter.categoryId) {
-    result = result.filter((item) => item.categories.includes(filter.categoryId as string));
-  }
-
-  if (filter.tags.length > 0) {
-    result = result.filter((item) => filter.tags.some((tag) => item.tags.includes(tag)));
-  }
-
-  // Sort
-  const sorted = [...result];
-  switch (filter.sort) {
-    case 'alphabet':
-      sorted.sort((a, b) => a.name.localeCompare(b.name));
-      break;
-    case 'updated':
-      sorted.sort((a, b) => b.lastUpdatedAt.localeCompare(a.lastUpdatedAt));
-      break;
-    case 'popularity':
-    default:
-      sorted.sort((a, b) => b.stars - a.stars);
-      break;
-  }
-  return sorted;
 }
 
 /** Dedupe-by-key concat that preserves order of first appearance.
@@ -416,19 +428,14 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
   loadingReadmes: new Set<string>(),
   readmeErrors: {},
 
-  mcpsCatalog: [],
-  lastSyncedMcps: undefined,
-  staleCacheMcps: undefined,
-
-  isLoadingMcps: false,
-  upstreamErrorMcps: null,
+  mcpsListing: initialMcpsListing,
+  mcpsRecentlyUpdated: initialMcpsRecentlyUpdated,
+  mcpsSearch: null,
 
   installingItemIds: new Set<string>(),
   installFailedItems: {},
   classifyingItemIds: new Set<string>(),
   classifyFailedItemIds: new Set<string>(),
-
-  mcpsFilter: initialFilter,
 
   selectedSkillItemId: null,
   selectedMcpItemId: null,
@@ -676,38 +683,353 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
     }
   },
 
-  // -- MCP catalog (unchanged from V1) --
+  // -- MCP marketplace (V2 server-driven pagination) --
 
-  loadMcpsCatalog: async (refresh = false) => {
+  loadMcpsFirstPage: async () => {
     if (!isTauri()) {
-      console.warn('MarketplaceStore: Cannot load mcps catalog in browser mode');
-      set({
-        upstreamErrorMcps:
-          'Browser preview mode — run `npm run tauri dev` to load the marketplace.',
-      });
+      console.warn('MarketplaceStore: Cannot load mcps in browser mode');
+      set((state) => ({
+        mcpsListing: {
+          ...state.mcpsListing,
+          loading: false,
+          error: 'Browser preview mode — run `npm run tauri dev` to load the marketplace.',
+        },
+      }));
       return;
     }
 
-    set({ isLoadingMcps: true, upstreamErrorMcps: null });
+    set((state) => ({
+      mcpsListing: {
+        ...state.mcpsListing,
+        loading: true,
+        error: null,
+      },
+    }));
     try {
-      const items =
-        (await safeInvoke<MarketplaceMcpItem[]>('list_marketplace_mcps', {
-          refresh,
-        })) ?? [];
+      const resp = await safeInvoke<McpsPageResponse>('list_marketplace_mcps_page', {
+        cursor: null,
+        limit: MCP_REGISTRY_PAGE_SIZE,
+      });
+      if (!resp) throw new Error('Backend returned no listing response');
       set({
-        mcpsCatalog: items,
-        lastSyncedMcps: new Date().toISOString(),
-        isLoadingMcps: false,
+        mcpsListing: {
+          items: resp.items,
+          currentCursor: null,
+          prevCursors: [],
+          nextCursor: resp.nextCursor,
+          hasMore: resp.hasMore,
+          page: 1,
+          loading: false,
+          error: null,
+        },
       });
     } catch (error) {
       const message = typeof error === 'string' ? error : String(error);
-      console.error('Failed to load mcps catalog:', error);
+      console.error('Failed to load mcps first page:', error);
+      set((state) => ({
+        mcpsListing: { ...state.mcpsListing, loading: false, error: message },
+      }));
+    }
+  },
+
+  loadMcpsNextPage: async () => {
+    const { mcpsListing } = get();
+    if (mcpsListing.loading) return;
+    if (!mcpsListing.hasMore || !mcpsListing.nextCursor) return;
+    if (!isTauri()) return;
+
+    const cursorToFetch = mcpsListing.nextCursor;
+    const newPrevCursors = [...mcpsListing.prevCursors, mcpsListing.currentCursor];
+
+    set((state) => ({
+      mcpsListing: { ...state.mcpsListing, loading: true, error: null },
+    }));
+    try {
+      const resp = await safeInvoke<McpsPageResponse>('list_marketplace_mcps_page', {
+        cursor: cursorToFetch,
+        limit: MCP_REGISTRY_PAGE_SIZE,
+      });
+      if (!resp) throw new Error('Backend returned no listing response');
+      set((state) => ({
+        mcpsListing: {
+          items: resp.items,
+          currentCursor: cursorToFetch,
+          prevCursors: newPrevCursors,
+          nextCursor: resp.nextCursor,
+          hasMore: resp.hasMore,
+          page: state.mcpsListing.page + 1,
+          loading: false,
+          error: null,
+        },
+      }));
+    } catch (error) {
+      const message = typeof error === 'string' ? error : String(error);
+      console.error('Failed to load mcps next page:', error);
+      set((state) => ({
+        mcpsListing: { ...state.mcpsListing, loading: false, error: message },
+      }));
+    }
+  },
+
+  loadMcpsPrevPage: async () => {
+    const { mcpsListing } = get();
+    if (mcpsListing.loading) return;
+    if (mcpsListing.prevCursors.length === 0) return;
+    if (!isTauri()) return;
+
+    // Pop one cursor off the stack — that's the cursor that produced the
+    // page we're returning to. (The previous-page cursor is at the top of
+    // the stack; the current `currentCursor` is the cursor that produced
+    // the page we're currently on, which should be discarded.)
+    const newPrevCursors = mcpsListing.prevCursors.slice(0, -1);
+    const targetCursor = mcpsListing.prevCursors[mcpsListing.prevCursors.length - 1];
+
+    set((state) => ({
+      mcpsListing: { ...state.mcpsListing, loading: true, error: null },
+    }));
+    try {
+      const resp = await safeInvoke<McpsPageResponse>('list_marketplace_mcps_page', {
+        cursor: targetCursor,
+        limit: MCP_REGISTRY_PAGE_SIZE,
+      });
+      if (!resp) throw new Error('Backend returned no listing response');
+      set((state) => ({
+        mcpsListing: {
+          items: resp.items,
+          currentCursor: targetCursor,
+          prevCursors: newPrevCursors,
+          nextCursor: resp.nextCursor,
+          hasMore: resp.hasMore,
+          page: Math.max(1, state.mcpsListing.page - 1),
+          loading: false,
+          error: null,
+        },
+      }));
+    } catch (error) {
+      const message = typeof error === 'string' ? error : String(error);
+      console.error('Failed to load mcps prev page:', error);
+      set((state) => ({
+        mcpsListing: { ...state.mcpsListing, loading: false, error: message },
+      }));
+    }
+  },
+
+  loadRecentlyUpdated: async () => {
+    if (!isTauri()) {
       set({
-        upstreamErrorMcps: message,
-        isLoadingMcps: false,
+        mcpsRecentlyUpdated: {
+          items: [],
+          loading: false,
+          error: 'Browser preview mode — run `npm run tauri dev` to load the marketplace.',
+        },
+      });
+      return;
+    }
+    set((state) => ({
+      mcpsRecentlyUpdated: { ...state.mcpsRecentlyUpdated, loading: true, error: null },
+    }));
+    try {
+      const items =
+        (await safeInvoke<MarketplaceMcpItem[]>('list_recently_updated_mcps', {
+          hoursBack: MCP_RECENTLY_UPDATED_HOURS,
+          limit: MCP_RECENTLY_UPDATED_LIMIT,
+        })) ?? [];
+      set({
+        mcpsRecentlyUpdated: {
+          items,
+          loading: false,
+          error: null,
+        },
+      });
+    } catch (error) {
+      const message = typeof error === 'string' ? error : String(error);
+      console.error('Failed to load recently updated mcps:', error);
+      set({
+        mcpsRecentlyUpdated: {
+          items: [],
+          loading: false,
+          error: message,
+        },
       });
     }
   },
+
+  searchMcps: async (query) => {
+    const trimmed = query.trim();
+    if (trimmed.length === 0) {
+      get().clearMcpsSearch();
+      return;
+    }
+    if (!isTauri()) {
+      set({
+        mcpsSearch: {
+          query: trimmed,
+          items: [],
+          currentCursor: null,
+          prevCursors: [],
+          nextCursor: null,
+          hasMore: false,
+          page: 1,
+          loading: false,
+          error: 'Browser preview mode — run `npm run tauri dev` to load the marketplace.',
+        },
+      });
+      return;
+    }
+    set({
+      mcpsSearch: {
+        query: trimmed,
+        items: [],
+        currentCursor: null,
+        prevCursors: [],
+        nextCursor: null,
+        hasMore: false,
+        page: 1,
+        loading: true,
+        error: null,
+      },
+    });
+    try {
+      const resp = await safeInvoke<McpsPageResponse>('search_marketplace_mcps', {
+        query: trimmed,
+        cursor: null,
+        limit: MCP_REGISTRY_PAGE_SIZE,
+      });
+      if (!resp) throw new Error('Backend returned no search response');
+      set((state) => {
+        // Stale-response guard.
+        if (state.mcpsSearch && state.mcpsSearch.query !== trimmed) return state;
+        return {
+          mcpsSearch: {
+            query: trimmed,
+            items: resp.items,
+            currentCursor: null,
+            prevCursors: [],
+            nextCursor: resp.nextCursor,
+            hasMore: resp.hasMore,
+            page: 1,
+            loading: false,
+            error: null,
+          },
+        };
+      });
+    } catch (error) {
+      const message = typeof error === 'string' ? error : String(error);
+      console.error('Failed to search mcps:', error);
+      set((state) => {
+        if (state.mcpsSearch && state.mcpsSearch.query !== trimmed) return state;
+        return {
+          mcpsSearch: {
+            query: trimmed,
+            items: [],
+            currentCursor: null,
+            prevCursors: [],
+            nextCursor: null,
+            hasMore: false,
+            page: 1,
+            loading: false,
+            error: message,
+          },
+        };
+      });
+    }
+  },
+
+  searchMcpsNextPage: async () => {
+    const { mcpsSearch } = get();
+    if (!mcpsSearch || mcpsSearch.loading) return;
+    if (!mcpsSearch.hasMore || !mcpsSearch.nextCursor) return;
+    if (!isTauri()) return;
+    const cursorToFetch = mcpsSearch.nextCursor;
+    const newPrevCursors = [...mcpsSearch.prevCursors, mcpsSearch.currentCursor];
+    const query = mcpsSearch.query;
+    set((state) => ({
+      mcpsSearch: state.mcpsSearch
+        ? { ...state.mcpsSearch, loading: true, error: null }
+        : state.mcpsSearch,
+    }));
+    try {
+      const resp = await safeInvoke<McpsPageResponse>('search_marketplace_mcps', {
+        query,
+        cursor: cursorToFetch,
+        limit: MCP_REGISTRY_PAGE_SIZE,
+      });
+      if (!resp) throw new Error('Backend returned no search response');
+      set((state) => {
+        if (!state.mcpsSearch || state.mcpsSearch.query !== query) return state;
+        return {
+          mcpsSearch: {
+            query,
+            items: resp.items,
+            currentCursor: cursorToFetch,
+            prevCursors: newPrevCursors,
+            nextCursor: resp.nextCursor,
+            hasMore: resp.hasMore,
+            page: state.mcpsSearch.page + 1,
+            loading: false,
+            error: null,
+          },
+        };
+      });
+    } catch (error) {
+      const message = typeof error === 'string' ? error : String(error);
+      console.error('Failed to load search next page:', error);
+      set((state) => ({
+        mcpsSearch: state.mcpsSearch
+          ? { ...state.mcpsSearch, loading: false, error: message }
+          : state.mcpsSearch,
+      }));
+    }
+  },
+
+  searchMcpsPrevPage: async () => {
+    const { mcpsSearch } = get();
+    if (!mcpsSearch || mcpsSearch.loading) return;
+    if (mcpsSearch.prevCursors.length === 0) return;
+    if (!isTauri()) return;
+    const newPrevCursors = mcpsSearch.prevCursors.slice(0, -1);
+    const targetCursor = mcpsSearch.prevCursors[mcpsSearch.prevCursors.length - 1];
+    const query = mcpsSearch.query;
+    set((state) => ({
+      mcpsSearch: state.mcpsSearch
+        ? { ...state.mcpsSearch, loading: true, error: null }
+        : state.mcpsSearch,
+    }));
+    try {
+      const resp = await safeInvoke<McpsPageResponse>('search_marketplace_mcps', {
+        query,
+        cursor: targetCursor,
+        limit: MCP_REGISTRY_PAGE_SIZE,
+      });
+      if (!resp) throw new Error('Backend returned no search response');
+      set((state) => {
+        if (!state.mcpsSearch || state.mcpsSearch.query !== query) return state;
+        return {
+          mcpsSearch: {
+            query,
+            items: resp.items,
+            currentCursor: targetCursor,
+            prevCursors: newPrevCursors,
+            nextCursor: resp.nextCursor,
+            hasMore: resp.hasMore,
+            page: Math.max(1, state.mcpsSearch.page - 1),
+            loading: false,
+            error: null,
+          },
+        };
+      });
+    } catch (error) {
+      const message = typeof error === 'string' ? error : String(error);
+      console.error('Failed to load search prev page:', error);
+      set((state) => ({
+        mcpsSearch: state.mcpsSearch
+          ? { ...state.mcpsSearch, loading: false, error: message }
+          : state.mcpsSearch,
+      }));
+    }
+  },
+
+  clearMcpsSearch: () => set({ mcpsSearch: null }),
 
   refreshCatalog: async (source) => {
     if (!isTauri()) {
@@ -720,12 +1042,14 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
       console.error(`Failed to refresh ${source} marketplace cache:`, error);
       // Swallow — the underlying catalog reload below surfaces the error.
     }
-    // Always trigger a fresh load to update lastSynced + listing.
+    // V2: re-run the freshest fetch path for each source. MCP refresh
+    // re-fetches both the listing's first page and the recently-updated
+    // strip; skill refresh re-fetches the active view's page 0.
     if (source === 'skills') {
       const { skillsListing } = get();
       await get().loadSkillsPage(skillsListing.view, 0);
     } else {
-      await get().loadMcpsCatalog(true);
+      await Promise.all([get().loadMcpsFirstPage(), get().loadRecentlyUpdated()]);
     }
   },
 
@@ -934,9 +1258,8 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
     }
   },
 
-  // -- Filter / select --
+  // -- Select --
 
-  setMcpsFilter: (filter) => set((state) => ({ mcpsFilter: { ...state.mcpsFilter, ...filter } })),
   selectSkillItem: (id) => set({ selectedSkillItemId: id }),
   selectMcpItem: (id) => set({ selectedMcpItemId: id }),
 
@@ -1001,8 +1324,9 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
       }
       await get().installSkill(item);
     } else {
-      const { mcpsCatalog } = get();
-      const item = mcpsCatalog.find((i) => i.id === itemId);
+      const visible = get().getVisibleMcps();
+      const recently = get().mcpsRecentlyUpdated.items;
+      const item = visible.find((i) => i.id === itemId) ?? recently.find((i) => i.id === itemId);
       if (!item) {
         get().clearInstallFailure(itemId);
         return;
@@ -1205,9 +1529,9 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
     return skillsSearch !== null ? skillsSearch.results : skillsListing.items;
   },
 
-  getFilteredMcps: () => {
-    const { mcpsCatalog, mcpsFilter } = get();
-    return applyMcpFilter(mcpsCatalog, mcpsFilter);
+  getVisibleMcps: () => {
+    const { mcpsListing, mcpsSearch } = get();
+    return mcpsSearch !== null ? mcpsSearch.items : mcpsListing.items;
   },
 
   // -- Event listeners --
@@ -1267,24 +1591,17 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
       }),
     );
 
-    // Stale cache — only the MCP marketplace still uses cache. Skills V2
-    // is fresh on every fetch (skills.sh internal API), so a stale-cache
-    // event for skills is unexpected — log + ignore.
+    // Stale cache — V2 has no cache for either source (Skills V2 is
+    // fresh-fetch; MCP V2 is realtime mirror). If the backend ever emits
+    // this for either source, we ignore it (no UI hint applies).
     unlisteners.push(
-      await listen<MarketplaceStaleCacheEvent>('marketplace:stale-cache', (event) => {
-        const { source, ageHours } = event.payload;
-        if (source === 'skills') {
-          // V2 skills marketplace has no cache layer; if the backend ever
-          // emits this for skills, we ignore it (no UI hint applies).
-          return;
-        }
-        set({ staleCacheMcps: { ageHours } });
+      await listen<MarketplaceStaleCacheEvent>('marketplace:stale-cache', () => {
+        // No-op in V2.
       }),
     );
 
-    // Catalog enhanced — only meaningful for MCP V1. Skills V2 has no
-    // background enhancement step (every fetch is a fresh page from
-    // skills.sh); reload the active page if the upstream signals new data.
+    // Catalog enhanced — neither V2 source emits this any more. Forward-compat
+    // listener: if a leftover signal arrives, refresh the active surface.
     unlisteners.push(
       await listen<MarketplaceCatalogEnhancedEvent>(
         'marketplace:catalog-enhanced',
@@ -1296,7 +1613,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
               await get().loadSkillsPage(skillsListing.view, 0);
             }
           } else {
-            await get().loadMcpsCatalog(false);
+            await get().loadMcpsFirstPage();
           }
         },
       ),
@@ -1323,7 +1640,9 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
             skillsListing: { ...state.skillsListing, upstreamError: error },
           }));
         } else {
-          set({ upstreamErrorMcps: error });
+          set((state) => ({
+            mcpsListing: { ...state.mcpsListing, error },
+          }));
         }
       }),
     );

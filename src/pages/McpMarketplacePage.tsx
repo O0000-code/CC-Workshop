@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Server, Plug, RotateCw, Loader2, WifiOff, Copy, Check, Sparkles, X } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Plug, Loader2, WifiOff, Copy, Check, Search } from 'lucide-react';
 import { PageHeader, SlidePanel } from '@/components/layout';
-import { Button, Dropdown, EmptyState, ICON_MAP, CategoryTreeDropdown } from '@/components/common';
+import { Button, EmptyState, ICON_MAP } from '@/components/common';
 import { Input } from '@/components/common/Input';
 import { MarketplaceListItem } from '@/components/marketplace/MarketplaceListItem';
 import { MarketplaceCollisionModal } from '@/components/marketplace/MarketplaceCollisionModal';
@@ -11,38 +11,27 @@ import { safeInvoke } from '@/utils/tauri';
 import { useMarketplaceStore } from '@/stores/marketplaceStore';
 import { useMcpsStore } from '@/stores/mcpsStore';
 import { useScenesStore } from '@/stores/scenesStore';
-import { useAppStore } from '@/stores/appStore';
 import type { EnvVarSpec, MarketplaceMcpItem, MarketplaceSource } from '@/types/marketplace';
 
 // ============================================================================
-// McpMarketplacePage — task card C3 (V2.0 Marketplace, Wave 2)
+// McpMarketplacePage — V2.0 Marketplace MCP (realtime registry mirror)
 // ============================================================================
 //
-// Mirrors `SkillMarketplacePage` (C2) skeleton: PageHeader + SearchInput +
-// Refresh/Sort/Filter row + List + SlidePanel detail. Differentiated points:
+// Mirrors the Official MCP Registry website
+// (`registry.modelcontextprotocol.io/`) one-for-one:
 //
-//   1. Catalog source / store slice — `mcpsCatalog` + `mcpsFilter` +
-//      `selectedMcpItemId` + `loadMcpsCatalog()`.
-//   2. List items pass `itemType="mcp"` so `MarketplaceListItem` renders the
-//      stdio / HTTP type badge in the right segment (D-9 / D-12 / D-14;
-//      task card C3 step 2).
-//   3. Detail panel adds a fourth block "Configuration" beyond the three
-//      Skill blocks (Decision-critical / Reference / README): stdio types
-//      render the required env-var input table with Save handling, HTTP
-//      types render URL + (when OAuth) Copy command. Spec §10.1 / §10.3
-//      via R2 §4.3 / §10.3.
-//   4. Install button text reflects the env-var fill state — derived
-//      locally from the env values the user has typed (D-12 / spec §9):
-//        - stdio + missing required env  → `Installed — needs setup`
-//        - stdio + all required env set  → `Installed`
-//        - HTTP                          → `Installed`
+//   1. Search-by-name input in the header (Registry's `?search=` is name-only).
+//   2. "Recently Updated" strip — 9 most-recently-updated servers in the last
+//      24h. Hidden in search mode.
+//   3. Main paginated list — 96 servers per page, with Previous / Next buttons.
+//   4. Detail SlidePanel — unchanged from V1 (info / source card / README /
+//      Configuration block with stdio env-var inputs or HTTP url).
 //
-// What this page does NOT do (out of scope for C3):
-//   - Does not import or call McpDetailPanel (R2 §0.1).
-//   - Does not introduce new design tokens (design-language Rule).
-//   - Does not modify McpServersPage / McpListItem.
-//   - Does not add a type badge to the list item's left section (only right
-//     segment carries the stdio/HTTP badge; task-card constraint).
+// What this page does NOT do (V2 explicit out-of-scope):
+//   - No infinite scroll (Registry uses explicit pagination)
+//   - No view tab / sort dropdown / Refresh button
+//   - No "Page N of M" total-page indicator (cursor opaque)
+//   - No new design tokens, colours, or animation curves
 // ============================================================================
 
 // ----- Helpers --------------------------------------------------------------
@@ -109,10 +98,6 @@ function ConfigItem({ label, value, isLast = false }: ConfigItemProps) {
   );
 }
 
-// Small helper to detect a URL string (for the optional "where to find" link
-// in the env-var row). We use a lightweight regex — env var hints can
-// legitimately be plain prose, in which case we render them as inline copy
-// rather than a link.
 function isHttpUrl(value: string | undefined | null): boolean {
   if (!value) return false;
   return /^https?:\/\//i.test(value.trim());
@@ -135,113 +120,120 @@ function findLocalMcpId(
   return nameMatch ? nameMatch.id : null;
 }
 
-// ----- Sort options ---------------------------------------------------------
-
-const SORT_OPTIONS = [
-  { value: 'popularity', label: 'By Popularity' },
-  { value: 'alphabet', label: 'Alphabetical' },
-  { value: 'updated', label: 'Recently Updated' },
-];
-
 // ============================================================================
 // Component
 // ============================================================================
 
 export function McpMarketplacePage() {
   // ----- Marketplace store slice -----
-  const mcpsCatalog = useMarketplaceStore((s) => s.mcpsCatalog);
-  const isLoadingMcps = useMarketplaceStore((s) => s.isLoadingMcps);
-  const upstreamErrorMcps = useMarketplaceStore((s) => s.upstreamErrorMcps);
-  const lastSyncedMcps = useMarketplaceStore((s) => s.lastSyncedMcps);
-  const staleCacheMcps = useMarketplaceStore((s) => s.staleCacheMcps);
-  const mcpsFilter = useMarketplaceStore((s) => s.mcpsFilter);
+  const mcpsListing = useMarketplaceStore((s) => s.mcpsListing);
+  const mcpsRecentlyUpdated = useMarketplaceStore((s) => s.mcpsRecentlyUpdated);
+  const mcpsSearch = useMarketplaceStore((s) => s.mcpsSearch);
   const selectedMcpItemId = useMarketplaceStore((s) => s.selectedMcpItemId);
   const collisionModalState = useMarketplaceStore((s) => s.collisionModalState);
 
-  const onboardingDismissed = useMarketplaceStore((s) => s.onboardingDismissedMcps);
-
-  const setMcpsFilter = useMarketplaceStore((s) => s.setMcpsFilter);
+  const loadMcpsFirstPage = useMarketplaceStore((s) => s.loadMcpsFirstPage);
+  const loadMcpsNextPage = useMarketplaceStore((s) => s.loadMcpsNextPage);
+  const loadMcpsPrevPage = useMarketplaceStore((s) => s.loadMcpsPrevPage);
+  const loadRecentlyUpdated = useMarketplaceStore((s) => s.loadRecentlyUpdated);
+  const searchMcps = useMarketplaceStore((s) => s.searchMcps);
+  const searchMcpsNextPage = useMarketplaceStore((s) => s.searchMcpsNextPage);
+  const searchMcpsPrevPage = useMarketplaceStore((s) => s.searchMcpsPrevPage);
+  const clearMcpsSearch = useMarketplaceStore((s) => s.clearMcpsSearch);
   const selectMcpItem = useMarketplaceStore((s) => s.selectMcpItem);
-  const loadMcpsCatalog = useMarketplaceStore((s) => s.loadMcpsCatalog);
-  const refreshCatalog = useMarketplaceStore((s) => s.refreshCatalog);
   const installMcp = useMarketplaceStore((s) => s.installMcp);
   const isMcpInstalled = useMarketplaceStore((s) => s.isMcpInstalled);
-  const getFilteredMcps = useMarketplaceStore((s) => s.getFilteredMcps);
-  const dismissOnboarding = useMarketplaceStore((s) => s.dismissOnboarding);
 
   // ----- Cross-store reads (SSoT) -----
   const mcpServers = useMcpsStore((s) => s.mcpServers);
   const scenes = useScenesStore((s) => s.scenes);
-  const categories = useAppStore((s) => s.categories);
   const loadMcps = useMcpsStore((s) => s.loadMcps);
 
   // ----- Local UI state -----
-  // Env-var inputs are kept in component state keyed by `marketplaceItem.id`
-  // so the user's typing persists through filter / scroll / re-open while
-  // they are in this page session. Clearing happens implicitly on page
-  // unmount (acceptable V1 behaviour — the spec leaves persistence shape
-  // up to spec phase, see PRD §5.4 / D-Imp-9 task-card hint).
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  // Env-var inputs persist while the page is mounted (SkillsPage parity).
   const [envValues, setEnvValues] = useState<Record<string, Record<string, string>>>({});
-  // Saved-feedback state: 'saved' shows the green ✓ chip after a successful
-  // write, 'error' shows an inline red message when the IPC fails (E3-1 /
-  // F-P0-Save). Keyed by marketplace item id.
   const [savedFeedback, setSavedFeedback] = useState<Record<string, 'saved' | 'error' | undefined>>(
     {},
   );
-  // Validation flag — only set to `true` after the user attempts a Save with
-  // missing required values. Avoids screaming at the user while they are
-  // still typing. Keyed per marketplace item id.
   const [showValidation, setShowValidation] = useState<Record<string, boolean>>({});
-  // Copy-command feedback for OAuth section.
   const [oauthCopyFeedback, setOauthCopyFeedback] = useState<Record<string, boolean>>({});
-  // Per-row refresh spinner state — disabled during in-flight refresh.
-  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // ----- Effects -----
 
-  // Initial catalog load on first mount of the page. Uses the cache-first
-  // path (`refresh=false`) — backend will also schedule the optional
-  // background scrape via tokio::spawn (spec §3.2 mirrors §3.1).
+  // Initial load on mount: parallel fetch of main list + Recently Updated.
+  // We re-trigger only when the relevant slice is empty + has no pending
+  // error, so navigating away and back doesn't re-fetch needlessly.
+  const didMountRef = useRef(false);
   useEffect(() => {
-    if (mcpsCatalog.length === 0 && !upstreamErrorMcps) {
-      void loadMcpsCatalog(false);
+    if (didMountRef.current) return;
+    didMountRef.current = true;
+    if (mcpsListing.items.length === 0 && !mcpsListing.error && !mcpsListing.loading) {
+      void loadMcpsFirstPage();
     }
-    // We deliberately depend on `mcpsCatalog.length` rather than the array
-    // identity so a `loadSkillsCatalog` from another tab doesn't re-trigger
-    // this effect. The check covers the empty-on-mount case once.
+    if (
+      mcpsRecentlyUpdated.items.length === 0 &&
+      !mcpsRecentlyUpdated.error &&
+      !mcpsRecentlyUpdated.loading
+    ) {
+      void loadRecentlyUpdated();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ----- Derived data -----
-
-  // The selector reads `mcpsCatalog` + `mcpsFilter` from the store
-  // internally; we still depend on those slices so the memo invalidates
-  // when either changes. The eslint exhaustive-deps rule cannot see the
-  // implicit reads, so we suppress narrowly here.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const filteredMcps = useMemo(() => getFilteredMcps(), [getFilteredMcps, mcpsCatalog, mcpsFilter]);
-
-  const selectedItem = useMemo<MarketplaceMcpItem | null>(
-    () => mcpsCatalog.find((m) => m.id === selectedMcpItemId) ?? null,
-    [mcpsCatalog, selectedMcpItemId],
-  );
-
-  // Synced timestamp string — surface either the live sync time or a stale
-  // hint when the backend served an old cache. The amber treatment is left
-  // to a copy-only difference per design-language ("don't invent new
-  // accent colours"); we communicate via wording, not hue.
-  const lastSyncedLabel = useMemo(() => {
-    if (staleCacheMcps) {
-      return `Last synced ${staleCacheMcps.ageHours}h ago (stale)`;
+  // Debounce searchQuery → searchMcps / clearMcpsSearch.
+  useEffect(() => {
+    const trimmed = searchQuery.trim();
+    if (trimmed.length === 0) {
+      if (mcpsSearch !== null) clearMcpsSearch();
+      return;
     }
-    if (lastSyncedMcps) {
-      return `Last synced ${formatRelativeTime(lastSyncedMcps)}`;
-    }
-    return null;
-  }, [staleCacheMcps, lastSyncedMcps]);
+    const handle = window.setTimeout(() => {
+      void searchMcps(trimmed);
+    }, 300);
+    return () => window.clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery, searchMcps, clearMcpsSearch]);
 
-  // Local SSoT id for the selected upstream item, if installed. Used by the
-  // Install button gating and any future `Used in Scenes` count derivation.
+  // ----- Derived view state -----
+  const isSearchMode = mcpsSearch !== null;
+  const visibleItems = isSearchMode ? mcpsSearch.items : mcpsListing.items;
+  const activePagination = isSearchMode ? mcpsSearch : mcpsListing;
+  const upstreamError = activePagination.error;
+  const isLoadingPage = activePagination.loading;
+  const isOffline = !!upstreamError && visibleItems.length === 0;
+  const showFilterEmpty =
+    isSearchMode && !mcpsSearch.loading && mcpsSearch.items.length === 0 && !mcpsSearch.error;
+  const showInitialLoading = !isSearchMode && mcpsListing.loading && visibleItems.length === 0;
+  // The Recently Updated strip is hidden in search mode and when it has no
+  // entries to show (avoids a stray section header pointing at empty space).
+  const showRecentlyUpdated =
+    !isSearchMode &&
+    (mcpsRecentlyUpdated.items.length > 0 ||
+      mcpsRecentlyUpdated.loading ||
+      !!mcpsRecentlyUpdated.error);
+
+  // ----- Selected detail item -----
+  // The selected id is keyed by `item.id`. It might live either in the
+  // visible items (listing or search) or in Recently Updated. Look in both.
+  const selectedItem = useMemo<MarketplaceMcpItem | null>(() => {
+    if (!selectedMcpItemId) return null;
+    return (
+      visibleItems.find((m) => m.id === selectedMcpItemId) ??
+      mcpsRecentlyUpdated.items.find((m) => m.id === selectedMcpItemId) ??
+      null
+    );
+  }, [visibleItems, mcpsRecentlyUpdated.items, selectedMcpItemId]);
+
+  // Close the detail panel when the selected item disappears from view
+  // (e.g. user clicked Next page while the panel for an old-page item was
+  // still open).
+  useEffect(() => {
+    if (selectedMcpItemId && !selectedItem) {
+      selectMcpItem(null);
+    }
+  }, [selectedMcpItemId, selectedItem, selectMcpItem]);
+
   const localMcpId = useMemo(
     () => (selectedItem ? findLocalMcpId(mcpServers, selectedItem) : null),
     [mcpServers, selectedItem],
@@ -252,10 +244,6 @@ export function McpMarketplacePage() {
     return scenes.filter((s) => s.mcpIds.includes(localMcpId)).length;
   }, [scenes, localMcpId]);
 
-  // Env-var saturation derives the install button text. We compute it from
-  // the in-component `envValues` plus, as a fallback for already-installed
-  // items, the SSoT MCP's own `env`. Items HTTP-typed have no required env
-  // and short-circuit to `true`.
   const requiredEnvVars: EnvVarSpec[] = useMemo(() => {
     if (!selectedItem || selectedItem.mcpType !== 'stdio') return [];
     return selectedItem.stdioConfig?.requiredEnvVars ?? [];
@@ -266,9 +254,6 @@ export function McpMarketplacePage() {
     if (selectedItem.mcpType !== 'stdio') return true;
     if (requiredEnvVars.length === 0) return true;
     const localValues = envValues[selectedItem.id] ?? {};
-    // Cross-check with the persisted MCP entry's `env` map (SSoT) for
-    // already-installed resources. The merged view treats either source
-    // satisfying a required key as "filled".
     const persistedEnv = (localMcpId && mcpServers.find((m) => m.id === localMcpId)?.env) || {};
     return requiredEnvVars.every((spec) => {
       const localVal = localValues[spec.name];
@@ -284,42 +269,36 @@ export function McpMarketplacePage() {
   // ----- Handlers -----
 
   const handleSearchChange = (value: string) => {
-    setMcpsFilter({ search: value });
+    setSearchQuery(value);
   };
 
-  const handleRefresh = async () => {
-    setIsRefreshing(true);
-    try {
-      await refreshCatalog('mcps');
-    } finally {
-      setIsRefreshing(false);
+  const handleRetry = () => {
+    if (isSearchMode) {
+      void searchMcps(mcpsSearch.query);
+    } else {
+      void loadMcpsFirstPage();
     }
   };
 
-  const handleSortChange = (value: string | string[]) => {
-    if (typeof value !== 'string') return;
-    setMcpsFilter({ sort: value as 'popularity' | 'alphabet' | 'updated' });
+  const handlePrev = () => {
+    if (isSearchMode) {
+      void searchMcpsPrevPage();
+    } else {
+      void loadMcpsPrevPage();
+    }
   };
 
-  const handleCategoryChange = (categoryId: string) => {
-    setMcpsFilter({ categoryId: categoryId || null });
+  const handleNext = () => {
+    if (isSearchMode) {
+      void searchMcpsNextPage();
+    } else {
+      void loadMcpsNextPage();
+    }
   };
 
-  const handleDismissOnboarding = () => {
-    dismissOnboarding('mcps');
-  };
-
-  const handleSelectItem = (id: string) => {
-    selectMcpItem(id);
-  };
-
-  const handleCloseDetail = () => {
-    selectMcpItem(null);
-  };
-
-  const handleInstall = (item: MarketplaceMcpItem) => {
-    void installMcp(item);
-  };
+  const handleSelectItem = (id: string) => selectMcpItem(id);
+  const handleCloseDetail = () => selectMcpItem(null);
+  const handleInstall = (item: MarketplaceMcpItem) => void installMcp(item);
 
   const handleEnvChange = (itemId: string, name: string, value: string) => {
     setEnvValues((prev) => ({
@@ -328,31 +307,19 @@ export function McpMarketplacePage() {
     }));
   };
 
-  // Save handler — persists env vars to the SSoT MCP entry via the
-  // `update_mcp_env_vars` IPC (E3-1 / F-P0-Save). Without this the entered
-  // values would only live in component state and Sync would write empty
-  // env into the project's `.mcp.json`, breaking PRD §5.4 (c)'s "filled →
-  // saved" contract for stdio MCPs.
   const handleSaveEnv = async (item: MarketplaceMcpItem) => {
     const values = envValues[item.id] ?? {};
     const missing = requiredEnvVars.filter(
       (spec) => !values[spec.name] || values[spec.name].trim().length === 0,
     );
     if (missing.length > 0) {
-      // Trigger validation styling so the missing rows go red. Don't
-      // surface a banner — the inline "Required" label per row is enough.
       setShowValidation((prev) => ({ ...prev, [item.id]: true }));
       return;
     }
     setShowValidation((prev) => ({ ...prev, [item.id]: false }));
 
-    // Look up the *local* MCP id (= mcps JSON path) — the IPC writes
-    // against the SSoT entry, not the upstream catalog id.
     const localId = findLocalMcpId(mcpServers, item);
     if (!localId) {
-      // The Install button gates this Save (Save section only renders for
-      // installed stdio MCPs in practice), but if the install is mid-flight
-      // we surface a transient error rather than silently no-op.
       setSavedFeedback((prev) => ({ ...prev, [item.id]: 'error' }));
       return;
     }
@@ -362,8 +329,6 @@ export function McpMarketplacePage() {
         mcpId: localId,
         env: values,
       });
-      // Refresh the SSoT so derived `allEnvFilled` / install button label
-      // recompute against the persisted values.
       await loadMcps();
       setSavedFeedback((prev) => ({ ...prev, [item.id]: 'saved' }));
       window.setTimeout(() => {
@@ -387,9 +352,8 @@ export function McpMarketplacePage() {
     }
   };
 
-  // ----- Render -----
+  // ----- Detail panel sub-views -----
 
-  // Detail panel header — icon + name + one-sentence description.
   const detailHeader = selectedItem && (
     <div className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden">
       <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-[#F4F4F5]">
@@ -409,9 +373,6 @@ export function McpMarketplacePage() {
     </div>
   );
 
-  // Install / Installed control rendered in the SlidePanel's headerRight slot
-  // so the user's primary CTA stays visible without scrolling. Mirrors the
-  // list-item's button-state machine but in the panel context.
   const detailHeaderRight =
     selectedItem &&
     (() => {
@@ -438,14 +399,13 @@ export function McpMarketplacePage() {
           variant="primary"
           size="small"
           onClick={() => handleInstall(selectedItem)}
-          disabled={isLoadingMcps}
+          disabled={isLoadingPage}
         >
           Install
         </Button>
       );
     })();
 
-  // Configuration block — the MCP-specific fourth detail section.
   const configurationBlock = selectedItem && (
     <section className="flex flex-col gap-3">
       {selectedItem.mcpType === 'stdio' ? (
@@ -584,19 +544,16 @@ export function McpMarketplacePage() {
     </section>
   );
 
-  // Detail panel content — assembled top-down per spec §10.1 / R2 §4.4 with
-  // the MCP-only fourth Configuration block appended.
   const detailContent = selectedItem && (
     <div className="flex flex-col gap-7">
-      {/* Block 1: Decision-critical info (4 columns). */}
+      {/* Block 1: Decision-critical info. */}
       <section className="flex gap-8">
         <InfoItem label="Author" value={selectedItem.author || 'Unknown'} />
         <InfoItem label="Last Updated" value={formatRelativeTime(selectedItem.lastUpdatedAt)} />
-        <InfoItem label="Stars" value={(selectedItem.stars ?? 0).toLocaleString()} />
         <InfoItem label="Type" value={selectedItem.mcpType === 'stdio' ? 'stdio' : 'HTTP'} />
       </section>
 
-      {/* Block 2: Reference info — upstream Categories + Tags + Source row. */}
+      {/* Block 2: Reference info. */}
       <section className="flex flex-col gap-4">
         {(selectedItem.categories.length > 0 || selectedItem.tags.length > 0) && (
           <div className="flex flex-col gap-2.5">
@@ -660,11 +617,7 @@ export function McpMarketplacePage() {
         </div>
       </section>
 
-      {/* Block 3: README main area — plain pre-wrap rendering of the
-          marketplace's `readmeMarkdown` field. We deliberately do not pull
-          in a markdown library for V1 (matches the SkillsPage Instructions
-          section approach); the upstream markdown renders as readable
-          monospaced/proportional copy without rich formatting. */}
+      {/* Block 3: README. */}
       <section className="flex flex-col gap-3">
         <h3 className="text-sm font-semibold text-[#18181B]">README</h3>
         <div
@@ -681,61 +634,73 @@ export function McpMarketplacePage() {
         </div>
       </section>
 
-      {/* Block 4 (MCP-only): Configuration. */}
+      {/* Block 4: Configuration. */}
       {configurationBlock}
     </div>
   );
 
-  // ----- Empty / error states -----
+  // ----- Section header subcomponent (uppercase 11px). -----
+  const SectionHeader = ({ children }: { children: React.ReactNode }) => (
+    <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[#71717A]">
+      {children}
+    </h3>
+  );
 
-  // Network / upstream catastrophic failure: no items, error present, not
-  // currently loading. Surface the WifiOff EmptyState with a Retry action.
-  const showOfflineEmpty = mcpsCatalog.length === 0 && !!upstreamErrorMcps && !isLoadingMcps;
-
-  // Filter-induced empty (search/category/tags eliminate everything but the
-  // catalog itself is non-empty).
-  const showFilterEmpty = mcpsCatalog.length > 0 && filteredMcps.length === 0 && !isLoadingMcps;
-
-  // Loading: catalog empty + currently loading.
-  const showLoading = mcpsCatalog.length === 0 && isLoadingMcps;
+  // ----- Pagination control subcomponent. -----
+  const paginationControl = (() => {
+    const hasPrev = activePagination.prevCursors.length > 0;
+    const hasNext = activePagination.hasMore && !!activePagination.nextCursor;
+    const middleLabel = hasNext ? 'More available' : 'End of catalog';
+    return (
+      <div className="mt-6 flex items-center justify-between gap-3">
+        <Button
+          variant="secondary"
+          size="small"
+          onClick={handlePrev}
+          disabled={!hasPrev || isLoadingPage}
+        >
+          Previous
+        </Button>
+        <span className="text-[11px] text-[#71717A]">
+          {isLoadingPage ? (
+            <span className="inline-flex items-center gap-1.5">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Loading...
+            </span>
+          ) : (
+            middleLabel
+          )}
+        </span>
+        <Button
+          variant="secondary"
+          size="small"
+          onClick={handleNext}
+          disabled={!hasNext || isLoadingPage}
+        >
+          Next
+        </Button>
+      </div>
+    );
+  })();
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden">
-      {/* Page Header */}
+      {/* Page Header — title + search input only. No sort, view tab, or
+          Refresh button per V2 (Registry mirror). */}
       <PageHeader
         title="MCP Marketplace"
-        searchValue={mcpsFilter.search}
+        searchValue={searchQuery}
         onSearchChange={handleSearchChange}
-        searchPlaceholder="Search MCP servers..."
-        actions={
-          <div className="flex items-center gap-2.5">
-            <Button
-              variant="secondary"
-              size="small"
-              icon={isRefreshing ? <Loader2 className="animate-spin" /> : <RotateCw />}
-              onClick={handleRefresh}
-              disabled={isRefreshing}
-            >
-              {isRefreshing ? 'Refreshing...' : 'Refresh'}
-            </Button>
-            <Dropdown
-              options={SORT_OPTIONS}
-              value={mcpsFilter.sort}
-              onChange={handleSortChange}
-              compact
-              triggerClassName="w-44"
-            />
-          </div>
-        }
+        searchPlaceholder="Search by server name..."
       />
 
-      {/* Upstream / install error banner (mirrors SkillsPage:732-742). */}
-      {upstreamErrorMcps && mcpsCatalog.length > 0 && (
+      {/* Upstream error banner — shown alongside existing items. */}
+      {upstreamError && visibleItems.length > 0 && (
         <div className="mx-7 mt-4 flex items-center justify-between rounded-md border border-red-200 bg-red-50 px-4 py-3">
-          <p className="text-sm text-red-700">{upstreamErrorMcps}</p>
+          <p className="text-sm text-red-700">{upstreamError}</p>
           <button
             type="button"
-            onClick={() => void loadMcpsCatalog(true)}
+            onClick={handleRetry}
             className="text-sm font-medium text-red-700 hover:text-red-800"
           >
             Retry
@@ -743,7 +708,7 @@ export function McpMarketplacePage() {
         </div>
       )}
 
-      {/* Main content area with shrink animation matching the SlidePanel. */}
+      {/* Main scroll region — collapses by 800px when SlidePanel is open. */}
       <div
         className={`
           flex-1 overflow-y-auto px-7 py-6
@@ -751,91 +716,98 @@ export function McpMarketplacePage() {
           ${selectedMcpItemId ? 'mr-[800px]' : ''}
         `}
       >
-        {/* Onboarding banner — first-visit hint for the MCP marketplace
-            (F-P0-6 / E3-5 / PRD §5.0). Mirrors SkillMarketplagePage's banner
-            visually so the two surfaces feel like one product. */}
-        {!onboardingDismissed && mcpsCatalog.length > 0 && (
-          <div
-            data-marketplace-onboarding-banner
-            className="mb-5 flex items-center justify-between gap-4 rounded-lg border border-[#E5E5E5] bg-[#FAFAFA] px-4 py-3"
-          >
-            <div className="flex items-center gap-2.5 min-w-0">
-              <Sparkles className="h-4 w-4 flex-shrink-0 text-[#71717A]" />
-              <p className="text-[13px] font-medium text-[#18181B] truncate">
-                New here? These are popular MCP servers others are using.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={handleDismissOnboarding}
-              className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md text-[#A1A1AA] hover:bg-[#F4F4F5] hover:text-[#71717A] transition-colors"
-              aria-label="Dismiss onboarding hint"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        )}
+        {/* Search-scope hint — explicit cue that the upstream's search field
+            is name-only, not full-text. */}
+        <p className="mb-5 text-[11px] text-[#71717A]">Search by name (Registry limitation)</p>
 
-        {/* Filter row — Category dropdown (left) + Last synced hint (right).
-            Mirrors SkillMarketplagePage's row exactly so the two pages share
-            visual cadence (F-P0-7 / E3-6 / PRD §5.8). */}
-        {mcpsCatalog.length > 0 && (
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2.5">
-              <CategoryTreeDropdown
-                categories={categories}
-                value={mcpsFilter.categoryId ?? ''}
-                onChange={handleCategoryChange}
-                placeholder="All categories"
-                compact
-                className="w-44"
-              />
-            </div>
-            {lastSyncedLabel && (
-              <span className="text-[11px] text-[#A1A1AA]">{lastSyncedLabel}</span>
-            )}
-          </div>
-        )}
-
-        {showOfflineEmpty ? (
+        {showOfflineEmpty(isOffline, isSearchMode) ? (
           <div className="flex h-full items-center justify-center">
             <EmptyState
               icon={<WifiOff className="h-12 w-12" />}
               title="Marketplace temporarily unavailable"
               description="This may be a network issue or upstream service outage."
               action={
-                <Button variant="secondary" size="small" onClick={() => void loadMcpsCatalog(true)}>
+                <Button variant="secondary" size="small" onClick={handleRetry}>
                   Retry
                 </Button>
               }
             />
           </div>
-        ) : showLoading ? (
+        ) : showInitialLoading ? (
           <div className="flex h-full items-center justify-center">
             <Loader2 className="h-8 w-8 animate-spin text-[#A1A1AA]" />
           </div>
-        ) : showFilterEmpty ? (
-          <div className="flex h-full items-center justify-center">
-            <EmptyState
-              icon={<Server className="h-12 w-12" />}
-              title="No MCP servers match your filters"
-              description="Try adjusting your search or category selection."
-            />
-          </div>
         ) : (
-          <div className="flex flex-col gap-3">
-            {filteredMcps.map((item) => (
-              <MarketplaceListItem
-                key={item.id}
-                item={item}
-                itemType="mcp"
-                selected={item.id === selectedMcpItemId}
-                compact={!!selectedMcpItemId}
-                isInstalled={isMcpInstalled(item)}
-                onSelect={handleSelectItem}
-              />
-            ))}
-          </div>
+          <>
+            {/* Recently Updated section — hidden in search mode. */}
+            {showRecentlyUpdated && (
+              <section className="mb-7">
+                <SectionHeader>Recently Updated</SectionHeader>
+                {mcpsRecentlyUpdated.loading && mcpsRecentlyUpdated.items.length === 0 ? (
+                  <div className="flex items-center gap-2 rounded-lg border border-[#E5E5E5] px-3.5 py-3 text-[12px] text-[#A1A1AA]">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span>Loading recent updates...</span>
+                  </div>
+                ) : mcpsRecentlyUpdated.error && mcpsRecentlyUpdated.items.length === 0 ? (
+                  <div className="rounded-lg border border-[#E5E5E5] px-3.5 py-3 text-[12px] text-[#A1A1AA]">
+                    Recently updated section unavailable.
+                  </div>
+                ) : mcpsRecentlyUpdated.items.length > 0 ? (
+                  <div className="flex flex-col gap-2">
+                    {mcpsRecentlyUpdated.items.map((item) => (
+                      <RecentlyUpdatedRow
+                        key={item.id}
+                        item={item}
+                        selected={item.id === selectedMcpItemId}
+                        onSelect={handleSelectItem}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            )}
+
+            {/* Main list section. */}
+            <section>
+              <SectionHeader>
+                {isSearchMode ? `Results for "${mcpsSearch.query}"` : 'All Servers'}
+              </SectionHeader>
+
+              {showFilterEmpty ? (
+                <div className="flex h-full items-center justify-center py-12">
+                  <EmptyState
+                    icon={<Search className="h-12 w-12" />}
+                    title={`No results for "${mcpsSearch.query}"`}
+                    description="Search matches MCP server names exactly. Try a different keyword."
+                  />
+                </div>
+              ) : isLoadingPage && visibleItems.length === 0 ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="h-6 w-6 animate-spin text-[#A1A1AA]" />
+                </div>
+              ) : (
+                <>
+                  <div className="flex flex-col gap-3">
+                    {visibleItems.map((item) => (
+                      <MarketplaceListItem
+                        key={item.id}
+                        item={item}
+                        itemType="mcp"
+                        selected={item.id === selectedMcpItemId}
+                        compact={!!selectedMcpItemId}
+                        isInstalled={isMcpInstalled(item)}
+                        onSelect={handleSelectItem}
+                      />
+                    ))}
+                  </div>
+
+                  {/* Pagination — bottom of the main list. Only render once
+                      we actually have items to paginate. */}
+                  {visibleItems.length > 0 && paginationControl}
+                </>
+              )}
+            </section>
+          </>
         )}
       </div>
 
@@ -850,14 +822,76 @@ export function McpMarketplacePage() {
         {detailContent}
       </SlidePanel>
 
-      {/* Collision Modal — shared instance; renders only when the store
-          flips it open with an MCP-typed payload. The modal itself does not
-          differentiate skill vs MCP, but we gate by `itemType === 'mcp'`
-          so the Skill page's parallel mount does not double-render. */}
+      {/* Collision Modal — single instance shared with the Skill page. */}
       {collisionModalState.open && collisionModalState.itemType === 'mcp' && (
         <MarketplaceCollisionModal />
       )}
     </div>
+  );
+}
+
+// Decide whether the offline EmptyState should render. We only show it when
+// the visible source has no items at all *and* an error is present *and*
+// (in search mode) the search itself failed (rather than producing zero
+// hits — which `showFilterEmpty` covers separately).
+function showOfflineEmpty(isOffline: boolean, isSearchMode: boolean): boolean {
+  // The "search returned 0 results" case is handled by `showFilterEmpty`, so
+  // an empty search with a non-error finish should not look offline. We use
+  // `isOffline` (= visible.length === 0 && upstreamError) as the gate.
+  if (!isOffline) return false;
+  // In search mode, if `mcpsSearch.error === null` but items are empty, that's
+  // the "no results" case → not offline. The caller already filtered for
+  // `error !== null` via `isOffline`, so reaching here means error is truthy,
+  // and we should show the offline state regardless of mode.
+  return !isSearchMode || isOffline;
+}
+
+// ============================================================================
+// Recently Updated row — compact one-line variant of MarketplaceListItem.
+// Same visual cadence (border / hover / selected bg) but slimmer padding so
+// the section stays visually distinct from the main list without inventing
+// new design tokens.
+// ============================================================================
+
+interface RecentlyUpdatedRowProps {
+  item: MarketplaceMcpItem;
+  selected: boolean;
+  onSelect: (id: string) => void;
+}
+
+function RecentlyUpdatedRow({ item, selected, onSelect }: RecentlyUpdatedRowProps) {
+  const handleClick = () => onSelect(item.id);
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      className={`
+        flex w-full items-center gap-3 rounded-lg border px-3.5 py-2.5 text-left
+        transition-colors
+        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#18181B]
+        ${
+          selected
+            ? 'border-[#E5E5E5] bg-[#F4F4F5]'
+            : 'border-[#E5E5E5] bg-white hover:bg-[#FAFAFA]'
+        }
+      `}
+    >
+      <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-[#F4F4F5]">
+        <Plug className="h-3.5 w-3.5 text-[#52525B]" />
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <div className="flex items-center gap-2">
+          <span className="truncate text-[13px] font-medium text-[#18181B]">{item.name}</span>
+          <span className="flex-shrink-0 rounded-md border border-[#E5E5E5] px-1.5 py-0.5 text-[10px] font-medium text-[#71717A]">
+            {item.mcpType === 'stdio' ? 'stdio' : 'HTTP'}
+          </span>
+        </div>
+        <span className="truncate text-[11px] font-normal text-[#71717A]">{item.description}</span>
+      </div>
+      <span className="flex-shrink-0 text-[11px] text-[#A1A1AA]">
+        {formatRelativeTime(item.lastUpdatedAt)}
+      </span>
+    </button>
   );
 }
 

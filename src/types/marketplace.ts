@@ -124,6 +124,25 @@ export function getSkillItemKey(item: MarketplaceSkillItem): string {
   return item.name;
 }
 
+// ----- MCP listing / search response envelope ----------------------------
+
+/**
+ * Wire envelope for the V2 MCP marketplace IPCs:
+ * - `list_marketplace_mcps_page(cursor, limit)`
+ * - `search_marketplace_mcps(query, cursor, limit)`
+ *
+ * Mirrors Rust `McpsPageResponse` in
+ * `src-tauri/src/commands/marketplace.rs`.
+ *
+ * `nextCursor` is `null` when the upstream signals "no more pages";
+ * `hasMore` mirrors `nextCursor !== null` for UI convenience.
+ */
+export interface McpsPageResponse {
+  items: MarketplaceMcpItem[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
 // ----- Catalog item — MCP --------------------------------------------------
 
 /** A single MCP entry as returned by `list_marketplace_mcps`. */

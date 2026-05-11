@@ -35,6 +35,12 @@ pub fn run() {
                 // Don't fail startup on migration error, just log it
             }
 
+            // V2 (2026-05-11): MCP marketplace switched from "full GET + 24h cache" to
+            // realtime mirror. Best-effort delete of the legacy cache file so it
+            // does not linger on user disks. Failure is silent — the new IPCs
+            // do not depend on absence of this file.
+            marketplace::cleanup_legacy_mcp_cache();
+
             // If app was launched with --launch argument, hide the window initially
             // Frontend will show it if needed (when folder has no Scene)
             let args: Vec<String> = std::env::args().collect();
@@ -166,7 +172,13 @@ pub fn run() {
             marketplace::list_marketplace_skills,
             marketplace::search_marketplace_skills,
             marketplace::get_marketplace_skill_readme,
-            marketplace::list_marketplace_mcps,
+            // MCP marketplace V2 (2026-05-11): paginated realtime mirror of
+            // registry.modelcontextprotocol.io. The V1 single-GET
+            // `list_marketplace_mcps` IPC has been removed; the frontend now
+            // uses these three.
+            marketplace::list_marketplace_mcps_page,
+            marketplace::list_recently_updated_mcps,
+            marketplace::search_marketplace_mcps,
             marketplace::install_marketplace_skill,
             marketplace::install_marketplace_mcp,
             marketplace::auto_classify_marketplace_item,

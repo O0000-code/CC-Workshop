@@ -129,6 +129,7 @@ export function getSkillItemKey(item: MarketplaceSkillItem): string {
 /**
  * Wire envelope for the V2 MCP marketplace IPCs:
  * - `list_marketplace_mcps_page(cursor, limit)`
+ * - `list_recently_updated_mcps(hours_back, cursor, limit)`
  * - `search_marketplace_mcps(query, cursor, limit)`
  *
  * Mirrors Rust `McpsPageResponse` in
@@ -142,6 +143,11 @@ export interface McpsPageResponse {
   nextCursor: string | null;
   hasMore: boolean;
 }
+
+/** MCP marketplace view tab. Mirrors the Registry website's structure
+ *  (default listing + Recently Updated section), but exposed as a switch
+ *  rather than two stacked sections. */
+export type McpsView = 'all' | 'recently-updated';
 
 // ----- Catalog item — MCP --------------------------------------------------
 

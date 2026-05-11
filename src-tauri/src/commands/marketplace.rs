@@ -47,7 +47,7 @@
 //!
 //! - `list_marketplace_mcps_page(cursor, limit)` — `?limit=N&version=latest[&cursor=...]`,
 //!   page 1 merges `MCP_SEED` at the top (name dedupe).
-//! - `list_recently_updated_mcps(hours_back, limit)` — `?updated_since=<RFC3339>&limit=N&version=latest`.
+//! - `list_recently_updated_mcps(hours_back, cursor, limit)` — `?updated_since=<RFC3339>&limit=N&version=latest[&cursor=...]`; same `McpsPageResponse` envelope as the main listing.
 //! - `search_marketplace_mcps(query, cursor, limit)` — server-side `?search=<q>` substring on `name`.
 //!
 //! V1's full-catalog GET / 24h file cache (`mcps-catalog-v2.json`) /
@@ -993,15 +993,27 @@ async fn fetch_skill_readme_github(source: &str, skill_id: &str) -> Result<Strin
         return Ok(cached);
     }
 
+    // Fallback chain. Anthropic-style skills convention is SKILL.md; many
+    // non-Anthropic skills on skills.sh use README.md instead. Sub-path
+    // is the canonical location for multi-skill repos; repo root is the
+    // fallback for single-skill repos.
     let mut tried_urls: Vec<String> = Vec::new();
     if !safe_skill_id.is_empty() {
         tried_urls.push(format!(
             "https://raw.githubusercontent.com/{}/{}/HEAD/{}/SKILL.md",
             owner, repo, safe_skill_id
         ));
+        tried_urls.push(format!(
+            "https://raw.githubusercontent.com/{}/{}/HEAD/{}/README.md",
+            owner, repo, safe_skill_id
+        ));
     }
     tried_urls.push(format!(
         "https://raw.githubusercontent.com/{}/{}/HEAD/SKILL.md",
+        owner, repo
+    ));
+    tried_urls.push(format!(
+        "https://raw.githubusercontent.com/{}/{}/HEAD/README.md",
         owner, repo
     ));
 
@@ -1141,6 +1153,10 @@ fn envelope_to_item(s: RegistryServer, now: &str) -> Option<MarketplaceMcpItem> 
             .iter()
             .filter_map(|a| a.value.clone())
             .collect();
+        // Registry env vars only carry `name + description + isRequired`.
+        // `whereToFind` is `None` (no separate URL field) — the description
+        // already contains any "create a token at …" guidance, so duplicating
+        // it into `whereToFind` was producing a doubled placeholder + caption.
         let required_env_vars: Vec<EnvVarSpec> = pkg
             .package_environment_variables
             .iter()
@@ -1148,7 +1164,7 @@ fn envelope_to_item(s: RegistryServer, now: &str) -> Option<MarketplaceMcpItem> 
             .map(|e| EnvVarSpec {
                 name: e.name.clone(),
                 description: e.description.clone(),
-                where_to_find: e.description.clone(),
+                where_to_find: None,
             })
             .collect();
         (
@@ -1356,6 +1372,128 @@ pub async fn get_marketplace_skill_readme(
 }
 
 // ============================================================================
+// IPC: get_marketplace_mcp_readme (V2 — GitHub raw README + 5-min cache)
+// ============================================================================
+//
+// Registry server entries carry `repository.url` pointing at the upstream
+// GitHub repo but no README content; the detail panel needs to fetch it
+// on-demand. Tries the `.md` cases (README.md / Readme.md / readme.md)
+// at the repo root via `raw.githubusercontent.com/<owner>/<repo>/HEAD/...`.
+
+/// Extract the sub-path portion from a GitHub URL that points at a folder
+/// inside a monorepo, e.g. `https://github.com/foo/bar/tree/main/packages/x`
+/// → `Some("packages/x")`. Returns `None` for repo-root URLs.
+fn extract_github_subpath(repository_url: &str) -> Option<String> {
+    // Matches both `/tree/<branch>/...` and `/blob/<branch>/...` GitHub URL
+    // shapes. Branch segment is consumed and discarded; everything after
+    // becomes the sub-path.
+    for marker in ["/tree/", "/blob/"] {
+        if let Some(idx) = repository_url.find(marker) {
+            let rest = &repository_url[idx + marker.len()..];
+            // Skip the branch segment (everything up to the next `/`).
+            if let Some(slash) = rest.find('/') {
+                let sub = &rest[slash + 1..];
+                let sub = sub.trim_end_matches('/');
+                if !sub.is_empty() {
+                    return Some(sub.to_string());
+                }
+            }
+            // Branch-only URL (no sub-path).
+            return None;
+        }
+    }
+    None
+}
+
+async fn fetch_mcp_readme_github(repository_url: &str) -> Result<String, String> {
+    let (owner_raw, repo_raw) = parse_owner_repo_from_url(repository_url);
+    if owner_raw.is_empty() || repo_raw.is_empty() {
+        return Err(format!(
+            "Could not parse owner/repo from repository URL: {}",
+            repository_url
+        ));
+    }
+    let owner = sanitize_resource_name(&owner_raw)
+        .map_err(|e| format!("Invalid owner segment: {}", e))?;
+    let repo =
+        sanitize_resource_name(&repo_raw).map_err(|e| format!("Invalid repo segment: {}", e))?;
+
+    // Sub-path from `tree/<branch>/<sub>` (monorepo case). Each segment is
+    // sanitized; empties are filtered.
+    let safe_sub_segments: Option<Vec<String>> = extract_github_subpath(repository_url)
+        .map(|sub| {
+            sub.split('/')
+                .filter(|s| !s.is_empty())
+                .map(sanitize_resource_name)
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()
+        .map_err(|e| format!("Invalid subpath segment: {}", e))?;
+    let safe_sub = safe_sub_segments.map(|v| v.join("/")).filter(|s| !s.is_empty());
+
+    let cache_key = match &safe_sub {
+        Some(s) => format!("mcp:{}/{}/{}", owner, repo, s),
+        None => format!("mcp:{}/{}", owner, repo),
+    };
+    if let Some(cached) = readme_cache_get(&cache_key) {
+        return Ok(cached);
+    }
+
+    // Fallback chain. Sub-path first (monorepo MCPs), then repo root, each
+    // tried across README.md / Readme.md / readme.md case variants.
+    let mut tried_urls: Vec<String> = Vec::new();
+    if let Some(ref sub) = safe_sub {
+        for name in ["README.md", "Readme.md", "readme.md"] {
+            tried_urls.push(format!(
+                "https://raw.githubusercontent.com/{}/{}/HEAD/{}/{}",
+                owner, repo, sub, name
+            ));
+        }
+    }
+    for name in ["README.md", "Readme.md", "readme.md"] {
+        tried_urls.push(format!(
+            "https://raw.githubusercontent.com/{}/{}/HEAD/{}",
+            owner, repo, name
+        ));
+    }
+
+    let mut last_err = String::from("no urls tried");
+    for url in &tried_urls {
+        match marketplace_http().get(url).send().await {
+            Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
+                last_err = format!("404 at {}", url);
+                continue;
+            }
+            Ok(resp) if !resp.status().is_success() => {
+                last_err = format!("HTTP {} at {}", resp.status(), url);
+                continue;
+            }
+            Ok(resp) => match resp.text().await {
+                Ok(body) => {
+                    let truncated = truncate_readme(&body);
+                    readme_cache_put(cache_key, truncated.clone());
+                    return Ok(truncated);
+                }
+                Err(e) => {
+                    last_err = format!("read body {}: {}", url, e);
+                    continue;
+                }
+            },
+            Err(e) => {
+                last_err = format!("network {}: {}", url, e);
+                continue;
+            }
+        }
+    }
+    Err(format!("README not found ({})", last_err))
+}
+
+#[tauri::command]
+pub async fn get_marketplace_mcp_readme(repository_url: String) -> Result<String, String> {
+    fetch_mcp_readme_github(&repository_url).await
+}
+
+// ============================================================================
 // MCP seed builder (well-known servers users expect to see)
 // ============================================================================
 
@@ -1471,23 +1609,29 @@ pub async fn list_marketplace_mcps_page(
 }
 
 // ============================================================================
-// IPC: list_recently_updated_mcps (V2, 2026-05-11)
+// IPC: list_recently_updated_mcps (V2, 2026-05-11; cursor-paginated 2026-05-11)
 // ============================================================================
 //
-// Top-of-page strip mirroring the Registry website's "Recently Updated"
-// section: `?updated_since=<RFC3339>&limit=N&version=latest`. No cursor
-// concept (the caller asks for the top N entries within the time window).
+// Drives the "Recently Updated" view tab: `?updated_since=<RFC3339>&limit=N
+// &version=latest[&cursor=...]`. Cursor-paginated like the main listing
+// (the user can walk forward / back via Next / Previous), uniform
+// `McpsPageResponse` shape with `list_marketplace_mcps_page`.
 
 #[tauri::command]
 pub async fn list_recently_updated_mcps(
     app: AppHandle,
     hours_back: u32,
+    cursor: Option<String>,
     limit: u32,
-) -> Result<Vec<MarketplaceMcpItem>, String> {
+) -> Result<McpsPageResponse, String> {
     let since = chrono::Utc::now() - chrono::Duration::hours(hours_back.max(1) as i64);
     let since_rfc = since.to_rfc3339();
-    match fetch_registry_page(None, limit, None, Some(&since_rfc)).await {
-        Ok((items, _next)) => Ok(items),
+    match fetch_registry_page(cursor.as_deref(), limit, None, Some(&since_rfc)).await {
+        Ok((items, next_cursor)) => Ok(McpsPageResponse {
+            has_more: next_cursor.is_some(),
+            items,
+            next_cursor,
+        }),
         Err(e) => {
             let _ = app.emit(
                 "marketplace:upstream-error",

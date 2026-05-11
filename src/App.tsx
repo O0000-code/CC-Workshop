@@ -16,7 +16,9 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<MainLayout />}>
-          <Route index element={<Navigate to="/skills" replace />} />
+          {/* Default landing — Skill Marketplace (discovery surface,
+              entry point of the V2 closed loop). */}
+          <Route index element={<Navigate to="/marketplace-skills" replace />} />
           {/* Marketplace routes — declared before Skills/MCP to mirror the
               Sidebar's visual ordering (Marketplace above Navigation). */}
           <Route path="marketplace-skills" element={<SkillMarketplacePage />} />

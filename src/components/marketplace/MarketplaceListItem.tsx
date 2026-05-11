@@ -83,10 +83,10 @@ export interface MarketplaceListItemProps {
  *    marketplace right segment is narrower because popularity + button +
  *    optional small badge fits in less horizontal real estate (R2 §3.2).
  *
- * The whole row is wrapped in a Tooltip so hovering anywhere on the row
- * surfaces the README's first sentence (PRD §5.5 / task card item 8). The
- * Install button stops click propagation so its click does not also fire
- * `onSelect`.
+ * Row hover preview tooltip was removed (user feedback): users found it
+ * intrusive on lists with hundreds of items. The detail panel surfaces
+ * the README on demand instead. The Install button stops click propagation
+ * so its click does not also fire `onSelect`.
  */
 export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
   item,
@@ -147,17 +147,6 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
     }
     const desc = (item as MarketplaceMcpItem).description?.trim();
     return truncateToFirstSentence(desc ?? '', 100);
-  }, [item, itemType]);
-
-  // README first-sentence (≤ ~200 chars) for the hover tooltip. Falls back
-  // to the description (or source) when the README is empty.
-  const tooltipPreview = useMemo(() => {
-    const readme = item.readmeMarkdown?.trim();
-    if (readme) return truncateToFirstSentence(readme, 200);
-    const desc = item.description?.trim();
-    if (desc) return truncateToFirstSentence(desc, 200);
-    if (itemType === 'skill') return (item as MarketplaceSkillItem).source ?? '';
-    return '';
   }, [item, itemType]);
 
   // Right-section container transition: collapse immediately, expand with
@@ -242,9 +231,10 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
     );
   }
 
-  // The row body. Wrapped in a Tooltip below so the README preview surfaces
-  // on hover. The Tooltip clones the trigger and forwards a ref to the
-  // outer div, so the click handler / styling on this div remain authoritative.
+  // The row body. Renders unwrapped — hover preview tooltip removed per
+  // user feedback (Apple/Linear style: rely on the detail panel for full
+  // info, don't surface a tooltip the moment the cursor is anywhere over
+  // the row).
   const row = (
     <div
       data-marketplace-list-item
@@ -343,15 +333,7 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
     </div>
   );
 
-  // Hover tooltip — README first sentence. Skip wrapping when the preview
-  // text is empty so the Tooltip's portal doesn't render an empty bubble.
-  if (!tooltipPreview) return row;
-
-  return (
-    <Tooltip content={tooltipPreview} maxWidth={320}>
-      {row}
-    </Tooltip>
-  );
+  return row;
 };
 
 export default MarketplaceListItem;

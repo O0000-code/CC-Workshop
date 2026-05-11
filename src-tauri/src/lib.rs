@@ -172,6 +172,7 @@ pub fn run() {
             marketplace::list_marketplace_skills,
             marketplace::search_marketplace_skills,
             marketplace::get_marketplace_skill_readme,
+            marketplace::get_marketplace_mcp_readme,
             // MCP marketplace V2 (2026-05-11): paginated realtime mirror of
             // registry.modelcontextprotocol.io. The V1 single-GET
             // `list_marketplace_mcps` IPC has been removed; the frontend now

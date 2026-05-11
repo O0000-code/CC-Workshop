@@ -12,11 +12,17 @@ interface MarketplaceSourceBadgeProps {
 
 /**
  * Renders the upstream origin for a marketplace-installed Skill or MCP inside
- * the detail panel's Source / Scope row. Clicking opens the GitHub repository
+ * the detail panel's Source / Scope row. Clicking opens the upstream location
  * in the user's default browser. Two lines:
- *   - `<owner>/<repo>` — monospaced GitHub link
+ *   - `<owner>/<repo>` (or `<owner>/<repo>/<subPath>` for skills.sh items
+ *     where the skill lives in a subfolder) — monospaced GitHub link
  *   - "from skills.sh" / "from MCP Registry" — small caption identifying the
  *     upstream catalog (D-Imp-4 source kinds; spec §9 wording).
+ *
+ * For skills.sh items, `source.name` carries the skill's sub-path inside the
+ * repo (because `buildSourceFromSkillItem` populates `name = item.skillId`).
+ * We surface that as a GitHub subtree URL (`/tree/HEAD/<subPath>`) so the
+ * link points at the actual skill folder rather than the bare repo root.
  *
  * Styling follows the design language tokens already established for Source
  * row content (text-xs / text-[11px] for caption, zinc palette only). No new
@@ -27,20 +33,26 @@ export function MarketplaceSourceBadge({ source }: MarketplaceSourceBadgeProps) 
     return <span className="text-xs text-[#A1A1AA]">Unknown marketplace</span>;
   }
 
-  const sourceLabel = source.source === 'skills_sh' ? 'skills.sh' : 'MCP Registry';
-  const repoUrl = `https://github.com/${source.owner}/${source.repo}`;
+  // For skills.sh items, the `name` field carries the skill sub-path; link
+  // straight to that subfolder. For MCP / unknown, link to the bare repo.
+  const baseRepoUrl = `https://github.com/${source.owner}/${source.repo}`;
+  const hasSubPath = source.source === 'skills_sh' && source.name && source.name.length > 0;
+  const linkUrl = hasSubPath ? `${baseRepoUrl}/tree/HEAD/${source.name}` : baseRepoUrl;
+  const displayText = hasSubPath
+    ? `${source.owner}/${source.repo}/${source.name}`
+    : `${source.owner}/${source.repo}`;
 
   return (
     <div className="flex flex-col gap-0.5">
       <a
-        href={repoUrl}
+        href={linkUrl}
         target="_blank"
         rel="noopener noreferrer"
-        className="font-mono text-xs text-[#18181B] hover:underline"
+        className="font-mono text-xs text-[#18181B] underline decoration-[#18181B] underline-offset-[3px] transition-[font-weight] hover:font-medium"
       >
-        {source.owner}/{source.repo}
+        {displayText}
       </a>
-      <span className="text-[11px] text-[#A1A1AA]">from {sourceLabel}</span>
+      <span className="text-[11px] text-[#A1A1AA]">From GitHub</span>
     </div>
   );
 }

@@ -356,10 +356,22 @@ export function Sidebar({
           </div>
         </nav>
 
-        {/* Divider — Marketplace → Navigation. Mirror of NAV→CATEGORIES
+        {/* Divider — Marketplace → Library. Mirror of NAV→CATEGORIES
             at :314 below; uses divider token (#E4E4E7), not the page-chrome
             border token (#E5E5E5). */}
         <div className="h-px bg-[#E4E4E7] my-4 flex-shrink-0" />
+
+        {/* Library Section Header — section label mirroring Marketplace /
+            Categories. Covers the nav items below (Skills / MCP Servers /
+            CLAUDE.md / Scenes / Projects), naming the user's managed
+            resource library as a distinct group from Marketplace (the
+            upstream discovery surface) and Categories (the organisational
+            facet). */}
+        <div className="flex items-center justify-between flex-shrink-0 mb-3">
+          <h3 className="text-[10px] font-semibold text-[#A1A1AA] uppercase tracking-[0.8px]">
+            Library
+          </h3>
+        </div>
 
         {/* Navigation Section - 固定，不滚动 */}
         <nav className="flex flex-col gap-0.5 flex-shrink-0">

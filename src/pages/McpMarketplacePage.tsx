@@ -7,29 +7,35 @@ import { MarketplaceListItem } from '@/components/marketplace/MarketplaceListIte
 import { MarketplaceCollisionModal } from '@/components/marketplace/MarketplaceCollisionModal';
 import { MarketplaceSourceBadge } from '@/components/marketplace/MarketplaceSourceBadge';
 import { AddToSceneTriggerButton } from '@/components/marketplace/MarketplaceShortcutBanner';
+import { SyncIndicator } from '@/components/marketplace/SyncIndicator';
 import { safeInvoke } from '@/utils/tauri';
 import { useMarketplaceStore } from '@/stores/marketplaceStore';
 import { useMcpsStore } from '@/stores/mcpsStore';
 import { useScenesStore } from '@/stores/scenesStore';
-import type { EnvVarSpec, MarketplaceMcpItem, MarketplaceSource } from '@/types/marketplace';
+import type {
+  EnvVarSpec,
+  MarketplaceMcpItem,
+  MarketplaceSource,
+  McpsView,
+} from '@/types/marketplace';
 
 // ============================================================================
 // McpMarketplacePage — V2.0 Marketplace MCP (realtime registry mirror)
 // ============================================================================
 //
 // Mirrors the Official MCP Registry website
-// (`registry.modelcontextprotocol.io/`) one-for-one:
+// (`registry.modelcontextprotocol.io/`):
 //
 //   1. Search-by-name input in the header (Registry's `?search=` is name-only).
-//   2. "Recently Updated" strip — 9 most-recently-updated servers in the last
-//      24h. Hidden in search mode.
-//   3. Main paginated list — 96 servers per page, with Previous / Next buttons.
+//   2. View tab — All Servers / Recently Updated (the Registry website's
+//      two visible views; surfaced as a switch instead of stacked sections).
+//   3. Main paginated list — 96 servers per page, Previous / Next buttons.
 //   4. Detail SlidePanel — unchanged from V1 (info / source card / README /
 //      Configuration block with stdio env-var inputs or HTTP url).
 //
 // What this page does NOT do (V2 explicit out-of-scope):
 //   - No infinite scroll (Registry uses explicit pagination)
-//   - No view tab / sort dropdown / Refresh button
+//   - No sort dropdown / Refresh button
 //   - No "Page N of M" total-page indicator (cursor opaque)
 //   - No new design tokens, colours, or animation curves
 // ============================================================================
@@ -127,7 +133,6 @@ function findLocalMcpId(
 export function McpMarketplacePage() {
   // ----- Marketplace store slice -----
   const mcpsListing = useMarketplaceStore((s) => s.mcpsListing);
-  const mcpsRecentlyUpdated = useMarketplaceStore((s) => s.mcpsRecentlyUpdated);
   const mcpsSearch = useMarketplaceStore((s) => s.mcpsSearch);
   const selectedMcpItemId = useMarketplaceStore((s) => s.selectedMcpItemId);
   const collisionModalState = useMarketplaceStore((s) => s.collisionModalState);
@@ -135,7 +140,7 @@ export function McpMarketplacePage() {
   const loadMcpsFirstPage = useMarketplaceStore((s) => s.loadMcpsFirstPage);
   const loadMcpsNextPage = useMarketplaceStore((s) => s.loadMcpsNextPage);
   const loadMcpsPrevPage = useMarketplaceStore((s) => s.loadMcpsPrevPage);
-  const loadRecentlyUpdated = useMarketplaceStore((s) => s.loadRecentlyUpdated);
+  const setMcpsView = useMarketplaceStore((s) => s.setMcpsView);
   const searchMcps = useMarketplaceStore((s) => s.searchMcps);
   const searchMcpsNextPage = useMarketplaceStore((s) => s.searchMcpsNextPage);
   const searchMcpsPrevPage = useMarketplaceStore((s) => s.searchMcpsPrevPage);
@@ -161,23 +166,13 @@ export function McpMarketplacePage() {
 
   // ----- Effects -----
 
-  // Initial load on mount: parallel fetch of main list + Recently Updated.
-  // We re-trigger only when the relevant slice is empty + has no pending
-  // error, so navigating away and back doesn't re-fetch needlessly.
+  // Initial load on mount: consult the SWR cache. Fresh → noop; stale →
+  // silent SWR; beyond stale (or empty) → foreground fetch.
   const didMountRef = useRef(false);
   useEffect(() => {
     if (didMountRef.current) return;
     didMountRef.current = true;
-    if (mcpsListing.items.length === 0 && !mcpsListing.error && !mcpsListing.loading) {
-      void loadMcpsFirstPage();
-    }
-    if (
-      mcpsRecentlyUpdated.items.length === 0 &&
-      !mcpsRecentlyUpdated.error &&
-      !mcpsRecentlyUpdated.loading
-    ) {
-      void loadRecentlyUpdated();
-    }
+    void loadMcpsFirstPage(undefined, 'auto');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -205,25 +200,14 @@ export function McpMarketplacePage() {
   const showFilterEmpty =
     isSearchMode && !mcpsSearch.loading && mcpsSearch.items.length === 0 && !mcpsSearch.error;
   const showInitialLoading = !isSearchMode && mcpsListing.loading && visibleItems.length === 0;
-  // The Recently Updated strip is hidden in search mode and when it has no
-  // entries to show (avoids a stray section header pointing at empty space).
-  const showRecentlyUpdated =
-    !isSearchMode &&
-    (mcpsRecentlyUpdated.items.length > 0 ||
-      mcpsRecentlyUpdated.loading ||
-      !!mcpsRecentlyUpdated.error);
 
   // ----- Selected detail item -----
-  // The selected id is keyed by `item.id`. It might live either in the
-  // visible items (listing or search) or in Recently Updated. Look in both.
+  // The selected id is keyed by `item.id`; look it up in the currently-
+  // visible source (listing or search results).
   const selectedItem = useMemo<MarketplaceMcpItem | null>(() => {
     if (!selectedMcpItemId) return null;
-    return (
-      visibleItems.find((m) => m.id === selectedMcpItemId) ??
-      mcpsRecentlyUpdated.items.find((m) => m.id === selectedMcpItemId) ??
-      null
-    );
-  }, [visibleItems, mcpsRecentlyUpdated.items, selectedMcpItemId]);
+    return visibleItems.find((m) => m.id === selectedMcpItemId) ?? null;
+  }, [visibleItems, selectedMcpItemId]);
 
   // Close the detail panel when the selected item disappears from view
   // (e.g. user clicked Next page while the panel for an old-page item was
@@ -299,6 +283,12 @@ export function McpMarketplacePage() {
   const handleSelectItem = (id: string) => selectMcpItem(id);
   const handleCloseDetail = () => selectMcpItem(null);
   const handleInstall = (item: MarketplaceMcpItem) => void installMcp(item);
+
+  const handleViewChange = (view: McpsView) => {
+    if (view === mcpsListing.view && !isSearchMode) return;
+    setSearchQuery('');
+    void setMcpsView(view);
+  };
 
   const handleEnvChange = (itemId: string, name: string, value: string) => {
     setEnvValues((prev) => ({
@@ -437,28 +427,20 @@ export function McpMarketplacePage() {
                   return (
                     <div
                       key={spec.name}
-                      className={`flex flex-col gap-1.5 px-3.5 py-3 ${
+                      className={`flex flex-col gap-2 px-3.5 py-3 ${
                         !isLastRow ? 'border-b border-[#E5E5E5]' : ''
                       }`}
                     >
-                      <div className="flex items-center gap-3">
-                        <span className="w-24 flex-shrink-0 text-xs font-medium text-[#71717A]">
+                      {/* Top row: env-var name (full width, monospace,
+                          breakable for very long identifiers) + optional
+                          "Where to find →" link on the right. Stacked
+                          layout (label above input) avoids fixed-width
+                          label column clipping long names like
+                          GITHUB_PERSONAL_ACCESS_TOKEN. */}
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="font-mono text-xs font-medium text-[#18181B] break-all">
                           {spec.name}
                         </span>
-                        <div className="min-w-0 flex-1">
-                          <Input
-                            value={value}
-                            placeholder={
-                              spec.whereToFind && !hintIsUrl
-                                ? spec.whereToFind
-                                : `Enter ${spec.name}`
-                            }
-                            onChange={(e) =>
-                              handleEnvChange(selectedItem.id, spec.name, e.target.value)
-                            }
-                            error={isMissing ? 'Required' : undefined}
-                          />
-                        </div>
                         {hintIsUrl && spec.whereToFind && (
                           <a
                             href={spec.whereToFind}
@@ -470,8 +452,16 @@ export function McpMarketplacePage() {
                           </a>
                         )}
                       </div>
+                      <Input
+                        value={value}
+                        placeholder={`Enter ${spec.name}`}
+                        onChange={(e) =>
+                          handleEnvChange(selectedItem.id, spec.name, e.target.value)
+                        }
+                        error={isMissing ? 'Required' : undefined}
+                      />
                       {spec.description && (
-                        <span className="ml-[7.5rem] text-[11px] font-normal text-[#A1A1AA]">
+                        <span className="text-[11px] font-normal leading-relaxed text-[#71717A]">
                           {spec.description}
                         </span>
                       )}
@@ -587,27 +577,25 @@ export function McpMarketplacePage() {
         )}
 
         <div className="flex flex-col gap-3 rounded-lg border border-[#E5E5E5] p-4">
-          <div className="flex items-center justify-between gap-2.5">
-            <span className="text-xs font-medium text-[#71717A]">Source</span>
-            <MarketplaceSourceBadge
-              source={
-                {
-                  source: 'mcp_registry',
-                  owner: selectedItem.author,
-                  repo:
-                    selectedItem.repositoryUrl
-                      .replace(/^https?:\/\/github\.com\//, '')
-                      .replace(/\.git$/, '')
-                      .split('/')
-                      .slice(-1)[0] || selectedItem.name,
-                  name: selectedItem.name,
-                  lastSyncedAt: selectedItem.lastUpdatedAt,
-                } as MarketplaceSource
-              }
-            />
-          </div>
+          <span className="text-xs font-medium text-[#71717A]">Source</span>
+          <MarketplaceSourceBadge
+            source={
+              {
+                source: 'mcp_registry',
+                owner: selectedItem.author,
+                repo:
+                  selectedItem.repositoryUrl
+                    .replace(/^https?:\/\/github\.com\//, '')
+                    .replace(/\.git$/, '')
+                    .split('/')
+                    .slice(-1)[0] || selectedItem.name,
+                name: selectedItem.name,
+                lastSyncedAt: selectedItem.lastUpdatedAt,
+              } as MarketplaceSource
+            }
+          />
           {usedInScenesCount > 0 && (
-            <div className="flex items-center gap-2.5">
+            <div className="mt-1 flex items-baseline gap-2.5">
               <span className="text-xs font-medium text-[#71717A]">Used in</span>
               <span className="text-xs font-medium text-[#18181B]">
                 {usedInScenesCount} {usedInScenesCount === 1 ? 'Scene' : 'Scenes'}
@@ -617,34 +605,26 @@ export function McpMarketplacePage() {
         </div>
       </section>
 
-      {/* Block 3: README. */}
-      <section className="flex flex-col gap-3">
-        <h3 className="text-sm font-semibold text-[#18181B]">README</h3>
-        <div
-          className="overflow-y-auto rounded-lg border border-[#E5E5E5] bg-white p-4"
-          style={{ maxHeight: 480 }}
-        >
-          {selectedItem.readmeMarkdown && selectedItem.readmeMarkdown.trim().length > 0 ? (
-            <p className="whitespace-pre-wrap text-xs leading-relaxed text-[#52525B]">
-              {selectedItem.readmeMarkdown}
-            </p>
-          ) : (
-            <p className="text-xs text-[#A1A1AA]">No README provided.</p>
-          )}
-        </div>
-      </section>
+      {/* Block 3: README — on-demand fetch (mirrors Skill detail). */}
+      <McpReadmeBlock item={selectedItem} />
 
       {/* Block 4: Configuration. */}
       {configurationBlock}
     </div>
   );
 
-  // ----- Section header subcomponent (uppercase 11px). -----
-  const SectionHeader = ({ children }: { children: React.ReactNode }) => (
-    <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[#71717A]">
-      {children}
-    </h3>
-  );
+  // ----- Status line (Skill page parity: 11px neutral grey, single row
+  // describing source · view, with search-mode variant). -----
+  const statusLine = useMemo(() => {
+    if (isSearchMode) {
+      if (mcpsSearch.loading && mcpsSearch.items.length === 0) return null;
+      if (mcpsSearch.items.length === 0) return null;
+      return `Live from MCP Registry · Results for "${mcpsSearch.query}"`;
+    }
+    const viewLabel =
+      mcpsListing.view === 'recently-updated' ? 'Recently Updated (24h)' : 'All Servers';
+    return `Live from MCP Registry · ${viewLabel}`;
+  }, [isSearchMode, mcpsSearch, mcpsListing.view]);
 
   // ----- Pagination control subcomponent. -----
   const paginationControl = (() => {
@@ -692,6 +672,7 @@ export function McpMarketplacePage() {
         searchValue={searchQuery}
         onSearchChange={handleSearchChange}
         searchPlaceholder="Search by server name..."
+        actions={<ViewTabBar active={mcpsListing.view} onChange={handleViewChange} />}
       />
 
       {/* Upstream error banner — shown alongside existing items. */}
@@ -716,9 +697,21 @@ export function McpMarketplacePage() {
           ${selectedMcpItemId ? 'mr-[800px]' : ''}
         `}
       >
-        {/* Search-scope hint — explicit cue that the upstream's search field
-            is name-only, not full-text. */}
-        <p className="mb-5 text-[11px] text-[#71717A]">Search by name (Registry limitation)</p>
+        {/* Status line — Skill page parity: 11px neutral grey, single row
+            describing source + active view (or search context) + sync icon. */}
+        {statusLine && (
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <span className="text-[11px] text-[#A1A1AA]">{statusLine}</span>
+            {!isSearchMode && (
+              <SyncIndicator
+                isSyncing={mcpsListing.loading || mcpsListing.isBackgroundSyncing}
+                hasError={!!mcpsListing.error && !mcpsListing.loading}
+                lastSyncedAt={mcpsListing.lastSyncedAt}
+                onClick={() => void loadMcpsFirstPage(undefined, 'force')}
+              />
+            )}
+          </div>
+        )}
 
         {showOfflineEmpty(isOffline, isSearchMode) ? (
           <div className="flex h-full items-center justify-center">
@@ -739,40 +732,9 @@ export function McpMarketplacePage() {
           </div>
         ) : (
           <>
-            {/* Recently Updated section — hidden in search mode. */}
-            {showRecentlyUpdated && (
-              <section className="mb-7">
-                <SectionHeader>Recently Updated</SectionHeader>
-                {mcpsRecentlyUpdated.loading && mcpsRecentlyUpdated.items.length === 0 ? (
-                  <div className="flex items-center gap-2 rounded-lg border border-[#E5E5E5] px-3.5 py-3 text-[12px] text-[#A1A1AA]">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    <span>Loading recent updates...</span>
-                  </div>
-                ) : mcpsRecentlyUpdated.error && mcpsRecentlyUpdated.items.length === 0 ? (
-                  <div className="rounded-lg border border-[#E5E5E5] px-3.5 py-3 text-[12px] text-[#A1A1AA]">
-                    Recently updated section unavailable.
-                  </div>
-                ) : mcpsRecentlyUpdated.items.length > 0 ? (
-                  <div className="flex flex-col gap-2">
-                    {mcpsRecentlyUpdated.items.map((item) => (
-                      <RecentlyUpdatedRow
-                        key={item.id}
-                        item={item}
-                        selected={item.id === selectedMcpItemId}
-                        onSelect={handleSelectItem}
-                      />
-                    ))}
-                  </div>
-                ) : null}
-              </section>
-            )}
-
-            {/* Main list section. */}
+            {/* Main list section. Heading is now absorbed into the status
+                line above; this section just holds the list + pagination. */}
             <section>
-              <SectionHeader>
-                {isSearchMode ? `Results for "${mcpsSearch.query}"` : 'All Servers'}
-              </SectionHeader>
-
               {showFilterEmpty ? (
                 <div className="flex h-full items-center justify-center py-12">
                   <EmptyState
@@ -847,51 +809,115 @@ function showOfflineEmpty(isOffline: boolean, isSearchMode: boolean): boolean {
 }
 
 // ============================================================================
-// Recently Updated row — compact one-line variant of MarketplaceListItem.
-// Same visual cadence (border / hover / selected bg) but slimmer padding so
-// the section stays visually distinct from the main list without inventing
-// new design tokens.
+// McpReadmeBlock — detail panel README region. Fetches the repo's README on
+// mount (memoised in the store keyed by repositoryUrl; 5-min TTL). Renders
+// loading / error+retry / content / "No README provided" states. Mirrors
+// the Skill detail panel's README block.
 // ============================================================================
 
-interface RecentlyUpdatedRowProps {
-  item: MarketplaceMcpItem;
-  selected: boolean;
-  onSelect: (id: string) => void;
+function McpReadmeBlock({ item }: { item: MarketplaceMcpItem }) {
+  const mcpReadmes = useMarketplaceStore((s) => s.mcpReadmes);
+  const loadingMcpReadmes = useMarketplaceStore((s) => s.loadingMcpReadmes);
+  const mcpReadmeErrors = useMarketplaceStore((s) => s.mcpReadmeErrors);
+  const loadMcpReadme = useMarketplaceStore((s) => s.loadMcpReadme);
+
+  const key = item.repositoryUrl;
+  const cached = key ? mcpReadmes[key] : undefined;
+  const isLoading = key ? loadingMcpReadmes.has(key) : false;
+  const error = key ? mcpReadmeErrors[key] : undefined;
+  const hasRepo = !!key && key.length > 0;
+
+  useEffect(() => {
+    if (!hasRepo) return;
+    void loadMcpReadme(key);
+  }, [key, hasRepo, loadMcpReadme]);
+
+  return (
+    <section className="flex flex-col gap-3">
+      <h3 className="text-sm font-semibold text-[#18181B]">README</h3>
+      <div
+        className="overflow-y-auto rounded-lg border border-[#E5E5E5] bg-white p-4"
+        style={{ maxHeight: 480 }}
+      >
+        {!hasRepo ? (
+          <p className="text-xs text-[#A1A1AA]">No repository URL provided.</p>
+        ) : isLoading && !cached ? (
+          <div className="flex items-center gap-2 text-xs text-[#A1A1AA]">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span>Loading README...</span>
+          </div>
+        ) : error && !cached ? (
+          <div className="flex flex-col gap-2">
+            <p className="text-xs text-[#DC2626]">Failed to load README.</p>
+            <button
+              type="button"
+              onClick={() => void loadMcpReadme(key)}
+              className="self-start text-xs font-medium text-[#18181B] underline"
+            >
+              Retry
+            </button>
+          </div>
+        ) : cached?.content && cached.content.trim().length > 0 ? (
+          <pre className="whitespace-pre-wrap break-words font-sans text-xs leading-relaxed text-[#52525B]">
+            {cached.content}
+          </pre>
+        ) : (
+          <p className="text-xs text-[#A1A1AA]">No README provided.</p>
+        )}
+      </div>
+    </section>
+  );
 }
 
-function RecentlyUpdatedRow({ item, selected, onSelect }: RecentlyUpdatedRowProps) {
-  const handleClick = () => onSelect(item.id);
+// ============================================================================
+// ViewTabBar — segmented control for switching All Servers / Recently Updated.
+// Same tokens as the Skill page's view tab (active = bg-[#F4F4F5] +
+// font-semibold; inactive = font-medium text-[#71717A]) per design-language
+// constraints.
+// ============================================================================
+
+const VIEW_TABS: { value: McpsView; label: string }[] = [
+  { value: 'all', label: 'All Servers' },
+  { value: 'recently-updated', label: 'Recently Updated' },
+];
+
+function ViewTabBar({
+  active,
+  onChange,
+}: {
+  active: McpsView;
+  onChange: (view: McpsView) => void;
+}) {
   return (
-    <button
-      type="button"
-      onClick={handleClick}
-      className={`
-        flex w-full items-center gap-3 rounded-lg border px-3.5 py-2.5 text-left
-        transition-colors
-        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#18181B]
-        ${
-          selected
-            ? 'border-[#E5E5E5] bg-[#F4F4F5]'
-            : 'border-[#E5E5E5] bg-white hover:bg-[#FAFAFA]'
-        }
-      `}
+    <div
+      className="flex items-center gap-0.5 rounded-md border border-[#E5E5E5] p-0.5"
+      role="tablist"
+      aria-label="MCP listing view"
     >
-      <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-[#F4F4F5]">
-        <Plug className="h-3.5 w-3.5 text-[#52525B]" />
-      </div>
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-[13px] font-medium text-[#18181B]">{item.name}</span>
-          <span className="flex-shrink-0 rounded-md border border-[#E5E5E5] px-1.5 py-0.5 text-[10px] font-medium text-[#71717A]">
-            {item.mcpType === 'stdio' ? 'stdio' : 'HTTP'}
-          </span>
-        </div>
-        <span className="truncate text-[11px] font-normal text-[#71717A]">{item.description}</span>
-      </div>
-      <span className="flex-shrink-0 text-[11px] text-[#A1A1AA]">
-        {formatRelativeTime(item.lastUpdatedAt)}
-      </span>
-    </button>
+      {VIEW_TABS.map((tab) => {
+        const isActive = tab.value === active;
+        return (
+          <button
+            key={tab.value}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            onClick={() => onChange(tab.value)}
+            className={`
+              h-7 rounded-[4px] px-3 text-[12px] transition-colors
+              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#18181B]
+              ${
+                isActive
+                  ? 'bg-[#F4F4F5] font-semibold text-[#18181B]'
+                  : 'font-medium text-[#71717A] hover:bg-[#FAFAFA] hover:text-[#18181B]'
+              }
+            `}
+          >
+            {tab.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

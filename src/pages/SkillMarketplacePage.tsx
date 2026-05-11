@@ -8,6 +8,7 @@ import { MarketplaceListItem } from '@/components/marketplace/MarketplaceListIte
 import { MarketplaceCollisionModal } from '@/components/marketplace/MarketplaceCollisionModal';
 import { MarketplaceSourceBadge } from '@/components/marketplace/MarketplaceSourceBadge';
 import { AddToSceneTriggerButton } from '@/components/marketplace/MarketplaceShortcutBanner';
+import { SyncIndicator } from '@/components/marketplace/SyncIndicator';
 import { useMarketplaceStore } from '@/stores/marketplaceStore';
 import { useSkillsStore } from '@/stores/skillsStore';
 import type { MarketplaceSkillItem, MarketplaceSource, SkillsView } from '@/types/marketplace';
@@ -106,10 +107,12 @@ export function SkillMarketplacePage() {
   // Search input — locally controlled with debounce → store.searchSkills.
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // ── Mount: kick off a single page-0 load for the default view.
+  // ── Mount: consult the SWR cache. Fresh → noop; stale → silent SWR;
+  // beyond stale (or empty cache) → foreground fetch.
   useEffect(() => {
-    void loadSkillsPage('all-time', 0);
-    // The action is zustand-stable, so this is a one-shot mount.
+    void loadSkillsPage(skillsListing.view, 0, 'auto');
+    // We deliberately read `view` lazily via the store (one-shot mount).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadSkillsPage]);
 
   // ── Debounce the search input → call searchSkills / clearSkillsSearch.
@@ -331,10 +334,18 @@ export function SkillMarketplacePage() {
           </div>
         )}
 
-        {/* Status line — live count + view / search context. */}
+        {/* Status line — live count + view / search context + sync icon. */}
         {statusLine && (
           <div className="mb-4 flex items-center justify-between gap-3">
             <span className="text-[11px] text-[#A1A1AA]">{statusLine}</span>
+            {!isSearchMode && (
+              <SyncIndicator
+                isSyncing={skillsListing.isLoadingPage || skillsListing.isBackgroundSyncing}
+                hasError={!!skillsListing.upstreamError && !skillsListing.isLoadingPage}
+                lastSyncedAt={skillsListing.lastSyncedAt}
+                onClick={() => void loadSkillsPage(skillsListing.view, 0, 'force')}
+              />
+            )}
           </div>
         )}
 
@@ -659,7 +670,10 @@ function SkillDetailContent({ item }: { item: MarketplaceSkillItem }) {
             }
           />
         )}
-        <InfoItem label="Author" value={item.author || item.owner || '—'} />
+        <InfoItem
+          label="Author"
+          value={item.author || item.owner || item.source?.split('/')[0] || '—'}
+        />
       </div>
 
       {/* Block 2 — Provenance card. */}

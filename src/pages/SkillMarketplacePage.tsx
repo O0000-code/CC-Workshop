@@ -47,6 +47,13 @@ import { getSkillItemKey } from '@/types/marketplace';
  * installation. Mirrors what backend writes to metadata after install
  * (D-Imp-4 / spec §4.1) — derived from V2 `source` + `skillId` first,
  * falling back to V1 `owner` / `repo` when present.
+ *
+ * `repoSubpath` is a **best-effort guess** at the in-repo layout: ~95% of
+ * skills.sh-curated repos house skills under `skills/<id>/` (anthropics/skills,
+ * vercel-labs/skills, microsoft/azure-skills, obra/superpowers). The link
+ * lands on that folder when the guess is right, and on a 404 → Return to repo
+ * overview when wrong (plugin-nested layouts). The post-install path swaps
+ * this with the **measured** subpath captured by the codeload helper.
  */
 function buildSourceFromSkillItem(item: MarketplaceSkillItem): MarketplaceSource {
   let owner = item.owner ?? '';
@@ -58,11 +65,22 @@ function buildSourceFromSkillItem(item: MarketplaceSkillItem): MarketplaceSource
       repo = repo || parts[1];
     }
   }
+  const skillId = item.skillId ?? '';
+  // skill_path (V1) wins over best-guess when supplied; otherwise infer
+  // `skills/<id>` for bare short-name IDs; otherwise pass through (already
+  // qualified, e.g. `skills/find-skills`).
+  let repoSubpath: string | undefined;
+  if (item.skillPath && item.skillPath.length > 0) {
+    repoSubpath = item.skillPath;
+  } else if (skillId.length > 0) {
+    repoSubpath = skillId.includes('/') ? skillId : `skills/${skillId}`;
+  }
   return {
     source: 'skills_sh',
     owner,
     repo,
-    name: item.skillId || item.name,
+    name: skillId || item.name,
+    repoSubpath,
     lastSyncedAt: item.lastUpdatedAt ?? '',
   };
 }

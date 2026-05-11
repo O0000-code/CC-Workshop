@@ -12,17 +12,19 @@ interface MarketplaceSourceBadgeProps {
 
 /**
  * Renders the upstream origin for a marketplace-installed Skill or MCP inside
- * the detail panel's Source / Scope row. Clicking opens the upstream location
- * in the user's default browser. Two lines:
- *   - `<owner>/<repo>` (or `<owner>/<repo>/<subPath>` for skills.sh items
- *     where the skill lives in a subfolder) — monospaced GitHub link
- *   - "from skills.sh" / "from MCP Registry" — small caption identifying the
- *     upstream catalog (D-Imp-4 source kinds; spec §9 wording).
+ * the detail panel's Source row. Clicking opens the GitHub folder where the
+ * resource actually lives. Two lines:
+ *   - `<owner>/<repo>` for MCPs (and legacy skill installs predating
+ *     `repoSubpath`), or `<owner>/<repo>/<last-path-segment>` for skills
+ *     whose `repoSubpath` was captured at install time — monospaced
+ *     GitHub link.
+ *   - "From GitHub" — small caption.
  *
- * For skills.sh items, `source.name` carries the skill's sub-path inside the
- * repo (because `buildSourceFromSkillItem` populates `name = item.skillId`).
- * We surface that as a GitHub subtree URL (`/tree/HEAD/<subPath>`) so the
- * link points at the actual skill folder rather than the bare repo root.
+ * URL construction uses `source.repoSubpath` (captured by the codeload
+ * install helper from the tarball's actual layout) rather than
+ * `source.name` (which is the display name from the upstream catalog,
+ * not a path inside the repo — using `name` produces 404s for skills
+ * whose display name differs from their on-disk directory).
  *
  * Styling follows the design language tokens already established for Source
  * row content (text-xs / text-[11px] for caption, zinc palette only). No new
@@ -33,13 +35,18 @@ export function MarketplaceSourceBadge({ source }: MarketplaceSourceBadgeProps) 
     return <span className="text-xs text-[#A1A1AA]">Unknown marketplace</span>;
   }
 
-  // For skills.sh items, the `name` field carries the skill sub-path; link
-  // straight to that subfolder. For MCP / unknown, link to the bare repo.
   const baseRepoUrl = `https://github.com/${source.owner}/${source.repo}`;
-  const hasSubPath = source.source === 'skills_sh' && source.name && source.name.length > 0;
-  const linkUrl = hasSubPath ? `${baseRepoUrl}/tree/HEAD/${source.name}` : baseRepoUrl;
+  const subPath = source.repoSubpath?.trim() ?? '';
+  const hasSubPath = subPath.length > 0;
+
+  // Show the final segment of the path for a compact display (e.g.
+  // `microsoft-foundry` for `.github/plugins/azure-skills/skills/microsoft-foundry`).
+  // The URL itself still uses the full path so the link is accurate.
+  const lastSegment = hasSubPath ? (subPath.split('/').filter(Boolean).pop() ?? '') : '';
+
+  const linkUrl = hasSubPath ? `${baseRepoUrl}/tree/HEAD/${subPath}` : baseRepoUrl;
   const displayText = hasSubPath
-    ? `${source.owner}/${source.repo}/${source.name}`
+    ? `${source.owner}/${source.repo}/${lastSegment}`
     : `${source.owner}/${source.repo}`;
 
   return (

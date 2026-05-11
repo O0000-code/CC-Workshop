@@ -19,6 +19,11 @@ export interface MarketplaceSource {
   owner: string;
   repo: string;
   name: string;
+  /** Repo-internal path where the resource lives, e.g. `skills/azure-ai`.
+   *  Used by `MarketplaceSourceBadge` to build a GitHub subtree URL that
+   *  points at the actual install folder. `undefined` for legacy installs
+   *  predating this field — Badge falls back to the bare repo root. */
+  repoSubpath?: string;
   lastSyncedAt: string;
 }
 

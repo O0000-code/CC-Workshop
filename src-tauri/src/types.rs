@@ -1072,6 +1072,15 @@ pub struct MarketplaceSource {
     /// frontmatter name; for MCPs it is the MCP Registry server name.
     /// Combined with `owner` + `repo` to form the SSoT identity triple.
     pub name: String,
+    /// Repo-internal path where the skill actually lives, e.g.
+    /// `skills/azure-ai` or `.github/plugins/azure-skills/skills/microsoft-foundry`.
+    /// Captured at install time from the codeload tarball's actual layout,
+    /// so the detail panel's "From GitHub" link can navigate to the real
+    /// skill folder rather than guessing from `name` (which is the display
+    /// name, not the path). `None` for legacy installs predating this field,
+    /// for which the link falls back to the bare repo root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_subpath: Option<String>,
     /// ISO 8601 timestamp of the last successful upstream sync at the time
     /// of install. V1.5 may use this to surface "update available" hints.
     pub last_synced_at: String,

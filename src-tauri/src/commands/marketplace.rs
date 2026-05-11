@@ -1836,13 +1836,18 @@ pub async fn refresh_marketplace_cache(app: AppHandle, source: String) -> Result
 /// (symlinks, hard links, devices are skipped). `tar::Entry::unpack`
 /// additionally rejects paths escaping the destination on a best-effort
 /// basis. See `.claude/rules/verify-third-party-behavior-firsthand.md`.
+/// Returns the repo-internal sub-path that was actually extracted (e.g.
+/// `skills/azure-ai` or `.github/plugins/azure-skills/skills/microsoft-foundry`),
+/// stripped of the `<repo>-HEAD/` archive prefix and the trailing slash.
+/// The caller persists this into `MarketplaceSource.repo_subpath` so the
+/// detail-panel "From GitHub" link points at the real folder.
 async fn install_skill_via_codeload(
     owner: &str,
     repo: &str,
     candidate_paths: &[String],
     skill_id: &str,
     dest_dir: &std::path::Path,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let url = format!("https://codeload.github.com/{}/{}/tar.gz/HEAD", owner, repo);
     let resp = marketplace_http()
         .get(&url)
@@ -2010,7 +2015,15 @@ async fn install_skill_via_codeload(
             base_prefix
         ));
     }
-    Ok(())
+
+    // Strip `<repo>-HEAD/` prefix + trailing `/` to get the repo-internal
+    // path (e.g. `skills/azure-ai`). Empty result means "skill at repo root".
+    let repo_subpath = base_prefix
+        .strip_prefix(&archive_top)
+        .unwrap_or(&base_prefix)
+        .trim_end_matches('/')
+        .to_string();
+    Ok(repo_subpath)
 }
 
 /// Derive `(owner, repo, skill_path)` for the GitHub Contents API from a
@@ -2129,7 +2142,10 @@ pub async fn install_marketplace_skill(
             });
         }
         fs::rename(&src, &target_dir).map_err(|e| format!("restore from trash: {}", e))?;
-        return finalize_skill_install(app, &item, target_dir).await;
+        // Restore path can't know the upstream repo-internal layout without
+        // re-fetching; pass `None` and let the Source link fall back to the
+        // bare repo root.
+        return finalize_skill_install(app, &item, target_dir, None).await;
     }
 
     // -- Download path (None and Replace both reach here once the path is clear)
@@ -2158,7 +2174,7 @@ pub async fn install_marketplace_skill(
     };
 
     let _ = fs::remove_dir_all(&target_dir);
-    if let Err(e) = install_skill_via_codeload(
+    let repo_subpath = match install_skill_via_codeload(
         &owner,
         &repo,
         &candidate_paths,
@@ -2167,11 +2183,14 @@ pub async fn install_marketplace_skill(
     )
     .await
     {
-        let _ = fs::remove_dir_all(&target_dir);
-        return Ok(InstallOutcome::Failed {
-            reason: format!("Could not install skill: {}", e),
-        });
-    }
+        Ok(path) => path,
+        Err(e) => {
+            let _ = fs::remove_dir_all(&target_dir);
+            return Ok(InstallOutcome::Failed {
+                reason: format!("Could not install skill: {}", e),
+            });
+        }
+    };
 
     // Defence in depth: the codeload helper only selects a base prefix
     // when it sees SKILL.md / README.md among the tarball entries, but
@@ -2183,13 +2202,14 @@ pub async fn install_marketplace_skill(
         });
     }
 
-    finalize_skill_install(app, &item, target_dir).await
+    finalize_skill_install(app, &item, target_dir, Some(repo_subpath)).await
 }
 
 async fn finalize_skill_install(
     app: AppHandle,
     item: &MarketplaceSkillItem,
     target_dir: std::path::PathBuf,
+    repo_subpath: Option<String>,
 ) -> Result<InstallOutcome, String> {
     let skill_id = target_dir.to_string_lossy().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -2238,6 +2258,7 @@ async fn finalize_skill_install(
             owner,
             repo,
             name: item.name.clone(),
+            repo_subpath: repo_subpath.clone(),
             last_synced_at: now.clone(),
         });
         if entry.scope.is_empty() {
@@ -2366,6 +2387,8 @@ pub async fn install_marketplace_mcp(
         owner: item.author.clone(),
         repo: mcp_repo.clone(),
         name: item.name.clone(),
+        // MCPs link to the bare repo root; no sub-path concept.
+        repo_subpath: None,
         last_synced_at: now,
     };
     let (command, args, mcp_type, url, env_map) = match item.mcp_type.as_str() {
@@ -2479,6 +2502,8 @@ async fn finalize_mcp_install(
             owner: item.author.clone(),
             repo: mcp_repo,
             name: item.name.clone(),
+            // MCPs link to the bare repo root; no sub-path concept.
+            repo_subpath: None,
             last_synced_at: now,
         });
         // B-P0-9: requiredEnvVars only relevant for stdio MCPs; we still
@@ -3436,22 +3461,29 @@ mod tests {
             "skills/azure-ai".to_string(),
             "azure-ai".to_string(),
         ];
-        rt.block_on(install_skill_via_codeload(
-            "microsoft",
-            "azure-skills",
-            &candidates,
-            "azure-ai",
-            &dest,
-        ))
-        .expect("codeload install should succeed for microsoft/azure-skills:azure-ai");
+        let subpath = rt
+            .block_on(install_skill_via_codeload(
+                "microsoft",
+                "azure-skills",
+                &candidates,
+                "azure-ai",
+                &dest,
+            ))
+            .expect("codeload install should succeed for microsoft/azure-skills:azure-ai");
 
+        assert_eq!(
+            subpath, "skills/azure-ai",
+            "expected canonical `skills/<id>` layout, got {:?}",
+            subpath
+        );
         assert!(
             dest.join("SKILL.md").exists(),
             "SKILL.md missing under {:?}",
             dest
         );
         eprintln!(
-            "Live codeload install: extracted azure-ai with SKILL.md at {:?}",
+            "Live codeload install: extracted '{}' to {:?}",
+            subpath,
             dest.join("SKILL.md")
         );
     }
@@ -3476,19 +3508,33 @@ mod tests {
             "skills/microsoft-foundry".to_string(),
             "microsoft-foundry".to_string(),
         ];
-        rt.block_on(install_skill_via_codeload(
-            "microsoft",
-            "azure-skills",
-            &candidates,
-            "microsoft-foundry",
-            &dest,
-        ))
-        .expect("codeload install should locate plugin-nested microsoft-foundry");
+        let subpath = rt
+            .block_on(install_skill_via_codeload(
+                "microsoft",
+                "azure-skills",
+                &candidates,
+                "microsoft-foundry",
+                &dest,
+            ))
+            .expect("codeload install should locate plugin-nested microsoft-foundry");
 
+        // The fallback should resolve to a path ending in `microsoft-foundry`
+        // — could be `.github/plugins/.../skills/microsoft-foundry` or any
+        // similarly deep layout. We only assert the suffix to keep the test
+        // resilient to upstream repo restructuring.
+        assert!(
+            subpath.ends_with("microsoft-foundry"),
+            "expected subpath ending in microsoft-foundry, got {:?}",
+            subpath
+        );
         assert!(
             dest.join("SKILL.md").exists(),
             "SKILL.md missing for plugin-nested microsoft-foundry under {:?}",
             dest
+        );
+        eprintln!(
+            "Live codeload install (plugin-nested): extracted from '{}'",
+            subpath
         );
     }
 }

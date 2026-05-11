@@ -531,7 +531,13 @@ export function McpDetailPanel({ mcp, isOpen, onClose }: McpDetailPanelProps) {
             </span>
           </div>
           {/* Install Scope */}
-          <div className="flex items-center gap-3 px-3.5 py-3">
+          <div
+            className={`flex items-center gap-3 px-3.5 py-3${
+              selectedMcp.installSource === 'marketplace' && selectedMcp.marketplaceSource
+                ? ' border-b border-[#E5E5E5]'
+                : ''
+            }`}
+          >
             <span className="w-24 flex-shrink-0 text-xs font-medium text-[#71717A]">
               Install Scope
             </span>
@@ -540,8 +546,6 @@ export function McpDetailPanel({ mcp, isOpen, onClose }: McpDetailPanelProps) {
                 <span className="rounded bg-[#EFF6FF] px-2 py-0.5 text-[11px] font-medium text-[#3B82F6]">
                   Plugin
                 </span>
-              ) : selectedMcp.installSource === 'marketplace' ? (
-                <MarketplaceSourceBadge source={selectedMcp.marketplaceSource} />
               ) : (
                 <ScopeSelector
                   value={selectedMcp.scope}
@@ -552,6 +556,15 @@ export function McpDetailPanel({ mcp, isOpen, onClose }: McpDetailPanelProps) {
               )}
             </div>
           </div>
+          {/* From (marketplace source) */}
+          {selectedMcp.installSource === 'marketplace' && selectedMcp.marketplaceSource && (
+            <div className="flex items-center gap-3 px-3.5 py-3">
+              <span className="w-24 flex-shrink-0 text-xs font-medium text-[#71717A]">From</span>
+              <div className="flex-1">
+                <MarketplaceSourceBadge source={selectedMcp.marketplaceSource} />
+              </div>
+            </div>
+          )}
         </div>
         {/* Open in Finder Button */}
         <Button variant="secondary" size="small" icon={<FolderOpen />} onClick={handleOpenInFinder}>

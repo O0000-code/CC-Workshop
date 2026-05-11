@@ -303,6 +303,13 @@ export interface MarketplaceState {
   onboardingDismissedSkills: boolean;
   onboardingDismissedMcps: boolean;
 
+  // Skills.sh topic reverse map (icon resolver Stage 0; ~94 entries from
+  // 8 curated topics, 24h cache on the backend). Empty object is the safe
+  // default when fetch failed / cache empty — the icon resolver simply
+  // falls through to Stages 1-3.
+  skillsTopicMap: Record<string, string[]>;
+  loadingSkillsTopicMap: boolean;
+
   // ---- Actions ----
 
   // Skill catalog (V2 server-driven)
@@ -325,6 +332,10 @@ export interface MarketplaceState {
   loadSkillReadme: (source: string, skillId: string) => Promise<void>;
   /** Fetch a single MCP's README. Memoised per `repositoryUrl`. */
   loadMcpReadme: (repositoryUrl: string) => Promise<void>;
+  /** Load the skills.sh topic → skill reverse map (powers Stage 0 of the
+   *  icon resolver). Backend caches 24h. Idempotent: no-op when already
+   *  loaded or in flight. */
+  loadSkillsTopicMap: () => Promise<void>;
 
   // MCP marketplace (V2 server-driven pagination)
   /** Load page 1 for the given view (or the currently-active view when
@@ -520,6 +531,9 @@ export const useMarketplaceStore = create<MarketplaceState>()(
 
       onboardingDismissedSkills: false,
       onboardingDismissedMcps: false,
+
+      skillsTopicMap: {},
+      loadingSkillsTopicMap: false,
 
       // -- Skill catalog (V2: server-driven listing + search) --
 
@@ -854,6 +868,33 @@ export const useMarketplaceStore = create<MarketplaceState>()(
               mcpReadmeErrors: { ...state.mcpReadmeErrors, [key]: message },
             };
           });
+        }
+      },
+
+      loadSkillsTopicMap: async () => {
+        // Idempotent: skip if already loaded or in flight. The persisted
+        // map survives across sessions; a non-empty map is treated as
+        // "good enough" without re-fetching on every mount (backend has
+        // its own 24h cache layered behind the IPC, so a refetch is cheap
+        // when the persist storage is empty).
+        const state = get();
+        if (state.loadingSkillsTopicMap) return;
+        if (Object.keys(state.skillsTopicMap).length > 0) return;
+        if (!isTauri()) return;
+
+        set({ loadingSkillsTopicMap: true });
+        try {
+          const map = await safeInvoke<Record<string, string[]>>('list_skill_topics_map', {
+            refresh: false,
+          });
+          set({
+            skillsTopicMap: map ?? {},
+            loadingSkillsTopicMap: false,
+          });
+        } catch (error) {
+          // Non-fatal — resolver falls through to Stages 1-3.
+          console.warn('Failed to load skills topic map:', error);
+          set({ loadingSkillsTopicMap: false });
         }
       },
 
@@ -1847,7 +1888,10 @@ export const useMarketplaceStore = create<MarketplaceState>()(
       // cleanly (currently the only consumer is the SWR snapshot; bump
       // `version` on incompatible store-shape changes).
       name: 'ensemble-marketplace',
-      version: 1,
+      // version 2 (2026-05-11): added `skillsTopicMap` persisted slice. Old
+      // v1 state is wiped on first load with this version; the listings
+      // re-fetch silently via SWR, no visible disruption.
+      version: 2,
       storage: createJSONStorage(() => localStorage),
       // Persist only the SWR-relevant slices. Transient state (loading,
       // isBackgroundSyncing, errors, install progress, modal state) is
@@ -1874,6 +1918,12 @@ export const useMarketplaceStore = create<MarketplaceState>()(
         // Onboarding banner dismissal — once dismissed, stays dismissed.
         onboardingDismissedSkills: state.onboardingDismissedSkills,
         onboardingDismissedMcps: state.onboardingDismissedMcps,
+        // Skills topic map — persisted so the icon resolver Stage 0
+        // works on cold launch without waiting for the backend
+        // 8-page scrape. The action skips its fetch when this is
+        // non-empty, so it survives until the cache file (or its 24h
+        // TTL on the backend) actually changes shape.
+        skillsTopicMap: state.skillsTopicMap,
       }),
     },
   ),

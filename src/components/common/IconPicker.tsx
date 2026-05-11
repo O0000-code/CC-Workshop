@@ -186,6 +186,24 @@ import {
   Wrench,
   X,
   XCircle,
+  // Brand icons (lucide v0.500 carries these; mirrors the marketplace
+  // upstream catalogue's most common origins so list rows visually
+  // distinguish e.g. a GitHub-sourced skill from a Figma-sourced one).
+  Github,
+  Gitlab,
+  Slack,
+  Figma,
+  Youtube,
+  Chrome,
+  Twitter,
+  Linkedin,
+  Codepen,
+  // Workflow / activity icons (used by topic + domain keyword stages
+  // in `src/utils/marketplaceIcon.ts`).
+  Workflow,
+  Megaphone,
+  Coins,
+  Table,
 } from 'lucide-react';
 
 // ============================================================================
@@ -431,6 +449,22 @@ const PRESET_ICONS: IconOption[] = [
   { name: 'help-circle', icon: HelpCircle },
   { name: 'trending-down', icon: TrendingDown },
   { name: 'gamepad-2', icon: Gamepad2 },
+  // Brand icons (used by `marketplaceIcon` resolver for items whose
+  // name / description / source matches a known brand)
+  { name: 'github', icon: Github },
+  { name: 'gitlab', icon: Gitlab },
+  { name: 'slack', icon: Slack },
+  { name: 'figma', icon: Figma },
+  { name: 'youtube', icon: Youtube },
+  { name: 'chrome', icon: Chrome },
+  { name: 'twitter', icon: Twitter },
+  { name: 'linkedin', icon: Linkedin },
+  { name: 'codepen', icon: Codepen },
+  // Workflow / domain icons (used by topic stage + domain keyword stage)
+  { name: 'workflow', icon: Workflow },
+  { name: 'megaphone', icon: Megaphone },
+  { name: 'coins', icon: Coins },
+  { name: 'table', icon: Table },
 ];
 
 // 导出图标映射，供其他组件使用
@@ -439,11 +473,11 @@ export const ICON_MAP: Record<string, LucideIcon> = PRESET_ICONS.reduce(
     acc[name] = icon;
     return acc;
   },
-  {} as Record<string, LucideIcon>
+  {} as Record<string, LucideIcon>,
 );
 
 // 导出图标名称列表，供自动分类功能使用
-export const ICON_NAMES: string[] = PRESET_ICONS.map(icon => icon.name);
+export const ICON_NAMES: string[] = PRESET_ICONS.map((icon) => icon.name);
 
 // ============================================================================
 // IconPicker Component
@@ -479,40 +513,43 @@ export function IconPicker({
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // ========== Position Calculation ==========
-  const updatePosition = useCallback((initialCalc = false) => {
-    if (!triggerRef.current) return;
+  const updatePosition = useCallback(
+    (initialCalc = false) => {
+      if (!triggerRef.current) return;
 
-    const rect = triggerRef.current.getBoundingClientRect();
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    const pickerWidth = 260;
-    const pickerHeight = 300;
+      const rect = triggerRef.current.getBoundingClientRect();
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const pickerWidth = 260;
+      const pickerHeight = 300;
 
-    let top = rect.bottom + 4;
-    let left = rect.left;
+      let top = rect.bottom + 4;
+      let left = rect.left;
 
-    // 右边界检测
-    if (left + pickerWidth > viewportWidth - 8) {
-      left = viewportWidth - pickerWidth - 8;
-    }
+      // 右边界检测
+      if (left + pickerWidth > viewportWidth - 8) {
+        left = viewportWidth - pickerWidth - 8;
+      }
 
-    // 底部边界检测 - 如果放不下，改为向上弹出
-    if (top + pickerHeight > viewportHeight - 8) {
-      top = rect.top - pickerHeight - 4;
-    }
+      // 底部边界检测 - 如果放不下，改为向上弹出
+      if (top + pickerHeight > viewportHeight - 8) {
+        top = rect.top - pickerHeight - 4;
+      }
 
-    // 确保不超出左边界
-    if (left < 8) {
-      left = 8;
-    }
+      // 确保不超出左边界
+      if (left < 8) {
+        left = 8;
+      }
 
-    setPosition({ top, left });
+      setPosition({ top, left });
 
-    // 初次计算完成后标记为已定位
-    if (initialCalc) {
-      setIsPositioned(true);
-    }
-  }, [triggerRef]);
+      // 初次计算完成后标记为已定位
+      if (initialCalc) {
+        setIsPositioned(true);
+      }
+    },
+    [triggerRef],
+  );
 
   // ========== Filtering ==========
   const filteredIcons = useMemo(() => {
@@ -582,9 +619,7 @@ export function IconPicker({
           break;
         case 'ArrowRight':
           event.preventDefault();
-          setFocusedIndex((prev) =>
-            prev < filteredIcons.length - 1 ? prev + 1 : prev
-          );
+          setFocusedIndex((prev) => (prev < filteredIcons.length - 1 ? prev + 1 : prev));
           break;
         case 'ArrowLeft':
           event.preventDefault();
@@ -592,9 +627,7 @@ export function IconPicker({
           break;
         case 'ArrowDown':
           event.preventDefault();
-          setFocusedIndex((prev) =>
-            prev + 6 < filteredIcons.length ? prev + 6 : prev
-          );
+          setFocusedIndex((prev) => (prev + 6 < filteredIcons.length ? prev + 6 : prev));
           break;
         case 'ArrowUp':
           event.preventDefault();
@@ -655,9 +688,7 @@ export function IconPicker({
       {/* Icon Grid */}
       <div className="p-2 max-h-[212px] overflow-y-auto icon-picker-scroll">
         {filteredIcons.length === 0 ? (
-          <div className="px-3 py-4 text-[13px] text-[#A1A1AA] text-center">
-            No icons found
-          </div>
+          <div className="px-3 py-4 text-[13px] text-[#A1A1AA] text-center">No icons found</div>
         ) : (
           <div className="grid grid-cols-6 gap-1">
             {filteredIcons.map((iconOption, index) => {
@@ -689,7 +720,7 @@ export function IconPicker({
         )}
       </div>
     </div>,
-    document.body
+    document.body,
   );
 
   return popupContent;

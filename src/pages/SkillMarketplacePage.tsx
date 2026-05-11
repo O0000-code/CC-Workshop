@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Loader2, Search, Sparkles, WifiOff } from 'lucide-react';
+import { BadgeCheck, Check, Loader2, Search, Sparkles, WifiOff } from 'lucide-react';
 import { PageHeader, SlidePanel } from '@/components/layout';
 import Badge from '@/components/common/Badge';
 import Button from '@/components/common/Button';
@@ -99,6 +99,7 @@ export function SkillMarketplacePage() {
   const clearSkillsSearch = useMarketplaceStore((s) => s.clearSkillsSearch);
   const selectSkillItem = useMarketplaceStore((s) => s.selectSkillItem);
   const dismissOnboarding = useMarketplaceStore((s) => s.dismissOnboarding);
+  const loadSkillsTopicMap = useMarketplaceStore((s) => s.loadSkillsTopicMap);
 
   // Subscribe to the local Skills SSoT so the `isInstalled` derivation
   // refreshes when the underlying skill list changes.
@@ -108,12 +109,16 @@ export function SkillMarketplacePage() {
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   // ── Mount: consult the SWR cache. Fresh → noop; stale → silent SWR;
-  // beyond stale (or empty cache) → foreground fetch.
+  // beyond stale (or empty cache) → foreground fetch. Also kick off the
+  // skills.sh topic-map load — idempotent, persisted, falls back silently
+  // if the upstream scrape errors out (icon resolver still works without
+  // it via Stages 1-3).
   useEffect(() => {
     void loadSkillsPage(skillsListing.view, 0, 'auto');
+    void loadSkillsTopicMap();
     // We deliberately read `view` lazily via the store (one-shot mount).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadSkillsPage]);
+  }, [loadSkillsPage, loadSkillsTopicMap]);
 
   // ── Debounce the search input → call searchSkills / clearSkillsSearch.
   useEffect(() => {
@@ -228,8 +233,9 @@ export function SkillMarketplacePage() {
         <h2 className="text-base font-semibold text-[#18181B] truncate flex items-center gap-2">
           <span className="truncate">{selectedItem.name}</span>
           {selectedItem.isOfficial && (
-            <Badge variant="neutral" showDot={false}>
-              Official
+            <Badge variant="neutral" showDot={false} className="gap-1">
+              <BadgeCheck className="-mt-px h-3 w-3" />
+              <span>Official</span>
             </Badge>
           )}
         </h2>
@@ -651,7 +657,7 @@ function SkillDetailContent({ item }: { item: MarketplaceSkillItem }) {
   const change = item.change;
 
   return (
-    <div className="flex flex-col gap-7">
+    <div className="flex flex-col gap-7 h-full">
       {/* Block 1 — Compact info row. */}
       <div className="flex gap-8">
         <InfoItem label="Source" value={item.source ?? '—'} />
@@ -682,38 +688,48 @@ function SkillDetailContent({ item }: { item: MarketplaceSkillItem }) {
         <MarketplaceSourceBadge source={buildSourceFromSkillItem(item)} />
       </div>
 
-      {/* Block 3 — README scroll region. */}
-      <div className="flex flex-col gap-3">
-        <h3 className="text-sm font-semibold text-[#18181B]">README</h3>
-        <div
-          className="overflow-y-auto rounded-lg border border-[#E5E5E5] bg-white p-4"
-          style={{ maxHeight: '480px' }}
-        >
-          {isLoadingReadme && !cached ? (
-            <div className="flex items-center gap-2 text-xs text-[#A1A1AA]">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span>Loading README...</span>
+      {/* Block 3 — README. Flex-1 fill only when README content is
+          actually loaded, otherwise the loading/error/empty states
+          would stretch their few-line content over the entire remaining
+          panel height. Skills.sh API exposes nothing else we could show,
+          so a short panel during loading is the natural state. */}
+      {(() => {
+        const hasReadmeContent = !!cached?.content && cached.content.trim().length > 0;
+        return (
+          <div className={`flex flex-col gap-3 ${hasReadmeContent ? 'min-h-0 flex-1' : ''}`}>
+            <h3 className="text-sm font-semibold text-[#18181B]">README</h3>
+            <div
+              className={`rounded-lg border border-[#E5E5E5] bg-white p-4 ${
+                hasReadmeContent ? 'min-h-[280px] flex-1 overflow-y-auto' : ''
+              }`}
+            >
+              {isLoadingReadme && !cached ? (
+                <div className="flex items-center gap-2 text-xs text-[#A1A1AA]">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>Loading README...</span>
+                </div>
+              ) : readmeError && !cached ? (
+                <div className="flex flex-col gap-2">
+                  <p className="text-xs text-[#DC2626]">Failed to load README.</p>
+                  <button
+                    type="button"
+                    onClick={() => void loadSkillReadme(item.source, item.skillId)}
+                    className="self-start text-xs font-medium text-[#18181B] underline"
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : hasReadmeContent ? (
+                <pre className="whitespace-pre-wrap break-words font-sans text-xs leading-relaxed text-[#52525B]">
+                  {cached!.content}
+                </pre>
+              ) : (
+                <p className="text-xs text-[#A1A1AA]">No README available.</p>
+              )}
             </div>
-          ) : readmeError && !cached ? (
-            <div className="flex flex-col gap-2">
-              <p className="text-xs text-[#DC2626]">Failed to load README.</p>
-              <button
-                type="button"
-                onClick={() => void loadSkillReadme(item.source, item.skillId)}
-                className="self-start text-xs font-medium text-[#18181B] underline"
-              >
-                Retry
-              </button>
-            </div>
-          ) : cached?.content ? (
-            <pre className="whitespace-pre-wrap break-words font-sans text-xs leading-relaxed text-[#52525B]">
-              {cached.content}
-            </pre>
-          ) : (
-            <p className="text-xs text-[#A1A1AA]">No README available.</p>
-          )}
-        </div>
-      </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

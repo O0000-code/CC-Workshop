@@ -535,7 +535,7 @@ export function McpMarketplacePage() {
   );
 
   const detailContent = selectedItem && (
-    <div className="flex flex-col gap-7">
+    <div className="flex flex-col gap-7 h-full">
       {/* Block 1: Decision-critical info. */}
       <section className="flex gap-8">
         <InfoItem label="Author" value={selectedItem.author || 'Unknown'} />
@@ -614,12 +614,19 @@ export function McpMarketplacePage() {
   );
 
   // ----- Status line (Skill page parity: 11px neutral grey, single row
-  // describing source · view, with search-mode variant). -----
+  // describing source · view; search-mode variant drops the source prefix
+  // and shows result count + query, mirroring SkillMarketplacePage. The
+  // Registry search endpoint returns paginated results without a total
+  // count, so we surface `<loaded>` with a `+` suffix when more pages
+  // remain to keep the wording honest. -----
   const statusLine = useMemo(() => {
     if (isSearchMode) {
       if (mcpsSearch.loading && mcpsSearch.items.length === 0) return null;
       if (mcpsSearch.items.length === 0) return null;
-      return `Live from MCP Registry · Results for "${mcpsSearch.query}"`;
+      const count = mcpsSearch.items.length;
+      const hasMore = mcpsSearch.hasMore;
+      const noun = count === 1 ? 'result' : 'results';
+      return `${count}${hasMore ? '+' : ''} ${noun} for "${mcpsSearch.query}"`;
     }
     const viewLabel =
       mcpsListing.view === 'recently-updated' ? 'Recently Updated (24h)' : 'All Servers';
@@ -832,12 +839,18 @@ function McpReadmeBlock({ item }: { item: MarketplaceMcpItem }) {
     void loadMcpReadme(key);
   }, [key, hasRepo, loadMcpReadme]);
 
+  // Flex-1 fill only when content is loaded — otherwise short
+  // loading/error/empty states would balloon to fill the remaining
+  // panel height which looks unnatural (a 480px box with one
+  // "Loading…" line in the corner).
+  const hasContent = !!cached?.content && cached.content.trim().length > 0;
   return (
-    <section className="flex flex-col gap-3">
+    <section className={`flex flex-col gap-3 ${hasContent ? 'min-h-0 flex-1' : ''}`}>
       <h3 className="text-sm font-semibold text-[#18181B]">README</h3>
       <div
-        className="overflow-y-auto rounded-lg border border-[#E5E5E5] bg-white p-4"
-        style={{ maxHeight: 480 }}
+        className={`rounded-lg border border-[#E5E5E5] bg-white p-4 ${
+          hasContent ? 'min-h-[240px] flex-1 overflow-y-auto' : ''
+        }`}
       >
         {!hasRepo ? (
           <p className="text-xs text-[#A1A1AA]">No repository URL provided.</p>
@@ -857,9 +870,9 @@ function McpReadmeBlock({ item }: { item: MarketplaceMcpItem }) {
               Retry
             </button>
           </div>
-        ) : cached?.content && cached.content.trim().length > 0 ? (
+        ) : hasContent ? (
           <pre className="whitespace-pre-wrap break-words font-sans text-xs leading-relaxed text-[#52525B]">
-            {cached.content}
+            {cached!.content}
           </pre>
         ) : (
           <p className="text-xs text-[#A1A1AA]">No README provided.</p>

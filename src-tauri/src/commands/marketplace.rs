@@ -1360,6 +1360,193 @@ pub async fn search_marketplace_skills(
 }
 
 // ============================================================================
+// IPC: list_skill_topics_map (icon hinting — skills.sh /topic/<x> scrape)
+// ============================================================================
+//
+// skills.sh has 8 curated topic pages (`/topic/react`, `/topic/databases`,
+// etc.). Each page server-renders ~5-21 skill detail links via the standard
+// `/{owner}/{repo}/{skillId}` URL pattern. There is no JSON API for this —
+// the topic system isn't exposed in `/api/skills/...`, only in the SSR HTML
+// of those 8 pages.
+//
+// We fetch all 8 pages in parallel once per 24h, scrape the `<a href>` links
+// into a reverse map `{ "<source>/<skillId>": ["topic-a", "topic-b"] }`,
+// and serve it to the frontend so the marketplace list-item icon resolver
+// can pick a category-aware icon (Stage 0 in `utils/marketplaceIcon.ts`).
+//
+// Coverage is ~94 skills out of skills.sh's ~91k total (≈ 0.1%) — but those
+// are the top-installed, curator-selected skills that users see first.
+//
+// Failure-mode: any topic fetch error → that topic contributes nothing;
+// other topics still succeed. Total miss → empty map returned + IPC error
+// surfaces in the upstream-error event, but the resolver simply falls
+// through to Stages 1-3 (still produces reasonable icons).
+
+const SKILLS_SH_TOPICS: &[&str] = &[
+    "react",
+    "nextjs",
+    "databases",
+    "design",
+    "marketing",
+    "mobile",
+    "testing",
+    "agent-workflows",
+];
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SkillTopicsCache {
+    /// `{ "<source>/<skillId>": ["topic", ...] }`
+    data: HashMap<String, Vec<String>>,
+    last_synced_at: String,
+}
+
+const SKILL_TOPICS_CACHE_TTL_SECS: i64 = 24 * 3600;
+
+fn skill_topics_cache_path() -> PathBuf {
+    get_app_data_dir()
+        .join("marketplace-cache")
+        .join("skills-topics.json")
+}
+
+/// Parse one topic page's HTML for skill detail links. Returns the list of
+/// `<source>/<skillId>` keys found on that page. Skips routes that look
+/// like top-level pages (`/about`, `/docs`, etc.) by requiring three
+/// non-empty path segments.
+fn parse_topic_html(html: &str) -> Vec<String> {
+    // Match `<a href="/owner/repo/skillId"` patterns. The skill URL shape
+    // is exactly three slash-separated segments. We reject anything that
+    // looks like a top-level route by requiring the first segment to NOT
+    // be one of the known top-level pages.
+    let re = regex::Regex::new(
+        r#"href="/([a-z0-9][a-z0-9_.-]*)/([a-z0-9][a-z0-9_.-]*)/([a-z0-9][a-z0-9_.-]*)""#,
+    )
+    .expect("topic html regex");
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for cap in re.captures_iter(html) {
+        let owner = &cap[1];
+        let repo = &cap[2];
+        let skill = &cap[3];
+        // Reject top-level / static routes accidentally matching the shape.
+        if matches!(
+            owner,
+            "_next" | "agent" | "docs" | "topic" | "static" | "api" | "trending" | "hot"
+        ) {
+            continue;
+        }
+        let key = format!("{}/{}/{}", owner, repo, skill);
+        if seen.insert(key.clone()) {
+            out.push(format!("{}/{}", owner, repo).to_string() + "/" + skill);
+        }
+    }
+    // Normalise the keys to `<source>/<skillId>` (source = `<owner>/<repo>`).
+    out.into_iter()
+        .map(|combined| {
+            // `out` items currently are `<owner>/<repo>/<skill>` already.
+            combined
+        })
+        .collect()
+}
+
+/// Fetch all 8 topic pages in parallel (one tokio task per topic) and build
+/// the reverse map. Per-topic failures are tolerated — surviving topics
+/// still contribute. Only a total wipe-out (zero topics succeeded) bubbles
+/// up as `Err`.
+async fn fetch_skill_topics_map() -> Result<HashMap<String, Vec<String>>, String> {
+    let mut set = tokio::task::JoinSet::new();
+    for topic in SKILLS_SH_TOPICS.iter().copied() {
+        set.spawn(async move {
+            let url = format!("https://skills.sh/topic/{}", topic);
+            let resp = skills_sh_request(&url)
+                .header(reqwest::header::ACCEPT, "text/html")
+                .send()
+                .await
+                .map_err(|e| format!("network: {}", e))?;
+            if !resp.status().is_success() {
+                return Err(format!("HTTP {}", resp.status()));
+            }
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| format!("read body: {}", e))?;
+            let skills = parse_topic_html(&body);
+            Ok::<(&'static str, Vec<String>), String>((topic, skills))
+        });
+    }
+
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut any_success = false;
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok(Ok((topic, skill_keys))) => {
+                any_success = true;
+                for key in skill_keys {
+                    map.entry(key)
+                        .or_insert_with(Vec::new)
+                        .push(topic.to_string());
+                }
+            }
+            Ok(Err(_e)) => continue, // per-topic failure: skip
+            Err(_join_err) => continue, // task panic: skip
+        }
+    }
+    if !any_success {
+        return Err("All topic fetches failed".to_string());
+    }
+    Ok(map)
+}
+
+fn read_skill_topics_cache() -> Option<SkillTopicsCache> {
+    let path = skill_topics_cache_path();
+    let raw = fs::read_to_string(&path).ok()?;
+    serde_json::from_str::<SkillTopicsCache>(&raw).ok()
+}
+
+fn write_skill_topics_cache(cache: &SkillTopicsCache) -> Result<(), String> {
+    let dir = get_app_data_dir().join("marketplace-cache");
+    ensure_dir(&dir).map_err(|e| format!("ensure cache dir: {}", e))?;
+    let path = skill_topics_cache_path();
+    let body = serde_json::to_string_pretty(cache).map_err(|e| format!("serialise: {}", e))?;
+    fs::write(&path, body).map_err(|e| format!("write cache: {}", e))?;
+    Ok(())
+}
+
+fn skill_topics_cache_is_fresh(cache: &SkillTopicsCache) -> bool {
+    let synced = match chrono::DateTime::parse_from_rfc3339(&cache.last_synced_at) {
+        Ok(t) => t.with_timezone(&chrono::Utc),
+        Err(_) => return false,
+    };
+    let age = chrono::Utc::now().signed_duration_since(synced);
+    age.num_seconds() < SKILL_TOPICS_CACHE_TTL_SECS && age.num_seconds() >= 0
+}
+
+/// IPC. `refresh=true` bypasses the 24h cache. Errors are surfaced verbatim
+/// — the frontend treats failure as "empty topic map" (resolver Stages 1-3
+/// still produce icons).
+#[tauri::command]
+pub async fn list_skill_topics_map(
+    refresh: bool,
+) -> Result<HashMap<String, Vec<String>>, String> {
+    if !refresh {
+        if let Some(cache) = read_skill_topics_cache() {
+            if skill_topics_cache_is_fresh(&cache) {
+                return Ok(cache.data);
+            }
+        }
+    }
+    let map = fetch_skill_topics_map().await?;
+    let cache = SkillTopicsCache {
+        data: map.clone(),
+        last_synced_at: chrono::Utc::now().to_rfc3339(),
+    };
+    // Cache write failure is non-fatal — we already have the data in
+    // memory to return to the caller.
+    let _ = write_skill_topics_cache(&cache);
+    Ok(map)
+}
+
+// ============================================================================
 // IPC: get_marketplace_skill_readme (V2 — GitHub raw + 5-min memory cache)
 // ============================================================================
 
@@ -1944,10 +2131,47 @@ pub async fn install_marketplace_skill(
             ),
         });
     }
-    if let Err(e) = download_skill_recursive(&owner, &repo, &skill_path, &target_dir).await {
-        // Roll back partial download so the next attempt sees a clean target.
+    // skills.sh's `skillId` is the skill's short name, not its full path in
+    // the repo. Most curated skills.sh repos house their skills under a
+    // top-level `skills/` directory (anthropics/skills, vercel-labs/skills,
+    // microsoft/azure-skills, obra/superpowers — all use `skills/<id>`).
+    // Build a candidate path list and walk it in order. Empty path means
+    // the catalog provided no sub-path; that's a malformed item.
+    let candidate_paths: Vec<String> = if skill_path.is_empty() {
+        vec![String::new()]
+    } else if skill_path.starts_with("skills/") || skill_path.contains('/') {
+        // Already qualified (e.g. `skills/find-skills`) or carries an
+        // arbitrary sub-path — try as-is only, don't double-nest.
+        vec![skill_path.clone()]
+    } else {
+        // Bare short name like `find-skills` — try the `skills/` convention
+        // first (covers ~95% of skills.sh-hosted repos), fall back to
+        // root-level for the rare repos that have skills at the top.
+        vec![format!("skills/{}", skill_path), skill_path.clone()]
+    };
+
+    let mut last_err = String::from("no candidate paths");
+    let mut ok = false;
+    for candidate in &candidate_paths {
+        // Make sure each retry starts from a clean target dir.
         let _ = fs::remove_dir_all(&target_dir);
-        return Ok(InstallOutcome::Failed { reason: e });
+        match download_skill_recursive(&owner, &repo, candidate, &target_dir).await {
+            Ok(()) => {
+                ok = true;
+                break;
+            }
+            Err(e) => {
+                last_err = e;
+                // Continue to the next candidate. Only surface failure
+                // when every candidate misses.
+            }
+        }
+    }
+    if !ok {
+        let _ = fs::remove_dir_all(&target_dir);
+        return Ok(InstallOutcome::Failed {
+            reason: format!("All candidate paths failed; last error: {}", last_err),
+        });
     }
 
     finalize_skill_install(app, &item, target_dir).await

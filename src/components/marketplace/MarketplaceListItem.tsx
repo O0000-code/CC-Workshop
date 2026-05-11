@@ -1,9 +1,9 @@
 import React, { useMemo } from 'react';
-import { Sparkles, Check, Plug } from 'lucide-react';
+import { Check, BadgeCheck } from 'lucide-react';
 import Badge from '@/components/common/Badge';
 import Button from '@/components/common/Button';
 import { Tooltip } from '@/components/common/Tooltip';
-import { ICON_MAP } from '@/components/common';
+import { getMarketplaceItemIcon } from '@/utils/marketplaceIcon';
 import { truncateToFirstSentence } from '@/utils/text';
 import { useMarketplaceStore } from '@/stores/marketplaceStore';
 import type { MarketplaceMcpItem, MarketplaceSkillItem } from '@/types/marketplace';
@@ -24,23 +24,10 @@ const TRANSITION_BASE = `${TRANSITION_DURATION} ${TRANSITION_EASING}`;
 // matches the 150 ms used by SkillListItem / McpListItem.
 const RIGHT_SECTION_DELAY = '150ms';
 
-// ============================================================================
-// Icon helpers — mirrors the resolution rules used by the local list items.
-// Skill default falls back to `Sparkles`; MCP default falls back to `Plug`.
-// ============================================================================
-
-const getSkillIconComponent = (item: MarketplaceSkillItem): React.ElementType => {
-  // Marketplace items don't carry a custom icon — frontmatter doesn't expose
-  // one. The default is `Sparkles` to match SkillListItem (skills.tsx:33).
-  // Reserved for future use if the catalog is extended with an `icon` hint.
-  void item;
-  return Sparkles;
-};
-
-const getMcpIconComponent = (item: MarketplaceMcpItem): React.ElementType => {
-  void item;
-  return ICON_MAP['plug'] ?? Plug;
-};
+// Icon resolution is delegated to `utils/marketplaceIcon.ts` — a pure
+// function with a 4-stage cascade (skills.sh topic map → brand exact match
+// → narrow domain keyword → default). The store's `skillsTopicMap` slice
+// powers Stage 0; for MCP items the map argument is ignored.
 
 // ============================================================================
 // Public props
@@ -112,12 +99,13 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
   const installSkill = useMarketplaceStore((s) => s.installSkill);
   const installMcp = useMarketplaceStore((s) => s.installMcp);
 
+  // Stage 0 (skills.sh topic map) is wired in once the store action loads
+  // it; until then the resolver still runs Stages 1-3 (brand / domain /
+  // default), so list rows already show meaningful icons.
+  const skillsTopicMap = useMarketplaceStore((s) => s.skillsTopicMap);
   const IconComponent = useMemo(
-    () =>
-      itemType === 'skill'
-        ? getSkillIconComponent(item as MarketplaceSkillItem)
-        : getMcpIconComponent(item as MarketplaceMcpItem),
-    [item, itemType],
+    () => getMarketplaceItemIcon(item, itemType, skillsTopicMap),
+    [item, itemType, skillsTopicMap],
   );
 
   // V2 catalogue: Skill items expose `installs` (skills.sh primary metric).
@@ -296,8 +284,15 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
           >
             <span className="truncate">{item.name}</span>
             {isOfficialSkill && (
-              <Badge variant="neutral" showDot={false}>
-                Official
+              <Badge variant="neutral" showDot={false} className="gap-1">
+                {/* Inline 1px upward margin to align the icon's geometric
+                    centre with Inter's cap-middle (verified via Chromium
+                    rendering probe). `mt` not `translate-y` because
+                    margin affects layout and renders consistently across
+                    devicePixelRatios, whereas Tailwind's transform-compose
+                    pipeline can snap subpixel translations inconsistently. */}
+                <BadgeCheck className="-mt-px h-3 w-3" />
+                <span>Official</span>
               </Badge>
             )}
           </span>
@@ -309,8 +304,11 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
         </div>
       </div>
 
-      {/* Right section — popularity + (MCP type) + Install/Installed/Retry */}
-      <div className="flex items-center gap-2.5 shrink-0" style={rightSectionStyle}>
+      {/* Right section — popularity + (MCP type) + Install/Installed/Retry.
+          gap-5 (20px) per Things 3 / Linear right-section convention; user
+          feedback flagged gap-3.5 still felt cramped between e.g. `1.4M`
+          and `✓ Installed`. */}
+      <div className="flex items-center gap-5 shrink-0" style={rightSectionStyle}>
         {/* Popularity — installs (skills V2) or stars (MCP / legacy).
             Neutral grey numeric, formatted compactly (1.2K / 3.4M). */}
         {popularity > 0 && (

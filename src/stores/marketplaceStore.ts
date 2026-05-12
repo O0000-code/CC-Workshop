@@ -1891,7 +1891,25 @@ export const useMarketplaceStore = create<MarketplaceState>()(
       // version 2 (2026-05-11): added `skillsTopicMap` persisted slice. Old
       // v1 state is wiped on first load with this version; the listings
       // re-fetch silently via SWR, no visible disruption.
-      version: 2,
+      // version 3 (2026-05-12): backend dropped the 3KB README truncation
+      // cap, but persisted caches written under v2 still hold the truncated
+      // bodies (suffixed `…[truncated for catalog cache]`). Migrate by
+      // clearing only the README slices — listings + topic map + settings
+      // survive untouched, so the UX cost is one silent re-fetch the next
+      // time the user opens any detail panel.
+      version: 3,
+      migrate: (persistedState, version) => {
+        const state = persistedState as Partial<MarketplaceState> | undefined;
+        if (!state) return state;
+        if (version < 3) {
+          return {
+            ...state,
+            skillReadmes: {},
+            mcpReadmes: {},
+          };
+        }
+        return state;
+      },
       storage: createJSONStorage(() => localStorage),
       // Persist only the SWR-relevant slices. Transient state (loading,
       // isBackgroundSyncing, errors, install progress, modal state) is

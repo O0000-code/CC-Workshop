@@ -117,10 +117,6 @@ use tauri::{AppHandle, Emitter};
 /// HTTP client timeout for upstream catalog requests.
 const HTTP_TIMEOUT_SECS: u64 = 15;
 
-/// Cap on README-content-bytes carried in the catalog. Larger bodies are
-/// truncated at fetch time so the cache file stays small.
-const README_BYTES_CAP: usize = 3_000;
-
 /// In-memory README cache TTL (5 minutes). Skill detail panels can fan out
 /// repeated `get_marketplace_skill_readme` calls when the user clicks
 /// the same row multiple times; we serve from memory to avoid hammering
@@ -676,18 +672,6 @@ fn extract_skill_description_from_md(md: &str) -> Option<String> {
     None
 }
 
-fn truncate_readme(s: &str) -> String {
-    if s.len() <= README_BYTES_CAP {
-        s.to_string()
-    } else {
-        // Truncate on a UTF-8 boundary.
-        let mut idx = README_BYTES_CAP;
-        while idx > 0 && !s.is_char_boundary(idx) {
-            idx -= 1;
-        }
-        format!("{}\n\n…[truncated for catalog cache]", &s[..idx])
-    }
-}
 
 // ============================================================================
 // V2 — skills.sh internal API (Phase I, 2026-05-10)
@@ -831,7 +815,11 @@ fn readme_cache_put(key: String, body: String) {
 /// Try `https://raw.githubusercontent.com/{source}/HEAD/{skill_id}/SKILL.md`
 /// first (skill in subfolder), then fall back to
 /// `https://raw.githubusercontent.com/{source}/HEAD/SKILL.md` (skill at
-/// repo root). Returns the markdown body — capped at `README_BYTES_CAP`.
+/// repo root). Returns the markdown body verbatim. GitHub raw caps every
+/// file at 1MB, and the in-memory cache caps total entries at
+/// `README_CACHE_MAX_ENTRIES` with `README_CACHE_TTL_SECS` TTL, so the
+/// upstream bound and the per-process cache bound together keep the
+/// memory profile sane without a per-body length cap.
 ///
 /// `source` and `skill_id` flow from the catalog item directly. Both go
 /// through `sanitize_resource_name` for path-traversal defence in depth
@@ -899,9 +887,8 @@ async fn fetch_skill_readme_github(source: &str, skill_id: &str) -> Result<Strin
             }
             Ok(resp) => match resp.text().await {
                 Ok(body) => {
-                    let truncated = truncate_readme(&body);
-                    readme_cache_put(cache_key, truncated.clone());
-                    return Ok(truncated);
+                    readme_cache_put(cache_key, body.clone());
+                    return Ok(body);
                 }
                 Err(e) => {
                     last_err = format!("read body {}: {}", url, e);
@@ -1526,9 +1513,8 @@ async fn fetch_mcp_readme_github(repository_url: &str) -> Result<String, String>
             }
             Ok(resp) => match resp.text().await {
                 Ok(body) => {
-                    let truncated = truncate_readme(&body);
-                    readme_cache_put(cache_key, truncated.clone());
-                    return Ok(truncated);
+                    readme_cache_put(cache_key, body.clone());
+                    return Ok(body);
                 }
                 Err(e) => {
                     last_err = format!("read body {}: {}", url, e);
@@ -3063,20 +3049,6 @@ mod tests {
             extract_skill_name_from_md(md),
             Some("My Awesome Skill".to_string())
         );
-    }
-
-    #[test]
-    fn truncate_readme_short_string_unchanged() {
-        let s = "short";
-        assert_eq!(truncate_readme(s), s);
-    }
-
-    #[test]
-    fn truncate_readme_long_string_truncated() {
-        let s = "a".repeat(README_BYTES_CAP + 100);
-        let out = truncate_readme(&s);
-        assert!(out.contains("[truncated for catalog cache]"));
-        assert!(out.len() < s.len());
     }
 
     #[test]

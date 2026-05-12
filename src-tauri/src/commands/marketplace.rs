@@ -140,6 +140,11 @@ const REPO_STATS_CACHE_TTL_SECS: i64 = 5 * 60;
 /// above that.
 const REPO_STATS_CACHE_MAX_ENTRIES: usize = 64;
 
+/// In-memory cache for the scraped skills.sh AI Summary block. Same
+/// 5-min / 64-entry shape as the README + RepoStats caches.
+const SKILL_SUMMARY_CACHE_TTL_SECS: i64 = 5 * 60;
+const SKILL_SUMMARY_CACHE_MAX_ENTRIES: usize = 64;
+
 /// User-Agent string sent to skills.sh — must look like a browser. The
 /// upstream rejects requests whose UA matches `*reqwest*` or empty UA.
 /// Verified 2026-05-10 via curl.
@@ -873,6 +878,56 @@ fn repo_stats_cache_put(key: String, stars: u32) {
     );
 }
 
+// ============================================================================
+// Skill summary cache (scraped from skills.sh detail page)
+// ============================================================================
+
+struct SkillSummaryCacheEntry {
+    markdown: String,
+    fetched_at: i64,
+}
+
+static SKILL_SUMMARY_CACHE: OnceLock<std::sync::Mutex<HashMap<String, SkillSummaryCacheEntry>>> =
+    OnceLock::new();
+
+fn skill_summary_cache() -> &'static std::sync::Mutex<HashMap<String, SkillSummaryCacheEntry>> {
+    SKILL_SUMMARY_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn skill_summary_cache_get(key: &str) -> Option<String> {
+    let now = chrono::Utc::now().timestamp();
+    let cache = skill_summary_cache().lock().ok()?;
+    let entry = cache.get(key)?;
+    if now - entry.fetched_at > SKILL_SUMMARY_CACHE_TTL_SECS {
+        return None;
+    }
+    Some(entry.markdown.clone())
+}
+
+fn skill_summary_cache_put(key: String, markdown: String) {
+    let now = chrono::Utc::now().timestamp();
+    let mut cache = match skill_summary_cache().lock() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    if cache.len() >= SKILL_SUMMARY_CACHE_MAX_ENTRIES && !cache.contains_key(&key) {
+        if let Some(oldest_key) = cache
+            .iter()
+            .min_by_key(|(_, v)| v.fetched_at)
+            .map(|(k, _)| k.clone())
+        {
+            cache.remove(&oldest_key);
+        }
+    }
+    cache.insert(
+        key,
+        SkillSummaryCacheEntry {
+            markdown,
+            fetched_at: now,
+        },
+    );
+}
+
 /// Try `https://raw.githubusercontent.com/{source}/HEAD/{skill_id}/SKILL.md`
 /// first (skill in subfolder), then fall back to
 /// `https://raw.githubusercontent.com/{source}/HEAD/SKILL.md` (skill at
@@ -1540,6 +1595,164 @@ pub async fn get_marketplace_repo_stars(
     let safe_repo = sanitize_resource_name(&repo)
         .map_err(|e| format!("invalid repo: {}", e))?;
     fetch_github_repo_stars_impl(&safe_owner, &safe_repo).await
+}
+
+// ============================================================================
+// IPC: get_marketplace_skill_summary (Phase 2 mirror — skills.sh AI summary)
+// ============================================================================
+//
+// skills.sh server-renders a 1-paragraph + 3-5 bullet "Summary" card above
+// the SKILL.md region on each skill's detail page. The card is generated
+// by their LLM at index time, not pulled from frontmatter. We mirror it by
+// scraping that section of the HTML — zero LLM cost on our side, single
+// HTTP request per (skill, 5-min window).
+//
+// HTML shape (verified 2026-05-12 via curl):
+//   <div ...uppercase">Summary</div>
+//   <div class="...rounded-lg border ...bg-muted ...">
+//     <div class="[&_.prose]:..."><div class="prose prose-invert ...">
+//       <p><strong>{lead}</strong></p>
+//       <ul><li>{...}</li>...</ul>
+//     </div></div>
+//   </div>
+//   <div class="bg-background">  ← marks end of summary, start of SKILL.md
+//
+// Extracted prose-block HTML is converted to Markdown so the frontend can
+// run it through the same `MarkdownBody` renderer as the README.
+
+/// Strip the wrapping HTML of the summary's prose block to plain markdown.
+/// Handles the limited tag set the upstream actually uses inside the
+/// summary card: `<p>`, `<strong>`, `<em>`, `<ul>` / `<ol>` / `<li>`,
+/// `<code>`, `<a>`. Unknown tags are stripped to bare text; HTML entities
+/// are decoded for the common five.
+fn html_to_markdown_simple(html: &str) -> String {
+    let mut s = html.to_string();
+    // Lead-paragraph idiom first so we don't double the `**`.
+    s = s.replace("<p><strong>", "**");
+    s = s.replace("</strong></p>", "**\n\n");
+    // Anchors with href — convert before stripping bare tags.
+    if let Ok(re) = regex::Regex::new(r#"<a[^>]*\bhref="([^"]+)"[^>]*>([^<]*)</a>"#) {
+        s = re.replace_all(&s, "[$2]($1)").to_string();
+    }
+    s = s.replace("<p>", "");
+    s = s.replace("</p>", "\n\n");
+    s = s.replace("<strong>", "**");
+    s = s.replace("</strong>", "**");
+    s = s.replace("<em>", "_");
+    s = s.replace("</em>", "_");
+    s = s.replace("<ul>", "");
+    s = s.replace("</ul>", "\n");
+    s = s.replace("<ol>", "");
+    s = s.replace("</ol>", "\n");
+    s = s.replace("<li>", "- ");
+    s = s.replace("</li>", "\n");
+    s = s.replace("<code>", "`");
+    s = s.replace("</code>", "`");
+    s = s.replace("<br>", "\n");
+    s = s.replace("<br/>", "\n");
+    s = s.replace("<br />", "\n");
+    // Strip any remaining tags (defence in depth — upstream may add new
+    // wrappers in future).
+    if let Ok(re) = regex::Regex::new(r"<[^>]+>") {
+        s = re.replace_all(&s, "").to_string();
+    }
+    // Decode the common HTML entities seen in skills.sh's content.
+    s = s.replace("&amp;", "&");
+    s = s.replace("&lt;", "<");
+    s = s.replace("&gt;", ">");
+    s = s.replace("&quot;", "\"");
+    s = s.replace("&#39;", "'");
+    s = s.replace("&apos;", "'");
+    // Collapse 3+ blank lines.
+    if let Ok(re) = regex::Regex::new(r"\n{3,}") {
+        s = re.replace_all(&s, "\n\n").to_string();
+    }
+    s.trim().to_string()
+}
+
+/// Locate the skills.sh "Summary" card prose block in raw HTML and return
+/// its inner HTML. Returns `None` when the markers aren't found (e.g.
+/// upstream page redesign).
+fn extract_skill_summary_html(html: &str) -> Option<String> {
+    let header_re =
+        regex::Regex::new(r#"<div[^>]*\buppercase[^>]*>Summary</div>"#).ok()?;
+    let header_m = header_re.find(html)?;
+    let after = &html[header_m.end()..];
+
+    let open_re = regex::Regex::new(r#"<div class="prose[^"]*"[^>]*>"#).ok()?;
+    let open_m = open_re.find(after)?;
+    let content_start = open_m.end();
+
+    // The next `<div class="bg-background"` marks the start of the SKILL.md
+    // section — the boundary of the summary card. Back up from there for
+    // the slice end.
+    let next_section_re = regex::Regex::new(r#"<div class="bg-background""#).ok()?;
+    let after_open = &after[content_start..];
+    let next_m = next_section_re.find(after_open)?;
+    let content_end = next_m.start();
+
+    Some(after_open[..content_end].to_string())
+}
+
+async fn fetch_skill_summary_skillssh(
+    source: &str,
+    skill_id: &str,
+) -> Result<String, String> {
+    let source_parts: Vec<&str> = source.split('/').collect();
+    if source_parts.len() != 2 {
+        return Err(format!("Invalid source (expected owner/repo): {}", source));
+    }
+    let safe_owner = sanitize_resource_name(source_parts[0])
+        .map_err(|e| format!("owner: {}", e))?;
+    let safe_repo = sanitize_resource_name(source_parts[1])
+        .map_err(|e| format!("repo: {}", e))?;
+    let safe_id_segments: Vec<String> = skill_id
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(sanitize_resource_name)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("skill_id segment: {}", e))?;
+    let safe_id = safe_id_segments.join("/");
+
+    let cache_key = format!("{}/{}/{}", safe_owner, safe_repo, safe_id);
+    if let Some(cached) = skill_summary_cache_get(&cache_key) {
+        return Ok(cached);
+    }
+
+    let url = format!(
+        "https://skills.sh/{}/{}/{}",
+        safe_owner, safe_repo, safe_id
+    );
+    let resp = marketplace_http()
+        .get(&url)
+        .header(reqwest::header::USER_AGENT, SKILLS_SH_USER_AGENT)
+        .send()
+        .await
+        .map_err(|e| format!("network: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("read body: {}", e))?;
+
+    let summary_html = extract_skill_summary_html(&body)
+        .ok_or_else(|| "summary section not found".to_string())?;
+    let markdown = html_to_markdown_simple(&summary_html);
+    if markdown.is_empty() {
+        return Err("empty summary after parse".to_string());
+    }
+    skill_summary_cache_put(cache_key, markdown.clone());
+    Ok(markdown)
+}
+
+#[tauri::command]
+pub async fn get_marketplace_skill_summary(
+    source: String,
+    skill_id: String,
+) -> Result<String, String> {
+    fetch_skill_summary_skillssh(&source, &skill_id).await
 }
 
 // ============================================================================
@@ -3473,6 +3686,55 @@ mod tests {
     fn readme_cache_get_returns_none_for_missing() {
         let got = readme_cache_get("nonexistent-test-key");
         assert!(got.is_none());
+    }
+
+    #[test]
+    fn html_to_markdown_simple_handles_summary_idiom() {
+        // The exact shape skills.sh emits inside a Summary card.
+        let html = "<p><strong>Lead sentence here.</strong></p>\n<ul>\n<li>First bullet</li>\n<li>Second bullet with <code>code</code></li>\n</ul>";
+        let md = html_to_markdown_simple(html);
+        assert!(md.starts_with("**Lead sentence here.**"), "got {:?}", md);
+        assert!(md.contains("- First bullet"), "got {:?}", md);
+        assert!(md.contains("`code`"), "got {:?}", md);
+    }
+
+    #[test]
+    fn html_to_markdown_simple_strips_unknown_tags() {
+        let html = "<p><span>plain</span></p>";
+        let md = html_to_markdown_simple(html);
+        assert_eq!(md, "plain");
+    }
+
+    #[test]
+    fn html_to_markdown_simple_decodes_entities() {
+        let html = "<p>A &amp; B &lt;tag&gt; &quot;q&quot;</p>";
+        let md = html_to_markdown_simple(html);
+        assert_eq!(md, "A & B <tag> \"q\"");
+    }
+
+    #[test]
+    fn html_to_markdown_simple_converts_links() {
+        let html = "<p>See <a href=\"https://example.com/x\">the docs</a> for more.</p>";
+        let md = html_to_markdown_simple(html);
+        assert_eq!(md, "See [the docs](https://example.com/x) for more.");
+    }
+
+    #[test]
+    fn extract_skill_summary_html_finds_section() {
+        // Compact fixture mirroring the skills.sh markup shape (2026-05-12
+        // verified via curl on vercel-labs/skills/find-skills).
+        let html = r#"<div class="uppercase">Summary</div><div class="rounded-lg border"><div class="prose prose-invert"><p><strong>Lead.</strong></p><ul><li>One</li></ul></div></div><div class="bg-background"><div>SKILL.md</div></div>"#;
+        let extracted = extract_skill_summary_html(html).expect("summary should be found");
+        assert!(extracted.contains("<strong>Lead.</strong>"));
+        assert!(extracted.contains("<li>One</li>"));
+        // Should NOT include the SKILL.md sibling section.
+        assert!(!extracted.contains("SKILL.md"));
+    }
+
+    #[test]
+    fn extract_skill_summary_html_returns_none_when_missing() {
+        let html = "<p>No summary marker here.</p>";
+        assert!(extract_skill_summary_html(html).is_none());
     }
 
     /// Live skills.sh internal-API integration test. Marked `#[ignore]` so

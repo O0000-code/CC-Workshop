@@ -175,6 +175,7 @@ pub fn run() {
             marketplace::get_marketplace_skill_readme,
             marketplace::get_marketplace_mcp_readme,
             marketplace::get_marketplace_repo_stars,
+            marketplace::get_marketplace_skill_summary,
             marketplace::list_skill_topics_map,
             // MCP marketplace V2 (2026-05-11): paginated realtime mirror of
             // registry.modelcontextprotocol.io. The V1 single-GET

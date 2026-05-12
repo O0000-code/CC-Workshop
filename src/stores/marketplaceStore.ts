@@ -277,6 +277,14 @@ export interface MarketplaceState {
   /** Loading-keys set so repeat detail-panel opens don't refetch. */
   loadingRepoStars: Set<string>;
 
+  /** Scraped skills.sh AI Summary, keyed by `${source}/${skillId}`. Body is
+   *  markdown (backend converts the upstream HTML). Memory-only, same
+   *  5-min freshness as `repoStars`. Absence + non-loading = upstream had
+   *  no summary section (older skills, plugin-nested entries, scraper miss). */
+  skillSummaries: Record<string, string>;
+  /** Loading-keys set so repeat opens don't refetch. */
+  loadingSkillSummaries: Set<string>;
+
   // MCP marketplace (V2: cursor-paginated realtime mirror, 2026-05-11).
   /** Active listing state. `view` inside drives which IPC backs page
    *  loads ('all' → main listing, 'recently-updated' → updated-since
@@ -346,6 +354,11 @@ export interface MarketplaceState {
    *  on rate-limit / network failure — the Info row simply omits the
    *  Stars column rather than surfacing an error to the user. */
   loadRepoStars: (owner: string, repo: string) => Promise<void>;
+  /** Fetch the scraped skills.sh AI Summary for `${source}/${skillId}`.
+   *  Memoised; swallows failure silently — the Summary block hides itself
+   *  when no markdown is available, mirroring how skills.sh hides its
+   *  card when it has nothing to show. */
+  loadSkillSummary: (source: string, skillId: string) => Promise<void>;
   /** Load the skills.sh topic → skill reverse map (powers Stage 0 of the
    *  icon resolver). Backend caches 24h. Idempotent: no-op when already
    *  loaded or in flight. */
@@ -530,6 +543,9 @@ export const useMarketplaceStore = create<MarketplaceState>()(
 
       repoStars: {},
       loadingRepoStars: new Set<string>(),
+
+      skillSummaries: {},
+      loadingSkillSummaries: new Set<string>(),
 
       mcpsListing: initialMcpsListing,
       mcpsSearch: null,
@@ -925,6 +941,46 @@ export const useMarketplaceStore = create<MarketplaceState>()(
             const next = new Set(state.loadingRepoStars);
             next.delete(key);
             return { loadingRepoStars: next };
+          });
+        }
+      },
+
+      loadSkillSummary: async (source, skillId) => {
+        if (!source || !skillId) return;
+        const key = `${source}/${skillId}`;
+        const { skillSummaries, loadingSkillSummaries } = get();
+        if (key in skillSummaries) return;
+        if (loadingSkillSummaries.has(key)) return;
+        if (!isTauri()) return;
+
+        set((state) => {
+          const next = new Set(state.loadingSkillSummaries);
+          next.add(key);
+          return { loadingSkillSummaries: next };
+        });
+
+        try {
+          const markdown = await safeInvoke<string>('get_marketplace_skill_summary', {
+            source,
+            skillId,
+          });
+          set((state) => {
+            const next = new Set(state.loadingSkillSummaries);
+            next.delete(key);
+            return {
+              skillSummaries:
+                typeof markdown === 'string' && markdown.trim().length > 0
+                  ? { ...state.skillSummaries, [key]: markdown }
+                  : state.skillSummaries,
+              loadingSkillSummaries: next,
+            };
+          });
+        } catch {
+          // Summary is decorative — hide block on scrape / network failure.
+          set((state) => {
+            const next = new Set(state.loadingSkillSummaries);
+            next.delete(key);
+            return { loadingSkillSummaries: next };
           });
         }
       },

@@ -92,6 +92,22 @@ const VIEW_TABS: { value: SkillsView; label: string }[] = [
   { value: 'hot', label: 'Hot' },
 ];
 
+/** Display names for the 8 skills.sh topics we scrape. Keys mirror the
+ *  slug used in the topic-page URL (`/topic/<slug>`); values mirror what
+ *  skills.sh renders in its own chip — e.g. `agent-workflows` slug shows
+ *  as "Agent workflows". Anything not in the map falls back to the raw
+ *  slug (defence against backend adding new topics without a UI update). */
+const TOPIC_DISPLAY_NAMES: Record<string, string> = {
+  react: 'React',
+  nextjs: 'Next.js',
+  databases: 'Databases',
+  design: 'Design & UI',
+  marketing: 'Marketing',
+  mobile: 'Mobile',
+  testing: 'Testing',
+  'agent-workflows': 'Agent workflows',
+};
+
 /** Format a large integer with K / M suffixes for compact display. */
 function formatCompactNumber(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
@@ -660,6 +676,25 @@ function SkillDetailContent({ item }: { item: MarketplaceSkillItem }) {
   const loadSkillReadme = useMarketplaceStore((s) => s.loadSkillReadme);
   const repoStars = useMarketplaceStore((s) => s.repoStars);
   const loadRepoStars = useMarketplaceStore((s) => s.loadRepoStars);
+  const skillsTopicMap = useMarketplaceStore((s) => s.skillsTopicMap);
+  const skillSummaries = useMarketplaceStore((s) => s.skillSummaries);
+  const loadingSkillSummaries = useMarketplaceStore((s) => s.loadingSkillSummaries);
+  const loadSkillSummary = useMarketplaceStore((s) => s.loadSkillSummary);
+  const skillsListingItems = useMarketplaceStore((s) => s.skillsListing.items);
+  const selectSkillItem = useMarketplaceStore((s) => s.selectSkillItem);
+
+  // Topic chips: read from the persisted skills.sh topic map. The map's
+  // key is `<owner>/<repo>/<skillId>` — exactly `${item.source}/${item.skillId}`.
+  // Empty when the topic scrape has yet to populate (skill outside the
+  // 8 curated topic pages), so the chip row hides itself silently.
+  // `topics` is memoised so the `relatedSkills` useMemo below keeps a
+  // stable dep array and only recomputes when the underlying map / key
+  // change (not on every render).
+  const topicKey = item.source && item.skillId ? `${item.source}/${item.skillId}` : '';
+  const topics = useMemo(
+    () => (topicKey ? (skillsTopicMap[topicKey] ?? []) : []),
+    [topicKey, skillsTopicMap],
+  );
 
   const itemKey = `${item.source}/${item.skillId}`;
   const cached = skillReadmes[itemKey];
@@ -693,12 +728,75 @@ function SkillDetailContent({ item }: { item: MarketplaceSkillItem }) {
     void loadRepoStars(ownerForStars, repoForStars);
   }, [ownerForStars, repoForStars, loadRepoStars]);
 
+  // Trigger Summary scrape; same key shape as README.
+  useEffect(() => {
+    if (!item.source || !item.skillId) return;
+    void loadSkillSummary(item.source, item.skillId);
+  }, [item.source, item.skillId, loadSkillSummary]);
+
+  const summaryMarkdown = itemKey ? skillSummaries[itemKey] : undefined;
+  const isLoadingSummary = itemKey ? loadingSkillSummaries.has(itemKey) : false;
+
+  // Related skills — derive from the currently-loaded listing page. We
+  // pick the strongest available signal:
+  //   1. Skills that share at least one topic with the current item.
+  //   2. Skills from the same `source` (owner/repo) — siblings in the
+  //      same upstream catalog row.
+  // Sorted by installs desc, excluding self, capped at 5. Both buckets
+  // pull from `skillsListing.items` (the active 200-item page) so this
+  // is pure client-side filtering — no extra IPC.
+  const relatedSkills = useMemo(() => {
+    if (!item.source) return { items: [] as MarketplaceSkillItem[], reason: 'none' as const };
+    const currentTopics = new Set(topics);
+    const isSelf = (other: MarketplaceSkillItem) =>
+      other.source === item.source && other.skillId === item.skillId;
+    const byInstallsDesc = (a: MarketplaceSkillItem, b: MarketplaceSkillItem) =>
+      (b.installs ?? 0) - (a.installs ?? 0);
+
+    if (currentTopics.size > 0) {
+      const sameTopic = skillsListingItems
+        .filter((other) => !isSelf(other))
+        .filter((other) => {
+          const otherKey = `${other.source}/${other.skillId}`;
+          const otherTopics = skillsTopicMap[otherKey] ?? [];
+          return otherTopics.some((t) => currentTopics.has(t));
+        })
+        .sort(byInstallsDesc)
+        .slice(0, 5);
+      if (sameTopic.length > 0) {
+        return { items: sameTopic, reason: 'topic' as const };
+      }
+    }
+
+    const sameRepo = skillsListingItems
+      .filter((other) => other.source === item.source && !isSelf(other))
+      .sort(byInstallsDesc)
+      .slice(0, 5);
+    if (sameRepo.length > 0) {
+      return { items: sameRepo, reason: 'repo' as const };
+    }
+    return { items: [] as MarketplaceSkillItem[], reason: 'none' as const };
+  }, [item.source, item.skillId, topics, skillsListingItems, skillsTopicMap]);
+
+  // Pick the sub-label text. For topic-grouped: name the first topic the
+  // current skill belongs to. For repo-grouped: name the upstream repo.
+  const relatedSubLabel = (() => {
+    if (relatedSkills.reason === 'topic' && topics.length > 0) {
+      const first = topics[0];
+      return `More in ${TOPIC_DISPLAY_NAMES[first] ?? first}`;
+    }
+    if (relatedSkills.reason === 'repo') {
+      return `More from ${item.source}`;
+    }
+    return '';
+  })();
+
   const installs = item.installs ?? 0;
   const installsYesterday = item.installsYesterday;
   const change = item.change;
 
   return (
-    <div className="flex flex-col gap-7 h-full">
+    <div className="flex flex-col gap-7">
       {/* Block 1 — Compact info row. */}
       <div className="flex gap-8">
         <InfoItem label="Source" value={item.source ?? '—'} />
@@ -732,19 +830,41 @@ function SkillDetailContent({ item }: { item: MarketplaceSkillItem }) {
         <MarketplaceSourceBadge source={buildSourceFromSkillItem(item)} />
       </div>
 
-      {/* Block 3 — README. Flex-1 fill only when README content is
-          actually loaded, otherwise the loading/error/empty states
-          would stretch their few-line content over the entire remaining
-          panel height. Skills.sh API exposes nothing else we could show,
-          so a short panel during loading is the natural state. */}
+      {/* Block 2.5 — Summary (scraped from skills.sh's AI-generated card).
+          Hidden when the upstream page lacks a summary or the scrape
+          fails. Mirrors the upstream's "muted bg-card above SKILL.md"
+          treatment using the project's zinc tokens. */}
+      {summaryMarkdown && summaryMarkdown.trim().length > 0 ? (
+        <div className="flex flex-col gap-3">
+          <span className="text-[11px] font-mono font-medium uppercase tracking-wide text-[#71717A]">
+            Summary
+          </span>
+          <div className="rounded-lg border border-[#E5E5E5] bg-[#FAFAFA] px-4 py-3">
+            <MarkdownBody source={summaryMarkdown} />
+          </div>
+        </div>
+      ) : isLoadingSummary ? (
+        <div className="flex items-center gap-2 text-xs text-[#A1A1AA]">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <span>Loading summary...</span>
+        </div>
+      ) : null}
+
+      {/* Block 3 — README. Fixed max-height with internal scroll only after
+          content arrives. Loading / error / empty states render at natural
+          height so the box matches the actual payload (no placeholder-
+          ballooning). The cap is `max-h-[520px]` rather than `flex-1` so
+          this block does not compete with sibling blocks (Summary, Related)
+          for parent column space — SlidePanel's outer overflow still
+          handles spillover when several blocks stack tall. */}
       {(() => {
         const hasReadmeContent = !!cached?.content && cached.content.trim().length > 0;
         return (
-          <div className={`flex flex-col gap-3 ${hasReadmeContent ? 'min-h-0 flex-1' : ''}`}>
+          <div className="flex flex-col gap-3">
             <h3 className="text-sm font-semibold text-[#18181B]">README</h3>
             <div
               className={`rounded-lg border border-[#E5E5E5] bg-white p-4 ${
-                hasReadmeContent ? 'min-h-[280px] flex-1 overflow-y-auto' : ''
+                hasReadmeContent ? 'max-h-[520px] overflow-y-auto' : ''
               }`}
             >
               {isLoadingReadme && !cached ? (
@@ -772,6 +892,47 @@ function SkillDetailContent({ item }: { item: MarketplaceSkillItem }) {
           </div>
         );
       })()}
+
+      {/* Block 4 — Related skills. Surfaces 5 siblings the user can pivot
+          to without leaving the marketplace. Sub-label flips between
+          "More in <topic>" and "More from <owner>/<repo>" based on which
+          filter found matches first (topic wins). Hidden when neither
+          filter yields anything — typical for plugin-nested or rare
+          skills that don't share a current-page row. */}
+      {relatedSkills.items.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-0.5">
+            <h3 className="text-sm font-semibold text-[#18181B]">Related skills</h3>
+            <span className="text-[11px] text-[#71717A]">{relatedSubLabel}</span>
+          </div>
+          <div className="flex flex-col gap-2">
+            {relatedSkills.items.map((other) => {
+              const otherKey = getSkillItemKey(other);
+              return (
+                <button
+                  key={otherKey}
+                  type="button"
+                  onClick={() => selectSkillItem(otherKey)}
+                  className="flex items-center gap-2.5 rounded-md border border-[#E5E5E5] bg-white px-3.5 py-2.5 text-left transition-colors hover:bg-[#FAFAFA]"
+                >
+                  <Sparkles className="h-3.5 w-3.5 shrink-0 text-[#52525B]" />
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="truncate text-[13px] font-medium text-[#18181B]">
+                      {other.name || other.skillId}
+                    </span>
+                    <span className="truncate text-[11px] text-[#71717A]">
+                      {other.source}
+                      {typeof other.installs === 'number' && other.installs > 0
+                        ? ` · ${formatCompactNumber(other.installs)} installs`
+                        : ''}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

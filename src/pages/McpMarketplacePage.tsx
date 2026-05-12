@@ -564,7 +564,7 @@ export function McpMarketplacePage() {
   );
 
   const detailContent = selectedItem && (
-    <div className="flex flex-col gap-7 h-full">
+    <div className="flex flex-col gap-7">
       {/* Block 1: Decision-critical info. */}
       <section className="flex gap-8">
         <InfoItem label="Author" value={selectedItem.author || 'Unknown'} />
@@ -877,11 +877,11 @@ function McpReadmeBlock({ item }: { item: MarketplaceMcpItem }) {
   // "Loading…" line in the corner).
   const hasContent = !!cached?.content && cached.content.trim().length > 0;
   return (
-    <section className={`flex flex-col gap-3 ${hasContent ? 'min-h-0 flex-1' : ''}`}>
+    <section className="flex flex-col gap-3">
       <h3 className="text-sm font-semibold text-[#18181B]">README</h3>
       <div
         className={`rounded-lg border border-[#E5E5E5] bg-white p-4 ${
-          hasContent ? 'min-h-[240px] flex-1 overflow-y-auto' : ''
+          hasContent ? 'max-h-[520px] overflow-y-auto' : ''
         }`}
       >
         {!hasRepo ? (

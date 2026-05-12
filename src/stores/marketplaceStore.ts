@@ -2011,18 +2011,42 @@ export const useMarketplaceStore = create<MarketplaceState>()(
       // clearing only the README slices — listings + topic map + settings
       // survive untouched, so the UX cost is one silent re-fetch the next
       // time the user opens any detail panel.
-      version: 3,
+      // version 4 (2026-05-12): backend `MarketplaceMcpItem` gained
+      // `title` / `websiteUrl` / `publisher` / `keywords` / `examples`
+      // + license now comes from `_meta.publisher-provided.license`
+      // instead of being permanently `None`. Items persisted under v3
+      // lack these fields, so the detail panel sees `undefined` for
+      // each addition regardless of what the upstream actually publishes.
+      // Migrate by clearing the MCP listing / search caches; the next
+      // mount silently refetches with the new schema. Skill caches +
+      // topic map + onboarding flags survive.
+      version: 4,
       migrate: (persistedState, version) => {
         const state = persistedState as Partial<MarketplaceState> | undefined;
         if (!state) return state;
+        let next = state;
         if (version < 3) {
-          return {
-            ...state,
-            skillReadmes: {},
-            mcpReadmes: {},
+          next = { ...next, skillReadmes: {}, mcpReadmes: {} };
+        }
+        if (version < 4) {
+          next = {
+            ...next,
+            mcpsListing: state.mcpsListing
+              ? {
+                  ...state.mcpsListing,
+                  items: [],
+                  currentCursor: null,
+                  prevCursors: [],
+                  nextCursor: null,
+                  hasMore: false,
+                  page: 1,
+                  lastSyncedAt: null,
+                }
+              : state.mcpsListing,
+            mcpsSearch: null,
           };
         }
-        return state;
+        return next;
       },
       storage: createJSONStorage(() => localStorage),
       // Persist only the SWR-relevant slices. Transient state (loading,

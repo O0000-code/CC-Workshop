@@ -362,6 +362,13 @@ pub struct AppSettings {
     pub claude_config_dir: String,
     pub anthropic_api_key: Option<String>,
     pub auto_classify_new_items: bool,
+    /// Model alias passed to `claude -p --model`. One of `opus` / `sonnet` /
+    /// `haiku`. Defaults to `opus` so first-time users get the best quality.
+    /// Used by `commands::classify::auto_classify` (read at call time).
+    /// `#[serde(default)]` keeps pre-existing settings.json files (without
+    /// this field) deserialisable — same pattern as `warp_open_mode` above.
+    #[serde(default = "default_classify_model")]
+    pub classify_model: String,
     pub terminal_app: String,
     pub claude_command: String,
     #[serde(default = "default_warp_open_mode")]
@@ -374,6 +381,10 @@ pub struct AppSettings {
 
 fn default_warp_open_mode() -> String {
     "window".to_string()
+}
+
+fn default_classify_model() -> String {
+    "opus".to_string()
 }
 
 fn default_claude_md_distribution_path() -> ClaudeMdDistributionPath {
@@ -395,6 +406,7 @@ impl Default for AppSettings {
             // change their stored preference. Existing test
             // `test_app_settings_default` is updated in lockstep.
             auto_classify_new_items: true,
+            classify_model: default_classify_model(),
             terminal_app: "Terminal".to_string(),
             claude_command: "claude".to_string(),
             warp_open_mode: "window".to_string(),
@@ -1196,10 +1208,18 @@ pub struct MarketplaceMcpItem {
     /// as the React key + retry state key.
     pub id: String,
     pub name: String,
+    /// Optional human-readable title (`server.title`). When present the
+    /// detail panel hero uses this in place of the reverse-DNS `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub description: String,
     pub readme_markdown: String,
     pub author: String,
     pub repository_url: String,
+    /// Optional homepage / docs URL distinct from `repository_url`.
+    /// Surfaced as a "Website" link in the detail-panel info area.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub website_url: Option<String>,
     /// GitHub `repo` segment parsed from `repository_url` at fetch time. Empty
     /// when the upstream provides no parseable GitHub URL. Persisted into
     /// `MarketplaceSource.repo` at install (B-P0-3) so the on-disk
@@ -1214,13 +1234,47 @@ pub struct MarketplaceMcpItem {
     pub stars: u32,
     pub categories: Vec<String>,
     pub tags: Vec<String>,
+    /// SPDX-ish license string from `_meta.publisher-provided.license`.
     pub license: Option<String>,
+    /// Publisher / company name from `_meta.publisher-provided.publisher`
+    /// (distinct from `author` which is the parsed repo owner).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<String>,
+    /// Free-form keywords list (`_meta.publisher-provided.keywords[]`).
+    /// Rendered as a small chip strip in the detail panel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
+    /// Publisher-curated example snippets (Quick start / Docker compose
+    /// / etc.). Each carries a name + description + command/config — the
+    /// detail panel renders them as a stacked card list with copy buttons.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<McpExample>,
     /// `"stdio"` or `"http"`. The MCP Registry distinguishes these at the
     /// schema level via `packages` vs `remotes`; we collapse that into a
     /// single string for the UI to branch on (C §3 / D-12).
     pub mcp_type: String,
     pub stdio_config: Option<StdioMcpConfig>,
     pub http_config: Option<HttpMcpConfig>,
+}
+
+/// Publisher-provided example snippet. Either `command` (shell one-liner)
+/// or `config` (structured block) is present per example; the UI prefers
+/// `command` when both are set.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpExample {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Shell command snippet (e.g. `docker run ...`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Pretty-printed structured config (JSON / TOML / YAML) when `command`
+    /// isn't present. Serialised as a JSON string for cross-format clarity
+    /// — the frontend renders it inside a `<pre>` code block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1367,6 +1421,7 @@ mod tests {
         // marketplace install → auto-classify closed loop is the out-of-the-box
         // experience.
         assert!(settings.auto_classify_new_items);
+        assert_eq!(settings.classify_model, "opus");
         assert!(!settings.has_completed_import);
         assert!(settings.anthropic_api_key.is_none());
         assert_eq!(settings.claude_md_distribution_path, ClaudeMdDistributionPath::ClaudeDir);

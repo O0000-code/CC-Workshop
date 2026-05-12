@@ -381,7 +381,9 @@ export function McpMarketplacePage() {
         })}
       </div>
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <h2 className="text-base font-semibold text-[#18181B] truncate">{selectedItem.name}</h2>
+        <h2 className="text-base font-semibold text-[#18181B] truncate">
+          {selectedItem.title || selectedItem.name}
+        </h2>
         <p
           className="w-full truncate text-xs font-normal text-[#71717A]"
           title={selectedItem.description}
@@ -577,6 +579,62 @@ export function McpMarketplacePage() {
 
       {/* Block 2: Reference info. */}
       <section className="flex flex-col gap-4">
+        {/* Publisher-provided metadata strip — license / publisher / website /
+            keywords. All four are independent and any subset may render; the
+            outer block hides when none are present. */}
+        {(selectedItem.license ||
+          selectedItem.publisher ||
+          selectedItem.websiteUrl ||
+          (selectedItem.keywords && selectedItem.keywords.length > 0)) && (
+          <div className="flex flex-col gap-2.5">
+            {(selectedItem.license || selectedItem.publisher || selectedItem.websiteUrl) && (
+              <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1.5">
+                {selectedItem.publisher && (
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-[11px] font-medium text-[#71717A]">Publisher</span>
+                    <span className="text-[12px] font-medium text-[#18181B]">
+                      {selectedItem.publisher}
+                    </span>
+                  </div>
+                )}
+                {selectedItem.license && (
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-[11px] font-medium text-[#71717A]">License</span>
+                    <span className="text-[12px] font-medium text-[#18181B]">
+                      {selectedItem.license}
+                    </span>
+                  </div>
+                )}
+                {selectedItem.websiteUrl && (
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-[11px] font-medium text-[#71717A]">Website</span>
+                    <a
+                      href={selectedItem.websiteUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-mono text-[12px] text-[#18181B] underline decoration-[#D4D4D8] underline-offset-[3px] transition-colors hover:decoration-[#18181B]"
+                    >
+                      {selectedItem.websiteUrl.replace(/^https?:\/\//, '')}
+                    </a>
+                  </div>
+                )}
+              </div>
+            )}
+            {selectedItem.keywords && selectedItem.keywords.length > 0 && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[11px] font-medium text-[#71717A]">Keywords</span>
+                {selectedItem.keywords.map((k) => (
+                  <span
+                    key={k}
+                    className="rounded-md border border-[#E5E5E5] px-2 py-0.5 text-[11px] font-medium text-[#52525B]"
+                  >
+                    {k}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         {(selectedItem.categories.length > 0 || selectedItem.tags.length > 0) && (
           <div className="flex flex-col gap-2.5">
             {selectedItem.categories.length > 0 && (
@@ -639,6 +697,12 @@ export function McpMarketplacePage() {
 
       {/* Block 3: README — on-demand fetch (mirrors Skill detail). */}
       <McpReadmeBlock item={selectedItem} />
+
+      {/* Block 3.5: Publisher-curated example snippets. Renders only when
+          `_meta.publisher-provided.examples[]` is non-empty. Each card
+          carries a name + description + a copyable code block (command
+          when present, else pretty-printed config JSON). */}
+      <McpExamplesBlock examples={selectedItem.examples} />
 
       {/* Block 4: Configuration. */}
       {configurationBlock}
@@ -907,6 +971,90 @@ function McpReadmeBlock({ item }: { item: MarketplaceMcpItem }) {
         ) : (
           <p className="text-xs text-[#A1A1AA]">No README provided.</p>
         )}
+      </div>
+    </section>
+  );
+}
+
+// ============================================================================
+// McpExamplesBlock — renders publisher-provided example snippets as stacked
+// cards. Each card: name (heading) + description (prose) + a `<pre>` code
+// block containing the command (or pretty-printed config JSON) with a
+// per-card "Copy" affordance. Hides itself entirely when `examples` is
+// empty / undefined.
+// ============================================================================
+
+interface McpExamplesBlockProps {
+  examples?: import('@/types/marketplace').McpExample[];
+}
+
+function McpExamplesBlock({ examples }: McpExamplesBlockProps) {
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  if (!examples || examples.length === 0) return null;
+
+  const handleCopy = async (idx: number, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedIndex(idx);
+      window.setTimeout(
+        () => setCopiedIndex((current) => (current === idx ? null : current)),
+        2000,
+      );
+    } catch (err) {
+      console.error('Failed to copy example:', err);
+    }
+  };
+
+  return (
+    <section className="flex flex-col gap-3">
+      <h3 className="text-sm font-semibold text-[#18181B]">Examples</h3>
+      <div className="flex flex-col gap-2.5">
+        {examples.map((ex, idx) => {
+          const snippet = ex.command ?? ex.config ?? '';
+          if (snippet.length === 0) return null;
+          const isCopied = copiedIndex === idx;
+          return (
+            <div
+              key={idx}
+              className="flex flex-col gap-2 rounded-lg border border-[#E5E5E5] bg-white p-4"
+            >
+              {(ex.name || ex.description) && (
+                <div className="flex flex-col gap-1">
+                  {ex.name && (
+                    <span className="text-[13px] font-semibold text-[#18181B]">{ex.name}</span>
+                  )}
+                  {ex.description && (
+                    <p className="text-[12px] leading-relaxed text-[#71717A]">{ex.description}</p>
+                  )}
+                </div>
+              )}
+              <div className="relative">
+                <pre className="overflow-x-auto rounded-md border border-[#E5E5E5] bg-[#FAFAFA] p-3 pr-16">
+                  <code className="font-mono text-[12px] text-[#18181B]">{snippet}</code>
+                </pre>
+                <button
+                  type="button"
+                  onClick={() => void handleCopy(idx, snippet)}
+                  className={`absolute right-2 top-2 inline-flex items-center gap-1 rounded-md border border-[#E5E5E5] bg-white px-2 py-1 text-[11px] font-medium transition-colors ${
+                    isCopied ? 'text-[#18181B]' : 'text-[#71717A] hover:text-[#18181B]'
+                  }`}
+                >
+                  {isCopied ? (
+                    <>
+                      <Check className="h-3 w-3" />
+                      Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="h-3 w-3" />
+                      Copy
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </section>
   );

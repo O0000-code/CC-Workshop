@@ -160,9 +160,14 @@ export type McpsView = 'all' | 'recently-updated';
 export interface MarketplaceMcpItem {
   id: string;
   name: string;
+  /** Human-readable display title (`server.title`). When present the detail
+   *  panel hero renders this in place of the reverse-DNS `name`. */
+  title?: string;
   description: string;
   readmeMarkdown: string;
   author: string;
+  /** Optional homepage / docs URL distinct from `repositoryUrl`. */
+  websiteUrl?: string;
   /**
    * GitHub repository segment parsed from `repositoryUrl` at fetch time.
    * Persisted into `MarketplaceSource.repo` at install (B-P0-3) so the
@@ -176,11 +181,29 @@ export interface MarketplaceMcpItem {
   stars: number;
   categories: string[];
   tags: string[];
+  /** SPDX-ish license string from `_meta.publisher-provided.license`. */
   license?: string;
+  /** Publisher / company name from `_meta.publisher-provided.publisher`. */
+  publisher?: string;
+  /** Free-form keywords from `_meta.publisher-provided.keywords[]`. */
+  keywords?: string[];
+  /** Publisher-curated example snippets (Quick start / Docker compose / …). */
+  examples?: McpExample[];
   /** Discriminator for stdio vs HTTP. The matching config field is non-null. */
   mcpType: 'stdio' | 'http';
   stdioConfig?: StdioMcpConfig;
   httpConfig?: HttpMcpConfig;
+}
+
+/** A single publisher-curated example snippet attached to an MCP server.
+ *  Either `command` (shell one-liner) or `config` (pretty-printed JSON /
+ *  TOML / YAML block) is set per example; the UI prefers `command` when
+ *  both are present. */
+export interface McpExample {
+  name?: string;
+  description?: string;
+  command?: string;
+  config?: string;
 }
 
 export interface StdioMcpConfig {

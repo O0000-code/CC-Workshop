@@ -98,8 +98,8 @@ use crate::commands::classify::{auto_classify, ClassifyItem, ClassifyResult, Exi
 use crate::commands::data::{read_app_data, write_app_data, DATA_MUTEX};
 use crate::types::{
     AppData, ConflictAction, EnvVarSpec, HttpMcpConfig, InstallOutcome, MarketplaceMcpItem,
-    MarketplaceSkillItem, MarketplaceSource, McpConfigFile, McpMetadata, SkillMetadata,
-    StdioMcpConfig, TrashedItemBrief,
+    MarketplaceSkillItem, MarketplaceSource, McpConfigFile, McpExample, McpMetadata,
+    SkillMetadata, StdioMcpConfig, TrashedItemBrief,
 };
 use crate::utils::{ensure_dir, get_app_data_dir};
 use serde::{Deserialize, Serialize};
@@ -589,17 +589,74 @@ struct RegistryListMetadata {
 #[derive(Deserialize)]
 struct RegistryServerEnvelope {
     server: RegistryServer,
-    /// `_meta` is ignored — V1 doesn't surface registry metadata.
+    /// `_meta` carries upstream-curated fields under namespaced keys.
+    /// Two keys are surfaced:
+    ///   - `io.modelcontextprotocol.registry/official` — versioning state
+    ///     (`isLatest`, `status`, etc.). Currently consumed for `isLatest`.
+    ///   - `io.modelcontextprotocol.registry/publisher-provided` — free-form
+    ///     metadata the publisher chose to attach (examples, license,
+    ///     keywords, publisher name). Mirrored into the detail panel.
     #[serde(default)]
-    #[allow(dead_code)]
     #[serde(rename = "_meta")]
-    meta: Option<serde_json::Value>,
+    meta: Option<RegistryMeta>,
+}
+
+/// Structured `_meta` block. The keys are dot/slash separated namespaces
+/// so each is mapped via `#[serde(rename)]`.
+#[derive(Deserialize, Default)]
+struct RegistryMeta {
+    #[serde(default, rename = "io.modelcontextprotocol.registry/publisher-provided")]
+    publisher_provided: Option<PublisherProvidedMeta>,
+}
+
+/// Publisher-controlled metadata published alongside a server. Every field
+/// is optional — the upstream lets publishers fill in whichever they want.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PublisherProvidedMeta {
+    #[serde(default)]
+    license: Option<String>,
+    #[serde(default)]
+    publisher: Option<String>,
+    #[serde(default)]
+    keywords: Vec<String>,
+    #[serde(default)]
+    examples: Vec<PublisherExample>,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublisherExample {
+    /// Short label (e.g. "Quick start", "Docker compose", "Custom OpenAPI").
+    #[serde(default)]
+    name: Option<String>,
+    /// Long-form prose explaining what the example does.
+    #[serde(default)]
+    description: Option<String>,
+    /// Shell command snippet the user can copy verbatim. Sibling to
+    /// `config` (a JSON / TOML block); we surface whichever is present,
+    /// preferring `command` since it copies into a terminal directly.
+    #[serde(default)]
+    command: Option<String>,
+    /// Structured config snippet (JSON / TOML / YAML). Rendered in a
+    /// `<pre>` block when `command` is absent.
+    #[serde(default)]
+    config: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RegistryServer {
     name: String,
+    /// Human-readable display title (≤100 chars, optional). `server.name`
+    /// is reverse-DNS (`io.github.X/Y`) — `title` is the real name shown
+    /// in the detail-panel header when present.
+    #[serde(default)]
+    title: Option<String>,
     description: Option<String>,
+    /// Optional homepage / docs URL distinct from `repository.url`.
+    #[serde(default)]
+    website_url: Option<String>,
     #[serde(default)]
     repository: Option<RegistryRepository>,
     #[serde(default)]
@@ -1095,7 +1152,11 @@ fn strip_reverse_dns_prefix(full: &str) -> String {
 /// Convert a single registry envelope into our `MarketplaceMcpItem`. Returns
 /// `None` for servers with neither `packages` nor `remotes` — there is nothing
 /// we could install from those.
-fn envelope_to_item(s: RegistryServer, now: &str) -> Option<MarketplaceMcpItem> {
+fn envelope_to_item(
+    s: RegistryServer,
+    meta: Option<RegistryMeta>,
+    now: &str,
+) -> Option<MarketplaceMcpItem> {
     let repo_url = s
         .repository
         .as_ref()
@@ -1152,14 +1213,35 @@ fn envelope_to_item(s: RegistryServer, now: &str) -> Option<MarketplaceMcpItem> 
         return None;
     };
 
+    // Pull publisher-provided metadata (license / publisher / keywords /
+    // examples) and the icon set out of the envelope. All best-effort —
+    // empty / None when the upstream omitted them.
+    let publisher_meta = meta
+        .and_then(|m| m.publisher_provided)
+        .unwrap_or_default();
+    let examples: Vec<McpExample> = publisher_meta
+        .examples
+        .into_iter()
+        .map(|e| McpExample {
+            name: e.name,
+            description: e.description,
+            command: e.command,
+            config: e.config.map(|v| {
+                serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string())
+            }),
+        })
+        .collect();
+
     Some(MarketplaceMcpItem {
         // `id` keeps the full reverse-DNS form for uniqueness across the
         // registry's namespace; `name` is stripped for display.
         id: s.name.clone(),
         name: strip_reverse_dns_prefix(&s.name),
+        title: s.title,
         description: s.description.unwrap_or_default(),
         readme_markdown: String::new(),
         author: owner,
+        website_url: s.website_url,
         // B-P0-3: persist the parsed GitHub `repo` so install metadata can
         // write a real `(owner, repo, name)` triple instead of the legacy
         // `(author, author, name)` placeholder. Empty when the upstream URL
@@ -1171,7 +1253,10 @@ fn envelope_to_item(s: RegistryServer, now: &str) -> Option<MarketplaceMcpItem> 
         stars: 0,
         categories: s.categories,
         tags: s.tags,
-        license: None,
+        license: publisher_meta.license,
+        publisher: publisher_meta.publisher,
+        keywords: publisher_meta.keywords,
+        examples,
         mcp_type,
         stdio_config,
         http_config,
@@ -1254,7 +1339,7 @@ async fn fetch_registry_page(
     let items: Vec<MarketplaceMcpItem> = parsed
         .servers
         .into_iter()
-        .filter_map(|env| envelope_to_item(env.server, &now))
+        .filter_map(|env| envelope_to_item(env.server, env.meta, &now))
         .collect();
     Ok((items, next_cursor))
 }
@@ -1910,9 +1995,11 @@ fn build_mcp_seed_items() -> Vec<MarketplaceMcpItem> {
             MarketplaceMcpItem {
                 id: seed.id.to_string(),
                 name: seed.display_name.to_string(),
+                title: None,
                 description: seed.description.to_string(),
                 readme_markdown: String::new(),
                 author,
+                website_url: None,
                 repo,
                 repository_url: seed.repository_url.to_string(),
                 last_updated_at: now.clone(),
@@ -1920,6 +2007,9 @@ fn build_mcp_seed_items() -> Vec<MarketplaceMcpItem> {
                 categories: Vec::new(),
                 tags: Vec::new(),
                 license: None,
+                publisher: None,
+                keywords: Vec::new(),
+                examples: Vec::new(),
                 mcp_type: "stdio".to_string(),
                 stdio_config: Some(StdioMcpConfig {
                     command: seed.command.to_string(),
@@ -3263,63 +3353,52 @@ mod tests {
 
     #[test]
     fn merge_seed_at_top_dedupes_by_name() {
+        fn fixture(id: &str, name: &str, description: &str, mcp_type: &str) -> MarketplaceMcpItem {
+            MarketplaceMcpItem {
+                id: id.into(),
+                name: name.into(),
+                title: None,
+                description: description.into(),
+                readme_markdown: String::new(),
+                author: String::new(),
+                website_url: None,
+                repo: String::new(),
+                repository_url: String::new(),
+                last_updated_at: "2026-05-11T00:00:00Z".into(),
+                stars: 0,
+                categories: vec![],
+                tags: vec![],
+                license: None,
+                publisher: None,
+                keywords: vec![],
+                examples: vec![],
+                mcp_type: mcp_type.into(),
+                stdio_config: None,
+                http_config: None,
+            }
+        }
+
         let seed = vec![MarketplaceMcpItem {
-            id: "npm:@playwright/mcp".into(),
-            name: "playwright".into(),
-            description: "seed".into(),
-            readme_markdown: String::new(),
             author: "microsoft".into(),
             repo: "playwright-mcp".into(),
             repository_url: "https://github.com/microsoft/playwright-mcp".into(),
-            last_updated_at: "2026-05-11T00:00:00Z".into(),
-            stars: 0,
-            categories: vec![],
-            tags: vec![],
-            license: None,
-            mcp_type: "stdio".into(),
             stdio_config: Some(StdioMcpConfig {
                 command: "npx".into(),
                 args: vec!["-y".into(), "@playwright/mcp".into()],
                 required_env_vars: vec![],
             }),
-            http_config: None,
+            ..fixture("npm:@playwright/mcp", "playwright", "seed", "stdio")
         }];
         let registry = vec![
             MarketplaceMcpItem {
-                id: "ac.tandem/docs-mcp".into(),
-                name: "docs-mcp".into(),
-                description: "registry".into(),
-                readme_markdown: String::new(),
                 author: "ac.tandem".into(),
-                repo: String::new(),
-                repository_url: String::new(),
-                last_updated_at: "2026-05-11T00:00:00Z".into(),
-                stars: 0,
-                categories: vec![],
-                tags: vec![],
-                license: None,
-                mcp_type: "http".into(),
-                stdio_config: None,
-                http_config: None,
+                ..fixture("ac.tandem/docs-mcp", "docs-mcp", "registry", "http")
             },
             // Conflict with seed (same display name) — should be dropped
             // because seed wins on name dedupe.
             MarketplaceMcpItem {
-                id: "registry/playwright".into(),
-                name: "playwright".into(),
-                description: "registry duplicate".into(),
-                readme_markdown: String::new(),
                 author: "x".into(),
-                repo: String::new(),
-                repository_url: String::new(),
-                last_updated_at: "2026-05-11T00:00:00Z".into(),
-                stars: 0,
-                categories: vec![],
-                tags: vec![],
-                license: None,
-                mcp_type: "stdio".into(),
-                stdio_config: None,
-                http_config: None,
+                ..fixture("registry/playwright", "playwright", "registry duplicate", "stdio")
             },
         ];
         let merged = merge_seed_at_top(seed, registry);

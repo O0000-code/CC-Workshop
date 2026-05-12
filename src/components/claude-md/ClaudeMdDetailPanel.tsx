@@ -2,6 +2,7 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { FileText, FolderOpen, Layers, X, Plus } from 'lucide-react';
 import { SlidePanel } from '@/components/layout';
 import { Toggle, CategoryTreeDropdown, Button } from '@/components/common';
+import { MarkdownBody } from '@/components/marketplace/MarkdownBody';
 import { safeInvoke } from '@/utils/tauri';
 import { useClaudeMdStore } from '@/stores/claudeMdStore';
 import { useAppStore } from '@/stores/appStore';
@@ -386,9 +387,11 @@ export function ClaudeMdDetailPanel({ file, isOpen, onClose }: ClaudeMdDetailPan
           className="overflow-y-auto rounded-lg border border-[#E5E5E5] bg-white p-4"
           style={{ maxHeight: '480px' }}
         >
-          <div className="whitespace-pre-wrap text-xs font-normal leading-relaxed text-[#52525B]">
-            {selectedFile.content || 'No content available'}
-          </div>
+          {selectedFile.content ? (
+            <MarkdownBody source={selectedFile.content} />
+          ) : (
+            <span className="text-xs text-[#A1A1AA]">No content available</span>
+          )}
         </div>
       </section>
 

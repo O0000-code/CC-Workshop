@@ -36,6 +36,7 @@ import {
   type ViewOption,
 } from '@/components/common';
 import { MarketplaceSourceBadge } from '@/components/marketplace/MarketplaceSourceBadge';
+import { MarkdownBody } from '@/components/marketplace/MarkdownBody';
 import { SkillListItem } from '@/components/skills/SkillListItem';
 import { ImportSkillsModal } from '@/components/modals';
 import { useSkillsStore } from '@/stores/skillsStore';
@@ -790,13 +791,13 @@ export function SkillsPage() {
           className="overflow-y-auto rounded-lg border border-[#E5E5E5] bg-white p-4"
           style={{ maxHeight: '480px' }}
         >
-          <div className="whitespace-pre-wrap text-xs font-normal leading-relaxed text-[#52525B]">
+          <div>
             {selectedSkill.description && (
-              <p className="mb-3 rounded bg-[#FAFAFA] p-2 text-[#71717A]">
+              <p className="mb-3 whitespace-pre-wrap rounded bg-[#FAFAFA] p-2 text-xs font-normal leading-relaxed text-[#71717A]">
                 {selectedSkill.description}
               </p>
             )}
-            <p>{selectedSkill.instructions}</p>
+            <MarkdownBody source={selectedSkill.instructions ?? ''} />
           </div>
         </div>
       </div>

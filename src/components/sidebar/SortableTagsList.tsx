@@ -138,7 +138,14 @@ export function SortableTagsList({
   // Reserve container height to prevent wrap-row count from collapsing
   // mid-drag (which would shake the rest of the sidebar). 28px per row
   // matches the pill height (~26px) + gap (~2px effective). Floor at 1 row.
-  const minHeight = `${Math.max(1, Math.ceil(tags.length / 4)) * 28}px`;
+  //
+  // Use `visibleTags.length`, not `tags.length`: when the list is collapsed
+  // (showAll === false) tags hold the full 30+ count but only 10 are
+  // rendered, so `tags.length / 4` produces a minHeight far above the
+  // actual content. Combined with flex-wrap's default `align-content:
+  // stretch`, the extra space stretches between rows and makes the section
+  // look spaced-out — see auto-classify session screenshot.
+  const minHeight = `${Math.max(1, Math.ceil(visibleTags.length / 4)) * 28}px`;
 
   const handleDragStart = (event: DragStartEvent) => {
     // Auto-expand collapsed list so overflow tags become valid drop targets
@@ -239,7 +246,11 @@ export function SortableTagsList({
         strategy={rectSortingStrategy}
         disabled={isAddingTag || editingTagId !== null}
       >
-        <div data-sortable-list className="flex flex-wrap gap-1.5" style={containerStyle}>
+        <div
+          data-sortable-list
+          className="flex flex-wrap content-start gap-1.5"
+          style={containerStyle}
+        >
           {visibleTags.map((tag) => {
             const isEditing = editingTagId === tag.id;
 

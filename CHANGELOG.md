@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-05-12
+
+### Added
+
+#### Marketplace
+- **Skill Marketplace**: Browse and install community Skills from skills.sh
+  - Live catalog with topic filtering, GitHub star counts, AI-generated summaries, and README previews
+  - One-click install via the GitHub codeload tarball endpoint (no GitHub API rate limit)
+  - Collision handling: Replace or Restore-from-Trash when an item already exists
+  - Auto-Classify suggestion fires immediately after install
+  - SWR-style 24-hour catalog cache with a background refresh on app launch
+- **MCP Marketplace**: Browse and install MCP Servers from `registry.modelcontextprotocol.io`
+  - Cursor-paginated browsing, a Recently Updated feed, and full-text search
+  - Publisher metadata (title, website, license, keywords) and publisher-curated example snippets in the detail panel
+  - Per-ecosystem install command derivation: `npm` → `npx -y`, `pypi` → `uvx`, `oci` → `docker run --rm -i`
+  - Required environment variables surfaced as a form at install time; secret fields render as password inputs
+  - HTTP MCPs with URL template variables (`{VAR}`) or required headers get a dedicated input form at install time and a "Save connection settings" action post-install
+
+#### Organization
+- **Hierarchical Categories**: Categories support one level of nesting -- drag a subcategory under a parent in the sidebar
+  - Filter pages aggregate items from both parent and child categories
+  - Auto-classify can suggest placement under a parent category
+  - Asymmetric promote/demote thresholds reduce accidental drag-out promotions during reorder
+- **Sidebar Reorder**: Drag categories and tags in the sidebar to reorder them
+  - macOS-grade drag physics: 4 px activation, magnetic snap, distance-aware settle, multi-layer lift shadow
+  - Keyboard reorder support with screen-reader announcements
+- **View Options**: Unified Group + Sort menu (funnel icon) on Skills, MCP Servers, CLAUDE.md, Scenes, Projects, Category, and Tag pages
+  - Group by: Categories, Tags, or None (multi-valued for Tags)
+  - Sort by: Name, Recently added, Recently used, or Most used (per-page applicability)
+  - Plugin-installed items implicitly sort to the bottom within any axis
+  - Preferences persisted per page
+
+#### System Integration
+- **Ghostty Terminal**: Added Ghostty alongside Terminal.app, iTerm2, Warp, and Alacritty for launching Claude Code
+  - Version-gated tab API: older Ghostty versions fall back to a new window
+  - Reuses an existing Ghostty instance when one is already running
+
+#### User Experience
+- Skill instructions and CLAUDE.md content render as Markdown in the detail panels
+- Auto-classify model is configurable from Settings (Opus, Sonnet, or Haiku; defaults to Opus)
+- Reset auto-classify data action in Settings (clears all categories, tags, and item assignments after an explicit confirm with item counts)
+- Auto-Classify on the Category and Tag filter pages runs Skills + MCPs + CLAUDE.md in parallel, scoped to the current category (and descendants) or tag
+- Per-item icons on Marketplace list rows derived from skill / MCP name keywords
+- "From" row in Skill and MCP detail panels surfaces the marketplace source as a distinct row from Scope
+- MCP "missing environment variables" alert on the Projects page lists any deployed MCPs whose required env vars are not yet filled
+
+### Changed
+
+- Default landing page on app launch is now the Skill Marketplace
+- Cascade-clear on category or tag delete: item references are atomically cleared before write
+- Sidebar category rows: chevron, dot, name, and count are pixel-aligned with measurement-driven geometry
+- MCP detail panel uses the upstream `title` (e.g. "inference.sh") rather than the reverse-DNS `id` when available
+
+### Fixed
+
+- Auto-Classify button is disabled when there are no items to classify
+- Import modals open with no item pre-selected; a tooltip warns that local-file imports relocate sources into `~/.ensemble/`
+- MCP config serialization omits `args` and `env` when null (Claude Code schema compliance)
+- CLAUDE.md empty state is vertically centered
+- SceneListItem: ellipsis button visibility and stats text overflow
+- Scene detail panel header truncates long descriptions
+- Project cards collapse when the "New Project" panel opens
+- Sidebar tags list: minHeight and content-start when the list is collapsed (eliminates phantom row stretching)
+- Sidebar hierarchical drag: drop-into target stability under rapid pointer movement, drop indicator clears on cancel, promoted categories land at the pointer position
+
 ## [1.0.0] - 2026-02-06
 
 ### Added
@@ -66,5 +131,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Zustand state management
 - Native macOS window with custom titlebar
 
-[Unreleased]: https://github.com/O0000-code/Ensemble/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/O0000-code/Ensemble/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/O0000-code/Ensemble/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/O0000-code/Ensemble/releases/tag/v1.0.0

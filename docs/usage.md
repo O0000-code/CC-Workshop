@@ -162,9 +162,43 @@ CLAUDE.md files can be distributed to projects in two ways:
 
 Ensemble supports organizing Skills, MCPs, and CLAUDE.md files with categories and tags.
 
-- **Categories** -- Each item can belong to one category. Categories have names and colors. Navigate to a category in the sidebar to view all items in that category.
+- **Categories** -- Each item can belong to one category. Categories have names and colors, and can be nested one level deep (subcategories appear indented under a parent). Navigate to a category in the sidebar to view all items in that category and its subcategories.
 - **Tags** -- Each item can have multiple tags. Tags are single lowercase words. Navigate to a tag in the sidebar to view all items with that tag.
-- Categories and tags can be created, renamed, and deleted from the sidebar.
+- Categories and tags can be created, renamed, deleted, and reordered by dragging within the sidebar. Drag a root category onto another to nest it; drag a subcategory out past the threshold to promote it back to root.
+
+### View Options
+
+Skills, MCP Servers, CLAUDE.md, Scenes, Projects, and the Category and Tag filter pages each carry a View Options menu (funnel icon in the page header) with two independent axes:
+
+- **Group by** -- Categories, Tags, or None (where applicable). Grouping by Tags is multi-valued: an item with multiple tags appears once in each matching bucket.
+- **Sort by** -- Name (A-Z), Recently added, Recently used, or Most used (subset varies per page).
+
+Preferences are persisted per page. Plugin-installed items sort to the bottom within any axis.
+
+## Marketplace
+
+Ensemble includes an in-app catalog for discovering and installing Skills and MCP Servers without leaving the app.
+
+**Skill Marketplace** mirrors the [skills.sh](https://skills.sh) community catalog. Each entry shows install counts, topic filters, GitHub stars, and an AI-generated summary alongside the full upstream README.
+
+**MCP Marketplace** mirrors the official [MCP Registry](https://registry.modelcontextprotocol.io) with cursor-paginated browsing, a Recently Updated feed, and search. Each entry shows publisher metadata (title, website, license, keywords) and publisher-curated example snippets where available.
+
+**Installing an item:**
+
+1. Open the **Skill Marketplace** or **MCP Marketplace** entry in the sidebar.
+2. Click an item to open its detail panel; review the README, stars, summary, examples, and required environment variables (for MCPs).
+3. For MCPs with required environment variables, fill in the form before installing. Secret fields render as password inputs.
+4. For HTTP MCPs with URL template variables (`{VAR}`) or required headers, fill in the additional form that appears.
+5. Click **Install**. The item is added to your managed library (`~/.ensemble/skills/` or `~/.ensemble/mcps/`) and an Auto-Classify pass suggests a category.
+6. If an item with the same name already exists (active or in Trash), Ensemble offers **Replace** or **Restore from Trash** -- restoring round-trips the previous category, tags, and icon.
+
+**Updating MCP connection settings after install:**
+
+The Marketplace detail panel for an installed MCP exposes a **Save connection settings** button so URL variables, headers, and environment variables can be updated post-install without reinstalling.
+
+**Catalog caching:**
+
+Catalog responses are cached in `~/.ensemble/` with a 24-hour TTL. A background refresh runs on app launch and surfaces a sync indicator in the sidebar while in progress.
 
 ## Auto-Classification
 
@@ -174,7 +208,8 @@ Ensemble can automatically categorize your Skills, MCPs, and CLAUDE.md files usi
 
 - Auto-classification uses the **Claude CLI** (`claude` command) to analyze items and suggest categories, tags, and icons.
 - It does **not** require an Anthropic API key. It uses the Claude CLI that must be installed and available in your PATH.
-- The model used is `sonnet`.
+- The model is configurable in **Settings > Auto Classify > Classification model** (Opus, Sonnet, or Haiku; defaults to Opus).
+- Classification on a Category or Tag filter page is scoped to the items visible on that page (and, for categories, their subcategories).
 
 **What Gets Classified:**
 
@@ -216,6 +251,7 @@ Ensemble supports launching Claude Code in multiple terminal applications:
 | **iTerm2** | Uses iTerm2's native AppleScript to create a new window with the command. |
 | **Warp** | Supports two open modes: **New Window** (via Launch Configuration) and **New Tab** (via temporary script). Configurable in Settings. |
 | **Alacritty** | Uses Alacritty's CLI arguments (`--working-directory`, `-e`) directly. |
+| **Ghostty** | Uses Ghostty's AppleScript API to open a new tab in the existing instance, or a new window on older Ghostty versions. |
 
 **Configuration:**
 

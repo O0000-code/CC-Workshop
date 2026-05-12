@@ -42,9 +42,10 @@ These are the primary modules you will work with inside Ensemble. Each section l
 
 | Feature | Description | Link |
 |---------|-------------|------|
+| **Marketplace** | Browse and install Skills and MCP Servers from community catalogs directly into your library. | [Usage Guide -- Marketplace](./usage.md#marketplace) |
 | **AI Auto-Classification** | Use the Claude CLI to automatically categorize, tag, and assign icons to Skills, MCPs, and CLAUDE.md files. | [Usage Guide -- Auto-Classification](./usage.md#auto-classification) |
 | **Finder Integration** | Install a Quick Action to open project folders with Claude Code directly from Finder's right-click menu. | [Usage Guide -- Finder Integration](./usage.md#finder-integration-macos) |
-| **Terminal Support** | Choose your preferred terminal (Terminal.app, iTerm2, Warp, or Alacritty) for launching Claude Code sessions. | [Usage Guide -- Terminal Support](./usage.md#terminal-support) |
+| **Terminal Support** | Choose your preferred terminal (Terminal.app, iTerm2, Warp, Alacritty, or Ghostty) for launching Claude Code sessions. | [Usage Guide -- Terminal Support](./usage.md#terminal-support) |
 | **Trash & Recovery** | Deleted items are moved to trash and can be restored from Settings. | [Usage Guide -- Trash & Recovery](./usage.md#trash-and-recovery) |
 
 ---

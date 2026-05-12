@@ -52,7 +52,7 @@ Ensemble/
 | tauri | 2.9.5 | Desktop app framework |
 | serde / serde_json | 1.0 | Serialization/deserialization |
 | tokio | 1 (features: process, io-util, time) | Async runtime |
-| reqwest | 0.12 (features: json) | HTTP client (for Anthropic API) |
+| reqwest | 0.12 (features: json, gzip) | HTTP client (Marketplace catalog fetches, README downloads) |
 | uuid | 1 (features: v4) | UUID generation |
 | chrono | 0.4 (features: serde) | Date/time handling |
 | dirs | 5 | Platform-specific directory paths |
@@ -191,13 +191,13 @@ src/
 ├── pages/
 │   ├── CategoryPage.tsx             # Category filter page
 │   ├── ClaudeMdPage.tsx             # CLAUDE.md management page
-│   ├── McpDetailPage.tsx            # MCP Server detail page
+│   ├── McpMarketplacePage.tsx       # MCP Marketplace catalog + install
 │   ├── McpServersPage.tsx           # MCP Servers list page
 │   ├── ProjectsPage.tsx             # Projects management page
 │   ├── SceneDetailPage.tsx          # Scene detail page
 │   ├── ScenesPage.tsx               # Scenes list page
 │   ├── SettingsPage.tsx             # Application settings page
-│   ├── SkillDetailPage.tsx          # Skill detail page
+│   ├── SkillMarketplacePage.tsx     # Skill Marketplace catalog + install
 │   ├── SkillsPage.tsx               # Skills list page
 │   ├── TagPage.tsx                  # Tag filter page
 │   └── index.ts
@@ -265,7 +265,9 @@ Defined in `src/App.tsx`, all routes are nested under the `MainLayout` component
 
 | Route | Page Component | Description |
 |---|---|---|
-| `/` | Redirects to `/skills` | Default route |
+| `/` | Redirects to `/marketplace-skills` | Default route |
+| `/marketplace-skills` | `SkillMarketplacePage` | Skill Marketplace catalog + install |
+| `/marketplace-mcps` | `McpMarketplacePage` | MCP Marketplace catalog + install |
 | `/skills` | `SkillsPage` | Skills management |
 | `/mcp-servers` | `McpServersPage` | MCP Servers management |
 | `/claude-md` | `ClaudeMdPage` | CLAUDE.md file management |
@@ -473,8 +475,8 @@ All commands registered in `lib.rs` grouped by module:
 
 **Data** (`commands/data.rs`):
 `read_app_data`, `write_app_data`, `read_settings`, `write_settings`, `init_app_data`,
-`get_categories`, `add_category`, `update_category`, `delete_category`,
-`get_tags`, `add_tag`, `update_tag`, `delete_tag`,
+`get_categories`, `add_category`, `update_category`, `delete_category`, `reorder_categories`, `set_category_parent`, `migrate_category_id_for_skills_mcps`,
+`get_tags`, `add_tag`, `update_tag`, `delete_tag`, `reorder_tags`, `reset_auto_classify_data`,
 `get_scenes`, `add_scene`, `update_scene`, `delete_scene`,
 `get_projects`, `add_project`, `update_project`, `delete_project`
 
@@ -503,6 +505,13 @@ All commands registered in `lib.rs` grouped by module:
 
 **Trash** (`commands/trash.rs`):
 `list_trashed_items`, `restore_skill`, `restore_mcp`, `restore_claude_md`
+
+**Marketplace** (`commands/marketplace.rs`):
+`list_marketplace_skills`, `search_marketplace_skills`, `get_marketplace_skill_readme`, `get_marketplace_mcp_readme`,
+`get_marketplace_repo_stars`, `get_marketplace_skill_summary`, `list_skill_topics_map`,
+`list_marketplace_mcps_page`, `list_recently_updated_mcps`, `search_marketplace_mcps`,
+`update_mcp_http_config`, `update_mcp_env_vars`,
+`install_marketplace_skill`, `install_marketplace_mcp`, `auto_classify_marketplace_item`, `refresh_marketplace_cache`
 
 ## Building
 
@@ -578,6 +587,6 @@ Defined in `tauri.conf.json`:
 
 When reporting bugs, please include:
 - macOS version
-- Ensemble version (currently 1.0.0)
+- Ensemble version (currently 2.0.0)
 - Steps to reproduce
 - Expected vs actual behavior

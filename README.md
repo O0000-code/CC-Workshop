@@ -30,7 +30,7 @@ Core workflow:
 
 ### Skills Management
 - Import existing skills from `~/.claude/skills/`
-- Support for plugin-installed skills (from Claude Code marketplace)
+- Support for plugin-installed skills (from Claude Code plugins)
 - Global or project-level scope control
 - Usage statistics tracking from Claude Code logs
 
@@ -47,6 +47,12 @@ Core workflow:
 - Distribute CLAUDE.md files to project directories
 - Configurable distribution path: `.claude/CLAUDE.md`, `CLAUDE.md`, or `CLAUDE.local.md`
 
+### Marketplace
+- Browse and install Skills from the community Skills catalog (skills.sh)
+- Browse and install MCP Servers from the MCP Registry (registry.modelcontextprotocol.io)
+- One-click install into your managed library, with auto-classification on install
+- README previews, GitHub stars, and AI summaries in the detail panel
+
 ### Scenes
 - Bundle multiple Skills, MCP Servers, and CLAUDE.md files into reusable configuration sets
 - One-click deployment to projects
@@ -59,13 +65,16 @@ Core workflow:
 
 ### Organization
 - Categories and tags for Skills, MCP Servers, and CLAUDE.md files
-- AI-powered auto-classification using the Claude CLI (`claude` command)
+- Categories can be nested one level deep (subcategories indent under a parent in the sidebar)
+- Drag to reorder categories and tags in the sidebar
+- AI-powered auto-classification using the Claude CLI (`claude` command); choose between Opus, Sonnet, and Haiku
 - Sidebar filtering by category and tag
+- Group and sort options on every list page (by name, recency, or usage)
 
 ### Finder Integration
 - "Open with Ensemble" right-click Quick Action for folders in Finder
 - Automatically syncs the project's Scene configuration and launches Claude Code
-- Configurable terminal: Terminal.app, iTerm2, Warp, or Alacritty
+- Configurable terminal: Terminal.app, iTerm2, Warp, Alacritty, or Ghostty
 - Customizable launch command
 
 ### Trash and Recovery

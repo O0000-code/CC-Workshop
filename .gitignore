@@ -29,3 +29,6 @@ src-tauri/target/
 # Playwright MCP cache (browser-state snapshots / console logs from
 # automated debugging sessions). Machine-local, never useful checked in.
 .playwright-mcp/
+
+# Claude Code runtime lockfile (sessionId + pid; rewritten each launch).
+.claude/scheduled_tasks.lock

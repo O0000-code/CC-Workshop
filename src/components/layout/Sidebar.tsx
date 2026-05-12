@@ -302,8 +302,20 @@ export function Sidebar({
         </button>
       </header>
 
-      {/* Sidebar Content */}
-      <div className="flex-1 flex flex-col p-4 pb-2 overflow-hidden">
+      {/* Sidebar Content.
+          V2.8 (2026-05-12): left padding now 12 px (pl-3). Earlier V2.7
+          tried pl-3.5 (14 px) for a 2 px shift but the result was visually
+          imperceptible — user requested another 2 px (total 4 px) left
+          shift, so pl-3 (12 px) is the final landing. Other sides keep
+          their original values (pt-4 = 16, pr-4 = 16, pb-2 = 8). This is
+          the only way to move the Categories hover-bg leftward because
+          the container's overflow-hidden clips any per-row negative
+          margin. The whole sidebar content column — Marketplace / Library
+          nav items, Categories rows (hover bg included), Tags pills, all
+          section headers — shifts left in lock-step. Sidebar header
+          (traffic-lights + refresh) is in its own element above and is
+          not affected. */}
+      <div className="flex-1 flex flex-col pt-4 pr-4 pl-3 pb-2 overflow-hidden">
         {/* Marketplace Section - 固定，不滚动。
             V2.0 PRD §5.1: independent top group above NAVIGATION. Top
             separator is provided by the Header `border-b border-[#E5E5E5]`

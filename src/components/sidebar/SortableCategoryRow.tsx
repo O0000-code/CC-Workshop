@@ -14,8 +14,11 @@ import { INDENT_STEP_PX } from './dnd/treeUtilities';
  * (`DragOverlayCategoryRow`).
  *
  * V2 hierarchy: receives `depth` (0 = root, 1 = child) which drives
- * `padding-left = depth * INDENT_STEP_PX + 10` (10 px is the V3 base
- * `px-2.5`). For parents with `hasChildren = true`, a chevron disclosure
+ * `padding-left = depth * INDENT_STEP_PX + 18` (V2.7 2026-05-12: base
+ * bumped 14 → 18 to give the chevron 4 px breathing room on its left
+ * side (between chevron container and hover-bg left edge) while keeping
+ * the chevron→dot gap at ~10 px. V2.6 bumped 10 → 14; V3 had base 10.
+ * For parents with `hasChildren = true`, a chevron disclosure
  * `<button>` is rendered as the leading element (16 px gutter = 10 px icon
  * + 6 px gap), with three-layer defence against dnd-kit drag activation:
  *
@@ -47,7 +50,7 @@ interface SortableCategoryRowProps {
    */
   justDropped: boolean;
   /**
-   * Tree depth: 0 = root, 1 = child. Drives `padding-left = depth * INDENT_STEP_PX + 10`.
+   * Tree depth: 0 = root, 1 = child. Drives `padding-left = depth * INDENT_STEP_PX + 18`.
    * `MAX_DEPTH = 1` is enforced in `dnd/treeUtilities` and on the Rust
    * `validate_hierarchy` side; this prop is the read-only render flag.
    *
@@ -147,10 +150,17 @@ export function SortableCategoryRow({
     // cascade visually clean. Pointer events stay live so dnd-kit can still
     // receive over/end events on the source slot if the drag returns.
     opacity: isDragging ? 0 : 1,
-    // V2 hierarchy: indent expressed only via padding-left. Base 10 px
-    // (V3 `px-2.5`) is preserved so depth = 0 rows remain pixel-identical
-    // to V3. depth = 1 → 26 px (10 + 16).
-    paddingLeft: depth * INDENT_STEP_PX + 10,
+    // V2 hierarchy: indent expressed only via padding-left.
+    // V2.7 (2026-05-12) base 14 → 18 px so the chevron has 4 px breathing
+    // room between its container and the row's hover-bg left edge — user
+    // reading "chevron 卡在灰色框最左边". Combined with chevron `left: 4`
+    // (Tailwind `left-1`), chevron container now sits at row.left + 4..14,
+    // and dot sits at row.left + 18, preserving the V2.6 chevron→dot
+    // visual gap of ~10 px. Cascade: SortableCategoriesList.tsx settle
+    // animation (`preDragPaddingLeft` / `finalPaddingLeft`) and DragOverlay
+    // `paddingLeft` injection both use the same formula and must stay in
+    // lock-step. depth=0 → 18 px; depth=1 → 34 px (18 + 16).
+    paddingLeft: depth * INDENT_STEP_PX + 18,
   };
 
   const handleClick = (e: React.MouseEvent) => {
@@ -218,7 +228,7 @@ export function SortableCategoryRow({
       // grabbing) is handled in CSS via [aria-roledescription='sortable'].
       // V2: padding-left moved to inline style; pr-2.5 keeps the right side.
       className={`
-        relative h-8 pr-2.5 flex items-center gap-2.5 rounded-[6px] cursor-pointer
+        relative h-8 pr-[11px] flex items-center gap-2.5 rounded-[6px] cursor-pointer
         transition-colors duration-150
         ${isActive ? 'bg-[#F4F4F5]' : 'hover:bg-[#F4F4F5]'}
       `}
@@ -230,16 +240,35 @@ export function SortableCategoryRow({
       tabIndex={0}
     >
       {/*
-        V2 §2.4 chevron disclosure — rendered ONLY when `hasChildren` is
-        true. When false, no DOM element exists (no 16 px gutter), so a
-        leaf parent row is pixel-identical to V3.
-        - Width 16 px (10 chevron + 6 gap, per §2.2)
-        - Icon 10×10, color #A1A1AA (--color-tertiary)
-        - rotate(0deg) collapsed → rotate(90deg) expanded over 120 ms
-          using `var(--ease-drag)` (per design-language.md "Chevron /
-          disclosure rotation" + Anti-pattern "non-token easing")
-        - Single ChevronRight + transform: rotate (NOT two icons swap), so
-          the rotation animation actually plays each toggle.
+        Chevron disclosure — absolute-positioned inside the row's own
+        padding-left region so that it does NOT shift dot/name to the
+        right. Only rendered when `hasChildren = true`; childless roots
+        and depth=1 children render no chevron and no spacer, preserving
+        the V3 dot position (sidebar.left + 26).
+
+        V2.5 (2026-05-12, user feedback round 2) override of V2 §2.2
+        chevron-as-flex-leading layout: making chevron a flex sibling
+        pushed all root content right by 26 px (chevron 16 + gap 10).
+        Spacing the leading chevron INTO the row's padding-left region
+        keeps dot/name aligned with V3 while still surfacing the
+        disclosure control. Cost: chevron hit-target reduces from
+        16×32 to 10×32 px (still within reach; widen if click affordance
+        proves unreliable).
+
+        Geometry:
+        - row.padding-left = 10 px → dot at row.left + 10
+        - chevron: position: absolute; left: 0; width: 10 px
+          → container occupies row.left + 0..10 (= row's own pad-left)
+          → ChevronRight icon (lucide 10×10, visible glyph ~2.5 px wide
+            in viewBox center) renders centered around row.left + 5
+          → visual gap between chevron glyph and dot ≈ 5 px
+
+        - Three-layer defence vs dnd-kit drag activation kept intact:
+          data-no-dnd (sensor short-circuit) + onMouseDown stop (pointer
+          drag bail) + onClick stop (no row nav) + onKeyDown stop on
+          Space/Enter (no row lift via KeyboardSensor).
+        - Icon color #A1A1AA (--color-tertiary), rotates 0deg → 90deg
+          over 120 ms with `var(--ease-drag)` per design-language.md.
       */}
       {hasChildren && (
         <button
@@ -252,7 +281,7 @@ export function SortableCategoryRow({
           aria-label={`Toggle ${category.name} children`}
           aria-expanded={isExpanded}
           tabIndex={0}
-          className="w-4 h-8 flex items-center justify-start cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#18181B] flex-shrink-0"
+          className="absolute left-1 top-0 w-2.5 h-8 flex items-center justify-center cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#18181B]"
         >
           <ChevronRight
             size={10}
@@ -260,6 +289,30 @@ export function SortableCategoryRow({
             style={{
               transition: 'transform 120ms var(--ease-drag)',
               transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+              // Visual-only shift: the lucide ChevronRight path occupies
+              // viewBox x=9..15 (of 24) — RIGHT-biased relative to viewBox
+              // center. At size=10 inside a 10 px button container, the
+              // visible glyph mass lands at row.left + ~3.7..6.7, leaving
+              // only ~3.3 px gap to the dot at row.left + 10. Shifting the
+              // SVG element 3 px left via marginLeft moves the visible
+              // glyph to row.left + ~0.7..3.7, restoring the spec V2 §2.2
+              // ~6 px chevron→dot gap.
+              //
+              // Why marginLeft on the SVG (not button.left: -3):
+              //   1. Button hit-target stays at row.left + 0..10 — fully
+              //      INSIDE the row's padding-left region (the row's
+              //      visible bounds), so chevron does not appear to leak
+              //      outside the row's rounded background.
+              //   2. SVG's transparent canvas region (the 3 px that now
+              //      sits at row.left + (-3)..0) is invisible to the user
+              //      — only the colored path is drawn. The p-4 wrapper's
+              //      overflow-hidden clips that 3 px transparent strip
+              //      anyway, with zero visible consequence.
+              //   3. Transform: rotate(90deg) for expanded state still
+              //      rotates around the SVG's own center (now shifted),
+              //      so the down-chevron (▾) sits at the same visual
+              //      offset as the right-chevron (▸).
+              marginLeft: -3,
             }}
           />
         </button>

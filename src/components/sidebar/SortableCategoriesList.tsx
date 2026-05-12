@@ -920,11 +920,12 @@ export function SortableCategoriesList({
       // from `finalProjection` (computed earlier in this handler) — null
       // means "no projection / no parent change" so final equals pre-drag.
       const preDragDepth = activeOriginalParentId !== null ? 1 : 0;
-      const preDragPaddingLeft = preDragDepth * INDENT_STEP_PX + 10;
+      // V2.7 (2026-05-12) base 14 → 18 px; see SortableCategoryRow §style.
+      const preDragPaddingLeft = preDragDepth * INDENT_STEP_PX + 18;
       const finalDepth = finalProjection
         ? Math.max(0, Math.min(1, finalProjection.depth))
         : preDragDepth;
-      const finalPaddingLeft = finalDepth * INDENT_STEP_PX + 10;
+      const finalPaddingLeft = finalDepth * INDENT_STEP_PX + 18;
       const isCrossDepthDrop = preDragPaddingLeft !== finalPaddingLeft;
       if (dist < 4) {
         setDropAnimationConfig(null);
@@ -1392,10 +1393,11 @@ export function SortableCategoriesList({
             // into another root's drop-into zone. See 02 V2.2 §2.13 / §2.14.
             isInvalid={projected?.isInvalid ?? false}
             // V2.3 D9: pre-drag depth padding. activeOriginalParentId is
-            // null for ROOT active (depth 0 → padding 10) and a parent id
-            // for CHILD active (depth 1 → padding 26). This stays constant
-            // for the entire drag — the overlay never tracks projection.
-            paddingLeft={(activeOriginalParentId !== null ? 1 : 0) * INDENT_STEP_PX + 10}
+            // null for ROOT active (depth 0 → padding 18 since V2.7) and a
+            // parent id for CHILD active (depth 1 → padding 34). This
+            // stays constant for the entire drag — the overlay never
+            // tracks projection.
+            paddingLeft={(activeOriginalParentId !== null ? 1 : 0) * INDENT_STEP_PX + 18}
           />
         )}
       </DragOverlay>

@@ -50,10 +50,9 @@ interface DragOverlayCategoryRowProps {
    * V3 `px-2.5` baseline (10 px, root depth). When supplied, the overlay
    * mirrors the picked-up row's depth-derived padding so the dot/text
    * line up with the inline source row's geometry — without this, child
-   * active drops show a 16 px jump at unmount (DragOverlay px-2.5 = 10
-   * vs inline `depth * 16 + 10` = 26 → user perceives "色圈/文字
-   * 突然向右移动 16 px" right after the shadow disappears, r4 §3.4
-   * scenario B).
+   * active drops show a depth-step jump at unmount (DragOverlay px-2.5 = 10
+   * vs inline `depth * 16 + 18` = 34 since V2.7 → user perceives "色圈/文字
+   * 突然向右移动" right after the shadow disappears, r4 §3.4 scenario B).
    *
    * **Constraint** (V2.3 spec §2.5 / §2.22 amendment): callers pass the
    * row's *pre-drag* depth padding only — never the *projected* depth.
@@ -73,10 +72,16 @@ export function DragOverlayCategoryRow({
 }: DragOverlayCategoryRowProps) {
   // When `paddingLeft` is unset we keep the V3 px-2.5 baseline via Tailwind;
   // when set we drop the className so it doesn't fight the inline value.
+  // V2.9 (2026-05-12): pr matches inline row's `pr-[11px]` so the overlay
+  // clone's content (dot, name) right-aligns identically with the inline
+  // source row. Library nav buttons have a 1 px transparent border that
+  // shifts their internal content 1 px to the left compared to a no-border
+  // row; the inline row compensates with 11 px pr so its count aligns
+  // with Library counts. The overlay must mirror this compensation.
   const className =
     paddingLeft === undefined
-      ? 'drag-overlay-row h-8 px-2.5 flex items-center gap-2.5'
-      : 'drag-overlay-row h-8 pr-2.5 flex items-center gap-2.5';
+      ? 'drag-overlay-row h-8 pl-2.5 pr-[11px] flex items-center gap-2.5'
+      : 'drag-overlay-row h-8 pr-[11px] flex items-center gap-2.5';
   const style: CSSProperties | undefined =
     paddingLeft !== undefined || isInvalid
       ? {

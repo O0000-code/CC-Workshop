@@ -116,7 +116,9 @@ function renderList(args: RenderArgs = {}) {
 function getRenderedNames(container: HTMLElement): string[] {
   const list = container.querySelector('[data-sortable-list]');
   if (!list) return [];
-  const rows = list.querySelectorAll<HTMLElement>('div.h-8.pr-2\\.5');
+  // V2.9 (2026-05-12): row pr widened `pr-2.5` → `pr-[11px]`; the
+  // querySelector escapes match Tailwind's bracket-syntax class names.
+  const rows = list.querySelectorAll<HTMLElement>('div.h-8.pr-\\[11px\\]');
   return Array.from(rows).map((row) => {
     // Name span is the last text-bearing element in the row; we read all
     // text but strip count-trailers. Easiest is to grab the row's first

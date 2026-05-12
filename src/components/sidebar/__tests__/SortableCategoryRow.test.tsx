@@ -10,7 +10,7 @@ import { INDENT_STEP_PX } from '../dnd/treeUtilities';
 // Helpers
 // ---------------------------------------------------------------------------
 
-const BASE_PADDING_LEFT_PX = 10; // V3 base `px-2.5` = 10 px
+const BASE_PADDING_LEFT_PX = 18; // V2.7 (2026-05-12) base 14 → 18 for chevron→hover-bg breathing room
 
 function buildCategory(overrides: Partial<Category> = {}): Category {
   return {
@@ -76,7 +76,11 @@ function renderRow(args: RenderArgs = {}) {
 function getRowElement(): HTMLElement {
   // The row container has `h-8` and the rounded class — the chevron `<button>`
   // does not. Use querySelector on the document.
-  const row = document.querySelector('div.h-8.pr-2\\.5') as HTMLElement | null;
+  // V2.9 (2026-05-12): row pr was `pr-2.5` (10 px) before; widened to
+  // `pr-[11px]` (Tailwind escapes to `pr-\[11px\]` in className) so the
+  // count right-aligns with Library nav items, whose 1 px border consumed
+  // 1 px from the right.
+  const row = document.querySelector('div.h-8.pr-\\[11px\\]') as HTMLElement | null;
   if (!row) {
     throw new Error('Could not locate row element by class signature');
   }
@@ -92,14 +96,14 @@ function getChevronButton(): HTMLElement | null {
 // ---------------------------------------------------------------------------
 
 describe('SortableCategoryRow — depth + padding', () => {
-  it('depth=0 with hasChildren=true → renders chevron + paddingLeft = 10 (base only)', () => {
+  it('depth=0 with hasChildren=true → renders chevron + paddingLeft = 18 (base only)', () => {
     renderRow({ depth: 0, hasChildren: true, isExpanded: false });
     const row = getRowElement();
     expect(row.style.paddingLeft).toBe(`${BASE_PADDING_LEFT_PX}px`);
     expect(getChevronButton()).not.toBeNull();
   });
 
-  it('depth=1 → paddingLeft = 26 (base 10 + indent 16)', () => {
+  it('depth=1 → paddingLeft = 34 (base 18 + indent 16)', () => {
     renderRow({ depth: 1 });
     const row = getRowElement();
     expect(row.style.paddingLeft).toBe(`${BASE_PADDING_LEFT_PX + INDENT_STEP_PX}px`);

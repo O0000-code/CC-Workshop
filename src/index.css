@@ -120,6 +120,18 @@ body {
     scrollbar-color: rgba(0, 0, 0, 0.04) transparent;
     padding-right: 12px;
     margin-right: -12px;
+    /* V2.5 (2026-05-12): hide horizontal overflow so the SortableCategoryRow
+       chevron's 3 px protrusion (button container left: -3 px, to compensate
+       for lucide ChevronRight's right-biased glyph weight inside the
+       viewBox) does NOT trigger a horizontal scrollbar. The CSS spec
+       forces `overflow-x: visible` to `auto` when paired with
+       `overflow-y: auto`; explicit `hidden` overrides that to remove the
+       scrollbar without losing the protrusion. The visible chevron glyph
+       (path x=9..15 in a viewBox 24 at size 10 → CSS x ~3.3..6.7 with
+       stroke; container left: -3 px → glyph at row.left + 0.3..3.7)
+       remains inside the scroll container's clip rect, so nothing is
+       actually cut. */
+    overflow-x: hidden;
   }
 
   .sidebar-scroll::-webkit-scrollbar {

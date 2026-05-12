@@ -22,14 +22,17 @@ function getOverlayElement(container: HTMLElement): HTMLElement {
 }
 
 describe('DragOverlayCategoryRow — depth-agnostic naked clone (V2 §2.5 / §2.22 / §11 invariant #21)', () => {
-  it('uses px-2.5 on the className (no inline paddingLeft style)', () => {
+  it('uses pl-2.5 + pr-[11px] on the className (no inline paddingLeft style)', () => {
     const { container } = render(<DragOverlayCategoryRow category={buildCategory()} />);
     const overlay = getOverlayElement(container);
-    // 02 V2 §2.5: padding-left is hard-coded as px-2.5 on the className,
-    // never via inline style. The overlay must not carry depth-derived
-    // padding.
+    // V2.9 (2026-05-12): split V3 `px-2.5` into `pl-2.5 pr-[11px]` so the
+    // overlay's right padding (11 px) matches the inline row's pr-[11px]
+    // — keeping count/name right-alignment consistent with Library nav
+    // items (whose 1 px border consumed 1 px from the right). Padding-left
+    // is still hard-coded via className when no paddingLeft prop supplied.
     expect(overlay.style.paddingLeft).toBe('');
-    expect(overlay.className).toContain('px-2.5');
+    expect(overlay.className).toContain('pl-2.5');
+    expect(overlay.className).toContain('pr-[11px]');
   });
 
   it('renders the same naked-row className regardless of source category', () => {
@@ -51,8 +54,10 @@ describe('DragOverlayCategoryRow — depth-agnostic naked clone (V2 §2.5 / §2.
     // The interactive chevron has `data-chevron="true"` (set in
     // SortableCategoryRow only). The overlay must never render it.
     expect(container.querySelector('button[data-chevron="true"]')).toBeNull();
-    // No chevron-spacer either — the spacer was a P0 spec violation that
-    // was reverted (the overlay must be a depth-agnostic naked clone).
+    // No chevron-spacer either: V2.5 (2026-05-12) moved the inline chevron
+    // to absolute positioning inside the row's own padding-left region, so
+    // the inline source row no longer reserves a flex-leading 16 px slot.
+    // The overlay therefore needs no compensating spacer to align dot/text.
     expect(container.querySelector('[data-chevron-spacer="true"]')).toBeNull();
   });
 
@@ -98,42 +103,49 @@ describe('DragOverlayCategoryRow — V2.2 D6 isInvalid prop', () => {
 // ---------------------------------------------------------------------------
 
 describe('DragOverlayCategoryRow — V2.3 D9 paddingLeft prop', () => {
-  it('paddingLeft undefined (default): keeps the V3 px-2.5 baseline className', () => {
+  it('paddingLeft undefined (default): keeps the pl-2.5 baseline className', () => {
     const { container } = render(<DragOverlayCategoryRow category={buildCategory()} />);
     const overlay = getOverlayElement(container);
-    // Tailwind px-2.5 className still applies (V3 invariant #21 baseline).
-    expect(overlay.className).toContain('px-2.5');
+    // V2.9 (2026-05-12): `px-2.5` split into `pl-2.5 pr-[11px]` so the
+    // overlay's right edge matches inline row alignment.
+    expect(overlay.className).toContain('pl-2.5');
+    expect(overlay.className).toContain('pr-[11px]');
     expect(overlay.style.paddingLeft).toBe('');
   });
 
-  it('paddingLeft=10 (root active): inline paddingLeft 10 px, pr-2.5 only', () => {
+  it('paddingLeft=18 (root active): inline paddingLeft 18 px, pr-[11px] only (no pl-2.5)', () => {
+    // V2.7 (2026-05-12): root paddingLeft widened 14 → 18 px so the
+    // chevron has 4 px breathing room from the hover-bg left edge.
+    // V2.9: pr widened 2.5 → [11px] to match inline row count alignment.
     const { container } = render(
-      <DragOverlayCategoryRow category={buildCategory()} paddingLeft={10} />,
+      <DragOverlayCategoryRow category={buildCategory()} paddingLeft={18} />,
     );
     const overlay = getOverlayElement(container);
-    expect(overlay.style.paddingLeft).toBe('10px');
-    expect(overlay.className).toContain('pr-2.5');
-    expect(overlay.className).not.toContain('px-2.5');
+    expect(overlay.style.paddingLeft).toBe('18px');
+    expect(overlay.className).toContain('pr-[11px]');
+    expect(overlay.className).not.toContain('pl-2.5');
   });
 
-  it('paddingLeft=26 (child active): inline paddingLeft 26 px so dot/text align with inline depth=1 row', () => {
+  it('paddingLeft=34 (child active): inline paddingLeft 34 px so dot/text align with inline depth=1 row', () => {
     // The bug this fixes: pre-V2.3 the overlay was always px-2.5 (10 px),
-    // so dropping a child active showed a 16 px right-jump after unmount.
+    // so dropping a child active showed a right-jump after unmount.
+    // V2.7 (2026-05-12): child padding follows base 18 + indent 16 = 34.
+    // V2.9 (2026-05-12): pr widened 2.5 → [11px] for count alignment.
     const { container } = render(
-      <DragOverlayCategoryRow category={buildCategory({ parentId: 'p' })} paddingLeft={26} />,
+      <DragOverlayCategoryRow category={buildCategory({ parentId: 'p' })} paddingLeft={34} />,
     );
     const overlay = getOverlayElement(container);
-    expect(overlay.style.paddingLeft).toBe('26px');
-    expect(overlay.className).toContain('pr-2.5');
-    expect(overlay.className).not.toContain('px-2.5');
+    expect(overlay.style.paddingLeft).toBe('34px');
+    expect(overlay.className).toContain('pr-[11px]');
+    expect(overlay.className).not.toContain('pl-2.5');
   });
 
   it('paddingLeft + isInvalid combine without conflict', () => {
     const { container } = render(
-      <DragOverlayCategoryRow category={buildCategory()} paddingLeft={26} isInvalid />,
+      <DragOverlayCategoryRow category={buildCategory()} paddingLeft={34} isInvalid />,
     );
     const overlay = getOverlayElement(container);
-    expect(overlay.style.paddingLeft).toBe('26px');
+    expect(overlay.style.paddingLeft).toBe('34px');
     expect(overlay.style.opacity).toBe('0.5');
     expect(overlay.style.cursor).toBe('not-allowed');
   });

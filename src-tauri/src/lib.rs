@@ -184,6 +184,7 @@ pub fn run() {
             marketplace::list_marketplace_mcps_page,
             marketplace::list_recently_updated_mcps,
             marketplace::search_marketplace_mcps,
+            marketplace::update_mcp_http_config,
             marketplace::install_marketplace_skill,
             marketplace::install_marketplace_mcp,
             marketplace::auto_classify_marketplace_item,

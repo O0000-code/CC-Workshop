@@ -93,6 +93,9 @@ export interface McpServer {
   icon?: string; // 自定义图标名称
   installedAt?: string; // 安装时间 (文件创建时间)
   url?: string;
+  /** HTTP request headers for HTTP-type MCPs (Authorization / X-API-Key /
+   *  etc.). Written verbatim into `.mcp.json` `headers` by sync. */
+  headers?: Record<string, string>;
   mcpType?: string;
   // 插件相关字段 - 从 Rust 后端返回
   /**
@@ -170,12 +173,31 @@ export interface Tag {
 
 import type { ClaudeMdDistributionPath } from './claudeMd';
 
+/** Claude model alias passed to the CLI's `--model` flag for Auto Classify. */
+export type ClassifyModel = 'opus' | 'sonnet' | 'haiku';
+
+/**
+ * Optional scope for `autoClassify` calls. When undefined, the store classifies
+ * all items it owns. When `categoryIds` is provided, only items whose category
+ * is in the set are classified (the set must already include descendants for
+ * hierarchical categories — resolution is the caller's responsibility, since
+ * `collectDescendantIds` lives in the page layer). When `tagId` is provided,
+ * only items carrying that tag are classified. Both can be combined; an item
+ * must satisfy every provided field to be included.
+ */
+export interface ClassifyScope {
+  categoryIds?: Set<string>;
+  tagId?: string;
+}
+
 export interface AppSettings {
   skillSourceDir: string;
   mcpSourceDir: string;
   claudeConfigDir: string;
   anthropicApiKey: string;
   autoClassifyNewItems: boolean;
+  /** Model alias for Auto Classify: `opus` | `sonnet` | `haiku`. Default `opus`. */
+  classifyModel: ClassifyModel;
   terminalApp: string; // 终端应用 (Terminal/iTerm/Warp/custom)
   claudeCommand: string; // 启动 Claude Code 的命令
   hasCompletedImport: boolean; // 是否已完成首次导入

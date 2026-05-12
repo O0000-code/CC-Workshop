@@ -2,11 +2,11 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Plug, Loader2, WifiOff, Copy, Check, Search } from 'lucide-react';
 import { PageHeader, SlidePanel } from '@/components/layout';
 import { Button, EmptyState, ICON_MAP } from '@/components/common';
-import { Input } from '@/components/common/Input';
 import { MarketplaceListItem } from '@/components/marketplace/MarketplaceListItem';
 import { MarketplaceCollisionModal } from '@/components/marketplace/MarketplaceCollisionModal';
 import { MarketplaceSourceBadge } from '@/components/marketplace/MarketplaceSourceBadge';
 import { MarkdownBody } from '@/components/marketplace/MarkdownBody';
+import { EnvVarInputPanel } from '@/components/marketplace/EnvVarInputPanel';
 import { AddToSceneTriggerButton } from '@/components/marketplace/MarketplaceShortcutBanner';
 import { SyncIndicator } from '@/components/marketplace/SyncIndicator';
 import { safeInvoke } from '@/utils/tauri';
@@ -114,11 +114,6 @@ function ConfigItem({ label, value, isLast = false }: ConfigItemProps) {
   );
 }
 
-function isHttpUrl(value: string | undefined | null): boolean {
-  if (!value) return false;
-  return /^https?:\/\//i.test(value.trim());
-}
-
 // Pull the most-likely SSoT MCP id from the local mcps list, given a
 // marketplace item. Mirrors `marketplaceStore.isMcpInstalled` (which uses
 // `marketplaceSource.owner === item.author && marketplaceSource.name === item.name`
@@ -170,6 +165,11 @@ export function McpMarketplacePage() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   // Env-var inputs persist while the page is mounted (SkillsPage parity).
   const [envValues, setEnvValues] = useState<Record<string, Record<string, string>>>({});
+  // Parallel state for HTTP MCPs — URL template variables (substituted
+  // into the URL at install) and HTTP headers (Authorization, X-API-Key).
+  // Both key on `item.id` so multiple panel openings don't collide.
+  const [urlVarValues, setUrlVarValues] = useState<Record<string, Record<string, string>>>({});
+  const [headerValues, setHeaderValues] = useState<Record<string, Record<string, string>>>({});
   const [savedFeedback, setSavedFeedback] = useState<Record<string, 'saved' | 'error' | undefined>>(
     {},
   );
@@ -262,20 +262,62 @@ export function McpMarketplacePage() {
     return selectedItem.stdioConfig?.requiredEnvVars ?? [];
   }, [selectedItem]);
 
+  const urlVariableSpecs: EnvVarSpec[] = useMemo(() => {
+    if (!selectedItem || selectedItem.mcpType !== 'http') return [];
+    return selectedItem.httpConfig?.urlVariables ?? [];
+  }, [selectedItem]);
+
+  const headerSpecs: EnvVarSpec[] = useMemo(() => {
+    if (!selectedItem || selectedItem.mcpType !== 'http') return [];
+    return selectedItem.httpConfig?.headers ?? [];
+  }, [selectedItem]);
+
+  const persistedHeaders: Record<string, string> = useMemo(() => {
+    if (!localMcpId) return {};
+    const local = mcpServers.find((m) => m.id === localMcpId);
+    return local?.headers ?? {};
+  }, [localMcpId, mcpServers]);
+
   const allEnvFilled = useMemo(() => {
     if (!selectedItem) return false;
-    if (selectedItem.mcpType !== 'stdio') return true;
-    if (requiredEnvVars.length === 0) return true;
-    const localValues = envValues[selectedItem.id] ?? {};
-    const persistedEnv = (localMcpId && mcpServers.find((m) => m.id === localMcpId)?.env) || {};
-    return requiredEnvVars.every((spec) => {
-      const localVal = localValues[spec.name];
-      const persistedVal = persistedEnv[spec.name];
-      return (
-        (localVal && localVal.trim().length > 0) || (persistedVal && persistedVal.trim().length > 0)
-      );
+    if (selectedItem.mcpType === 'stdio') {
+      if (requiredEnvVars.length === 0) return true;
+      const localValues = envValues[selectedItem.id] ?? {};
+      const persistedEnv = (localMcpId && mcpServers.find((m) => m.id === localMcpId)?.env) || {};
+      return requiredEnvVars.every((spec) => {
+        const localVal = localValues[spec.name];
+        const persistedVal = persistedEnv[spec.name];
+        return (
+          (localVal && localVal.trim().length > 0) ||
+          (persistedVal && persistedVal.trim().length > 0) ||
+          (spec.defaultValue && spec.defaultValue.trim().length > 0)
+        );
+      });
+    }
+    // HTTP — required URL vars + required headers must all be filled.
+    const urlVarVals = urlVarValues[selectedItem.id] ?? {};
+    const hdrVals = headerValues[selectedItem.id] ?? {};
+    const allUrlVarsOk = urlVariableSpecs.every((spec) => {
+      const v = urlVarVals[spec.name] ?? spec.defaultValue ?? '';
+      return v.trim().length > 0;
     });
-  }, [selectedItem, requiredEnvVars, envValues, localMcpId, mcpServers]);
+    const allHeadersOk = headerSpecs.every((spec) => {
+      const v = hdrVals[spec.name] ?? persistedHeaders[spec.name] ?? spec.defaultValue ?? '';
+      return v.trim().length > 0;
+    });
+    return allUrlVarsOk && allHeadersOk;
+  }, [
+    selectedItem,
+    requiredEnvVars,
+    envValues,
+    localMcpId,
+    mcpServers,
+    urlVariableSpecs,
+    headerSpecs,
+    urlVarValues,
+    headerValues,
+    persistedHeaders,
+  ]);
 
   const isCurrentInstalled = selectedItem ? isMcpInstalled(selectedItem) : false;
 
@@ -311,7 +353,102 @@ export function McpMarketplacePage() {
 
   const handleSelectItem = (id: string) => selectMcpItem(id);
   const handleCloseDetail = () => selectMcpItem(null);
-  const handleInstall = (item: MarketplaceMcpItem) => void installMcp(item);
+  const handleInstall = (item: MarketplaceMcpItem) => {
+    if (item.mcpType === 'http') {
+      // Validate required URL variables and headers are filled before
+      // firing install — backend will write whatever we give it, and
+      // an unsubstituted `{VAR}` in the URL would land in `.mcp.json`.
+      const urlVarsForItem = urlVarValues[item.id] ?? {};
+      const headersForItem = headerValues[item.id] ?? {};
+      const urlSpecs = item.httpConfig?.urlVariables ?? [];
+      const hdrSpecs = item.httpConfig?.headers ?? [];
+      const missingUrlVar = urlSpecs.some((spec) => {
+        const v = urlVarsForItem[spec.name] ?? spec.defaultValue ?? '';
+        return v.trim().length === 0;
+      });
+      const missingHdr = hdrSpecs.some((spec) => {
+        const v =
+          headersForItem[spec.name] ?? persistedHeaders[spec.name] ?? spec.defaultValue ?? '';
+        return v.trim().length === 0;
+      });
+      if (missingUrlVar || missingHdr) {
+        setShowValidation((prev) => ({ ...prev, [item.id]: true }));
+        return;
+      }
+      setShowValidation((prev) => ({ ...prev, [item.id]: false }));
+      // Merge defaults so backend always receives the resolved value.
+      const finalUrlVars: Record<string, string> = {};
+      for (const spec of urlSpecs) {
+        finalUrlVars[spec.name] = urlVarsForItem[spec.name] ?? spec.defaultValue ?? '';
+      }
+      const finalHeaders: Record<string, string> = {};
+      for (const spec of hdrSpecs) {
+        finalHeaders[spec.name] =
+          headersForItem[spec.name] ?? persistedHeaders[spec.name] ?? spec.defaultValue ?? '';
+      }
+      void installMcp(item, undefined, finalUrlVars, finalHeaders);
+      return;
+    }
+    void installMcp(item);
+  };
+
+  const handleUrlVarChange = (itemId: string, name: string, value: string) => {
+    setUrlVarValues((prev) => ({
+      ...prev,
+      [itemId]: { ...(prev[itemId] ?? {}), [name]: value },
+    }));
+  };
+
+  const handleHeaderChange = (itemId: string, name: string, value: string) => {
+    setHeaderValues((prev) => ({
+      ...prev,
+      [itemId]: { ...(prev[itemId] ?? {}), [name]: value },
+    }));
+  };
+
+  const handleSaveHttpConfig = async (item: MarketplaceMcpItem) => {
+    if (!localMcpId || !item.httpConfig) {
+      setSavedFeedback((prev) => ({ ...prev, [item.id]: 'error' }));
+      return;
+    }
+    const urlVarsForItem = urlVarValues[item.id] ?? {};
+    const headersForItem = headerValues[item.id] ?? {};
+    const urlSpecs = item.httpConfig.urlVariables ?? [];
+    const hdrSpecs = item.httpConfig.headers ?? [];
+    const finalUrlVars: Record<string, string> = {};
+    for (const spec of urlSpecs) {
+      finalUrlVars[spec.name] = urlVarsForItem[spec.name] ?? spec.defaultValue ?? '';
+    }
+    const finalHeaders: Record<string, string> = {};
+    for (const spec of hdrSpecs) {
+      finalHeaders[spec.name] =
+        headersForItem[spec.name] ?? persistedHeaders[spec.name] ?? spec.defaultValue ?? '';
+    }
+    const missing =
+      urlSpecs.some((s) => finalUrlVars[s.name].trim().length === 0) ||
+      hdrSpecs.some((s) => finalHeaders[s.name].trim().length === 0);
+    if (missing) {
+      setShowValidation((prev) => ({ ...prev, [item.id]: true }));
+      return;
+    }
+    setShowValidation((prev) => ({ ...prev, [item.id]: false }));
+    try {
+      await safeInvoke('update_mcp_http_config', {
+        mcpId: localMcpId,
+        originalUrl: item.httpConfig.url,
+        urlVariables: finalUrlVars,
+        headers: finalHeaders,
+      });
+      await loadMcps();
+      setSavedFeedback((prev) => ({ ...prev, [item.id]: 'saved' }));
+      window.setTimeout(() => {
+        setSavedFeedback((prev) => ({ ...prev, [item.id]: undefined }));
+      }, 2000);
+    } catch (err) {
+      console.error('Failed to save HTTP config:', err);
+      setSavedFeedback((prev) => ({ ...prev, [item.id]: 'error' }));
+    }
+  };
 
   const handleViewChange = (view: McpsView) => {
     if (view === mcpsListing.view && !isSearchMode) return;
@@ -428,78 +565,24 @@ export function McpMarketplacePage() {
     })();
 
   const configurationBlock = selectedItem && (
-    <section className="flex flex-col gap-3">
+    <section className="flex flex-col gap-4">
       {selectedItem.mcpType === 'stdio' ? (
         <>
-          <div className="flex flex-col gap-1">
-            <h3 className="text-sm font-semibold text-[#18181B]">Required environment variables</h3>
-            <p className="text-xs font-normal text-[#71717A]">
-              This MCP won&apos;t work without them.
-            </p>
-          </div>
+          <h3 className="text-sm font-semibold text-[#18181B]">Required environment variables</h3>
 
           {requiredEnvVars.length === 0 ? (
-            <div className="flex items-center gap-3 rounded-lg border border-[#E5E5E5] px-3.5 py-3">
-              <span className="text-[13px] text-[#71717A]">No environment variables required.</span>
-            </div>
+            <span className="text-[13px] text-[#71717A]">None required.</span>
           ) : (
             <>
-              <div className="overflow-hidden rounded-lg border border-[#E5E5E5]">
-                {requiredEnvVars.map((spec, idx) => {
-                  const itemValues = envValues[selectedItem.id] ?? {};
-                  const persistedEnv =
-                    (localMcpId && mcpServers.find((m) => m.id === localMcpId)?.env) || {};
-                  const value = itemValues[spec.name] ?? persistedEnv[spec.name] ?? '';
-                  const isMissing =
-                    showValidation[selectedItem.id] && (!value || value.trim().length === 0);
-                  const isLastRow = idx === requiredEnvVars.length - 1;
-                  const hintIsUrl = isHttpUrl(spec.whereToFind);
-
-                  return (
-                    <div
-                      key={spec.name}
-                      className={`flex flex-col gap-2 px-3.5 py-3 ${
-                        !isLastRow ? 'border-b border-[#E5E5E5]' : ''
-                      }`}
-                    >
-                      {/* Top row: env-var name (full width, monospace,
-                          breakable for very long identifiers) + optional
-                          "Where to find →" link on the right. Stacked
-                          layout (label above input) avoids fixed-width
-                          label column clipping long names like
-                          GITHUB_PERSONAL_ACCESS_TOKEN. */}
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="font-mono text-xs font-medium text-[#18181B] break-all">
-                          {spec.name}
-                        </span>
-                        {hintIsUrl && spec.whereToFind && (
-                          <a
-                            href={spec.whereToFind}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-[11px] font-medium text-[#18181B] hover:underline whitespace-nowrap"
-                          >
-                            Where to find →
-                          </a>
-                        )}
-                      </div>
-                      <Input
-                        value={value}
-                        placeholder={`Enter ${spec.name}`}
-                        onChange={(e) =>
-                          handleEnvChange(selectedItem.id, spec.name, e.target.value)
-                        }
-                        error={isMissing ? 'Required' : undefined}
-                      />
-                      {spec.description && (
-                        <span className="text-[11px] font-normal leading-relaxed text-[#71717A]">
-                          {spec.description}
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+              <EnvVarInputPanel
+                specs={requiredEnvVars}
+                values={envValues[selectedItem.id] ?? {}}
+                persistedValues={
+                  (localMcpId && mcpServers.find((m) => m.id === localMcpId)?.env) || {}
+                }
+                showValidation={!!showValidation[selectedItem.id]}
+                onChange={(name, value) => handleEnvChange(selectedItem.id, name, value)}
+              />
 
               <div className="flex items-center gap-2.5">
                 <Button
@@ -560,6 +643,54 @@ export function McpMarketplacePage() {
               />
             )}
           </div>
+
+          {urlVariableSpecs.length > 0 && (
+            <>
+              <h3 className="text-sm font-semibold text-[#18181B]">URL variables</h3>
+              <EnvVarInputPanel
+                specs={urlVariableSpecs}
+                values={urlVarValues[selectedItem.id] ?? {}}
+                showValidation={!!showValidation[selectedItem.id]}
+                onChange={(name, value) => handleUrlVarChange(selectedItem.id, name, value)}
+              />
+            </>
+          )}
+
+          {headerSpecs.length > 0 && (
+            <>
+              <h3 className="text-sm font-semibold text-[#18181B]">Headers</h3>
+              <EnvVarInputPanel
+                specs={headerSpecs}
+                values={headerValues[selectedItem.id] ?? {}}
+                persistedValues={persistedHeaders}
+                showValidation={!!showValidation[selectedItem.id]}
+                onChange={(name, value) => handleHeaderChange(selectedItem.id, name, value)}
+              />
+            </>
+          )}
+
+          {isCurrentInstalled && (urlVariableSpecs.length > 0 || headerSpecs.length > 0) && (
+            <div className="flex items-center gap-2.5">
+              <Button
+                variant="primary"
+                size="small"
+                onClick={() => void handleSaveHttpConfig(selectedItem)}
+              >
+                Save connection settings
+              </Button>
+              {savedFeedback[selectedItem.id] === 'saved' && (
+                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#16A34A]">
+                  <Check className="h-3 w-3" />
+                  Saved
+                </span>
+              )}
+              {savedFeedback[selectedItem.id] === 'error' && (
+                <span className="text-[11px] font-medium text-[#DC2626]">
+                  Failed to save connection settings
+                </span>
+              )}
+            </div>
+          )}
         </>
       )}
     </section>

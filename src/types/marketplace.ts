@@ -216,6 +216,14 @@ export interface EnvVarSpec {
   name: string;
   description?: string;
   whereToFind?: string;
+  /** Render as a password-masked input and avoid logging the value.
+   *  Sourced from `environmentVariables[].isSecret`. */
+  isSecret?: boolean;
+  /** Pre-fill when the input is blank. From `environmentVariables[].default`. */
+  defaultValue?: string;
+  /** `"string"` | `"number"` | `"boolean"` | `"filepath"` — chooses the
+   *  HTML input type. Falls back to text when absent or unknown. */
+  format?: string;
 }
 
 export interface HttpMcpConfig {
@@ -223,6 +231,14 @@ export interface HttpMcpConfig {
   /** e.g. "sse" | "streamable-http". Free-form; UI displays as-is. */
   transport: string;
   oauthAuthorizationUrl?: string;
+  /** URL template variables published by the upstream (e.g. `HAPI_FQDN`).
+   *  Each entry shares the `EnvVarSpec` shape with stdio env vars so the
+   *  detail panel can reuse the same input form. Install substitutes
+   *  these into `url` before the config file is written. */
+  urlVariables?: EnvVarSpec[];
+  /** HTTP headers the user must fill at install time (Authorization,
+   *  X-API-Key, etc.). Written verbatim to `.mcp.json` `headers`. */
+  headers?: EnvVarSpec[];
 }
 
 // ----- Install / collision -------------------------------------------------

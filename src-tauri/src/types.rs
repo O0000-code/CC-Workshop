@@ -94,6 +94,12 @@ pub struct McpServer {
     /// URL for HTTP-type MCP servers
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// HTTP request headers for HTTP-type MCP servers. Mirrored from
+    /// `McpConfigFile.headers` by `scan_mcps`; sync writes these into
+    /// each project's `.mcp.json` so Authorization / X-API-Key reach
+    /// the upstream when Claude Code dials the MCP.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<HashMap<String, String>>,
     /// MCP type: "stdio" or "http"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp_type: Option<String>,
@@ -431,6 +437,12 @@ pub struct McpConfigFile {
     /// URL for HTTP-type MCP servers
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// HTTP request headers for HTTP-type MCP servers
+    /// (Authorization, X-API-Key, etc.). Persisted on the Ensemble
+    /// side so re-syncing the same MCP into a new project re-applies
+    /// them; Claude Code's `.mcp.json` schema accepts the same shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<HashMap<String, String>>,
     /// MCP type: "stdio" or "http"
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub mcp_type: Option<String>,
@@ -465,6 +477,12 @@ pub struct ClaudeMcpConfig {
     /// URL for HTTP-type MCP servers
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// HTTP request headers (Authorization / X-API-Key / etc.) for HTTP
+    /// MCP servers. Per Claude Code docs the field is an object of
+    /// `{ "Header-Name": "value" }` pairs and is read verbatim into the
+    /// outgoing request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<HashMap<String, String>>,
     /// MCP type: "stdio" or "http"
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub mcp_type: Option<String>,
@@ -1296,6 +1314,26 @@ pub struct EnvVarSpec {
     /// `package_environment_variables[].description` when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub where_to_find: Option<String>,
+    /// Mask the input as a password field and avoid persisting any value
+    /// to logs / debug output. Sourced from
+    /// `environmentVariables[].isSecret`. API keys / bearer tokens
+    /// carry this.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_secret: bool,
+    /// Pre-fill value when the input is blank. Sourced from
+    /// `environmentVariables[].default`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<String>,
+    /// One of `"string"` / `"number"` / `"boolean"` / `"filepath"` —
+    /// drives the HTML input type the UI renders. Defaults to text input
+    /// when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+}
+
+#[inline]
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1309,6 +1347,18 @@ pub struct HttpMcpConfig {
     /// `/mcp` inside Claude Code (D-12 / R-29).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth_authorization_url: Option<String>,
+    /// URL template variables published by the upstream (e.g. `HAPI_FQDN`
+    /// for a `https://{HAPI_FQDN}/mcp` URL). Each entry uses the same
+    /// `EnvVarSpec` shape as stdio env vars so the UI can reuse the same
+    /// input pattern. The user fills these at install time; the install
+    /// path substitutes them into `url` before writing the config.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub url_variables: Vec<EnvVarSpec>,
+    /// HTTP headers the user must supply at install (Authorization,
+    /// X-API-Key, etc.). Same shape as `url_variables`; values land in
+    /// the `.mcp.json` `headers` object verbatim.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<EnvVarSpec>,
 }
 
 /// Same-name collision resolution requested by the user via
@@ -1649,6 +1699,7 @@ mod tests {
             usage_count: 0,
             installed_at: None,
             url: None,
+            headers: None,
             mcp_type: None,
             install_source: None,
             plugin_id: None,

@@ -185,6 +185,7 @@ fn parse_mcp_file(
         usage_count: metadata.map(|m| m.usage_count).unwrap_or(0),
         installed_at,
         url: config.url,
+        headers: config.headers,
         mcp_type: config.mcp_type,
         install_source: config.install_source,
         plugin_id: config.plugin_id,

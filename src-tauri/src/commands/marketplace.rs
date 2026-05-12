@@ -677,41 +677,143 @@ struct RegistryRepository {
     source: Option<String>,
 }
 
+/// Live v0.1 wire shape (verified 2026-05-12 against the registry):
+/// every package carries `registryType` (`npm` / `pypi` / `oci`),
+/// `identifier`, `version`, and a `transport` object describing
+/// stdio / streamable-http / sse. `runtimeHint` is no longer emitted;
+/// the install command shape is derived from `registryType` instead.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RegistryPackage {
+    /// `npm` / `pypi` / `oci` / etc. — chooses the runtime command shape.
     #[serde(default)]
-    runtime_hint: Option<String>,
+    registry_type: Option<String>,
+    /// Package id within the registry (e.g. `@org/server` for npm,
+    /// `mypy` for pypi, `ghcr.io/org/img:tag` for oci).
+    #[serde(default)]
+    identifier: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    version: Option<String>,
+    /// Required transport object — `{ type: "stdio" | "streamable-http"
+    /// | "sse", headers?: [...] }`. Headers attached here apply when the
+    /// upstream package itself is an HTTP transport, distinct from the
+    /// remote-level `headers` field on `RegistryRemote`.
+    #[serde(default)]
+    transport: Option<RegistryPackageTransport>,
+    /// Args after the binary (e.g. `serve`, `--port`, `3030`). Each entry
+    /// describes one positional / named argument.
     #[serde(default)]
     package_arguments: Vec<RegistryPackageArg>,
+    /// Runtime args before the package (e.g. `-y` for npx, docker flags).
     #[serde(default)]
-    package_environment_variables: Vec<RegistryEnvVar>,
+    #[allow(dead_code)]
+    runtime_arguments: Vec<RegistryPackageArg>,
+    /// Env vars the user must supply at install time.
+    #[serde(default)]
+    environment_variables: Vec<RegistryEnvVar>,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryPackageTransport {
+    #[serde(default)]
+    #[allow(dead_code)]
+    #[serde(rename = "type")]
+    transport_type: Option<String>,
+    /// HTTP headers required when this package is an HTTP transport.
+    /// Same shape as `RegistryRemote.headers` (name + description + flags).
+    /// Consumed by Phase B.2 (HTTP-headers panel); reserved here so the
+    /// deserializer captures the data even before the UI lands.
+    #[serde(default)]
+    #[allow(dead_code)]
+    headers: Vec<RegistryEnvVar>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RegistryPackageArg {
-    /// CLI argument as published by the upstream package — we copy
-    /// these verbatim into `command + args` for the local
-    /// `McpConfigFile`. Field shape varies across registry versions:
-    /// some emit `{ value: "..." }`, others emit a positional `value`.
+    /// Some entries are positional (carry `value`), others are named
+    /// (carry `name` + `value` or just `name` if the value is implicit).
+    /// We accept either shape and surface whatever is present verbatim.
     #[serde(default)]
     value: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    name: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    value_hint: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    is_repeated: bool,
+    #[serde(default)]
+    #[allow(dead_code)]
+    is_required: bool,
 }
 
+/// Used for both `environmentVariables`, `package.transport.headers`, and
+/// `remote.headers`. All carry the same metadata shape per the schema.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RegistryEnvVar {
     name: String,
     description: Option<String>,
     #[serde(default)]
     is_required: bool,
+    /// `"string"` / `"number"` / `"boolean"` / `"filepath"` — informs
+    /// the input field type the UI renders. Optional.
+    #[serde(default)]
+    format: Option<String>,
+    /// Pre-fill value (e.g. `"NODE_ENV=production"`). Reduces friction.
+    #[serde(default)]
+    default: Option<String>,
+    /// Mask the input as password and never log the value. Bearer
+    /// tokens / API keys carry this flag.
+    #[serde(default)]
+    is_secret: bool,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RegistryRemote {
     url: String,
     #[serde(rename = "type")]
     transport: Option<String>,
     #[serde(default)]
     oauth_authorization_url: Option<String>,
+    /// HTTP headers the user must supply at install time
+    /// (Authorization / X-API-Key / etc.). Consumed by Phase B.2 —
+    /// reserved here so the deserializer captures the data.
+    #[serde(default)]
+    #[allow(dead_code)]
+    headers: Vec<RegistryEnvVar>,
+    /// URL template variables — when `url` contains `{HOST}` etc., the
+    /// user has to fill them before the install can connect. The map
+    /// key is the variable name (e.g. `HAPI_FQDN`); the value carries
+    /// the description / default / format metadata. Consumed by Phase B.2.
+    #[serde(default)]
+    #[allow(dead_code)]
+    variables: std::collections::HashMap<String, RegistryUrlVariable>,
+}
+
+/// Schema for entries inside `remote.variables`. Unlike `RegistryEnvVar`
+/// the `name` is encoded as the map key rather than a struct field, so
+/// this is a separate type (sharing only the metadata-bearing fields).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct RegistryUrlVariable {
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    is_required: bool,
+    #[serde(default)]
+    is_secret: bool,
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(default)]
+    default: Option<String>,
 }
 
 fn extract_skill_name_from_md(md: &str) -> Option<String> {
@@ -1149,6 +1251,80 @@ fn strip_reverse_dns_prefix(full: &str) -> String {
     full.to_string()
 }
 
+/// Map a registry-side `RegistryEnvVar` into our `EnvVarSpec`. Used for
+/// both stdio env vars and (in Phase B.2) HTTP headers / URL variables,
+/// since the wire shape is identical across all three.
+fn env_var_to_spec(e: &RegistryEnvVar) -> EnvVarSpec {
+    EnvVarSpec {
+        name: e.name.clone(),
+        description: e.description.clone(),
+        // `whereToFind` is no longer populated from the registry (the
+        // description already carries any "get a key at …" guidance and
+        // duplicating it produced doubled captions in the UI). Left
+        // optional so we can still surface a hand-curated pointer for
+        // specific seeds if ever needed.
+        where_to_find: None,
+        is_secret: e.is_secret,
+        default_value: e.default.clone(),
+        format: e.format.clone(),
+    }
+}
+
+/// Pick the `(command, args)` pair to launch an MCP stdio server based on
+/// its `registryType` + `identifier`. The registry has dropped the V0
+/// `runtimeHint` field, so the install side has to encode the convention
+/// per ecosystem:
+/// - `npm` → `npx -y <identifier> [extra args]`
+/// - `pypi` → `uvx <identifier> [extra args]`
+/// - `oci` → `docker run --rm -i <identifier> [extra args]`
+/// - everything else: fall back to a best-effort `<identifier>` invocation
+///   so the install still produces a runnable shell stanza the user can
+///   adjust by hand if needed.
+fn derive_stdio_command(
+    registry_type: &str,
+    identifier: &str,
+    extra_args: &[String],
+) -> (String, Vec<String>) {
+    match registry_type {
+        "npm" => {
+            let mut args = vec!["-y".to_string()];
+            if !identifier.is_empty() {
+                args.push(identifier.to_string());
+            }
+            args.extend(extra_args.iter().cloned());
+            ("npx".to_string(), args)
+        }
+        "pypi" => {
+            let mut args: Vec<String> = Vec::new();
+            if !identifier.is_empty() {
+                args.push(identifier.to_string());
+            }
+            args.extend(extra_args.iter().cloned());
+            ("uvx".to_string(), args)
+        }
+        "oci" => {
+            let mut args = vec!["run".to_string(), "--rm".to_string(), "-i".to_string()];
+            if !identifier.is_empty() {
+                args.push(identifier.to_string());
+            }
+            args.extend(extra_args.iter().cloned());
+            ("docker".to_string(), args)
+        }
+        _ => {
+            // Unknown registry type — use the identifier as the command
+            // and the extra args verbatim. Better than `node` + empty
+            // args (the V0 fallback) since at least the binary name maps
+            // to something the user can find / fix.
+            let command = if identifier.is_empty() {
+                "node".to_string()
+            } else {
+                identifier.to_string()
+            };
+            (command, extra_args.to_vec())
+        }
+    }
+}
+
 /// Convert a single registry envelope into our `MarketplaceMcpItem`. Returns
 /// `None` for servers with neither `packages` nor `remotes` — there is nothing
 /// we could install from those.
@@ -1167,6 +1343,25 @@ fn envelope_to_item(
     // Determine type: HTTP wins over stdio when both are present
     // (D-Imp-2 spec note — easier UX on the install side).
     let (mcp_type, stdio_config, http_config) = if let Some(remote) = s.remotes.first() {
+        // URL template variables: the wire ships these as a map with
+        // metadata-only values (name = map key). Flatten into a Vec of
+        // `EnvVarSpec` so the UI can reuse the same input panel as env
+        // vars. Sort by name for stable ordering across page loads.
+        let mut url_variables: Vec<EnvVarSpec> = remote
+            .variables
+            .iter()
+            .map(|(name, v)| EnvVarSpec {
+                name: name.clone(),
+                description: v.description.clone(),
+                where_to_find: None,
+                is_secret: v.is_secret,
+                default_value: v.default.clone(),
+                format: v.format.clone(),
+            })
+            .collect();
+        url_variables.sort_by(|a, b| a.name.cmp(&b.name));
+        let headers: Vec<EnvVarSpec> =
+            remote.headers.iter().map(env_var_to_spec).collect();
         (
             "http".to_string(),
             None,
@@ -1174,31 +1369,36 @@ fn envelope_to_item(
                 url: remote.url.clone(),
                 transport: remote.transport.clone().unwrap_or_else(|| "sse".to_string()),
                 oauth_authorization_url: remote.oauth_authorization_url.clone(),
+                url_variables,
+                headers,
             }),
         )
     } else if let Some(pkg) = s.packages.first() {
-        let command = pkg
-            .runtime_hint
-            .clone()
-            .unwrap_or_else(|| "node".to_string());
-        let args: Vec<String> = pkg
+        // Derive the install command from `registryType` + `identifier`,
+        // which replaced the V0 `runtimeHint` field. Verified 2026-05-12
+        // against the live wire — packages now ship as e.g.
+        // `{ registryType: "npm", identifier: "@org/server" }` and the
+        // install command is `npx -y @org/server`.
+        let registry_type = pkg
+            .registry_type
+            .as_deref()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let identifier = pkg.identifier.clone().unwrap_or_default();
+        let extra_args: Vec<String> = pkg
             .package_arguments
             .iter()
             .filter_map(|a| a.value.clone())
             .collect();
-        // Registry env vars only carry `name + description + isRequired`.
-        // `whereToFind` is `None` (no separate URL field) — the description
-        // already contains any "create a token at …" guidance, so duplicating
-        // it into `whereToFind` was producing a doubled placeholder + caption.
+        let (command, args) = derive_stdio_command(&registry_type, &identifier, &extra_args);
+        // Required-only filter (mirrors the V0 UX — the install panel
+        // only prompts for envs the user MUST set; optional envs are
+        // surfaced via the README / examples blocks).
         let required_env_vars: Vec<EnvVarSpec> = pkg
-            .package_environment_variables
+            .environment_variables
             .iter()
             .filter(|e| e.is_required)
-            .map(|e| EnvVarSpec {
-                name: e.name.clone(),
-                description: e.description.clone(),
-                where_to_find: None,
-            })
+            .map(env_var_to_spec)
             .collect();
         (
             "stdio".to_string(),
@@ -1984,6 +2184,9 @@ fn build_mcp_seed_items() -> Vec<MarketplaceMcpItem> {
                     name: name.to_string(),
                     description: Some(hint.to_string()),
                     where_to_find: Some(hint.to_string()),
+                    is_secret: false,
+                    default_value: None,
+                    format: None,
                 })
                 .collect();
             let (owner, repo) = parse_owner_repo_from_url(seed.repository_url);
@@ -2190,6 +2393,50 @@ pub fn update_mcp_env_vars(
     let mut cfg: McpConfigFile =
         serde_json::from_str(&text).map_err(|e| format!("parse MCP config: {}", e))?;
     cfg.env = if env.is_empty() { None } else { Some(env) };
+    let json = serde_json::to_string_pretty(&cfg)
+        .map_err(|e| format!("serialise MCP config: {}", e))?;
+    fs::write(&path, json).map_err(|e| format!("write MCP config: {}", e))?;
+    Ok(())
+}
+
+// ============================================================================
+// IPC: update_mcp_http_config (URL substitution + headers persistence)
+// ============================================================================
+//
+// Companion to `update_mcp_env_vars` for HTTP MCPs. Same atomic
+// read-modify-write pattern on `~/.ensemble/mcps/<name>.json`. Used by
+// the detail panel after install when the user edits URL template
+// variables (re-substituting `{VAR}`) or rotates header values
+// (Authorization / X-API-Key). `original_url` is the upstream template
+// (with `{VAR}` placeholders preserved on the marketplace side) — we
+// substitute every key in `url_variables` into a copy of it and write
+// the resulting static URL back into the config file.
+#[tauri::command]
+pub fn update_mcp_http_config(
+    mcp_id: String,
+    original_url: String,
+    url_variables: std::collections::HashMap<String, String>,
+    headers: std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
+    let path = std::path::PathBuf::from(&mcp_id);
+    if !path.exists() {
+        return Err(format!("MCP config not found: {}", mcp_id));
+    }
+    let text =
+        fs::read_to_string(&path).map_err(|e| format!("read MCP config: {}", e))?;
+    let mut cfg: McpConfigFile =
+        serde_json::from_str(&text).map_err(|e| format!("parse MCP config: {}", e))?;
+    let mut substituted = original_url;
+    for (name, value) in &url_variables {
+        substituted = substituted.replace(&format!("{{{}}}", name), value);
+    }
+    cfg.url = Some(substituted);
+    cfg.headers = if headers.is_empty() {
+        None
+    } else {
+        Some(headers)
+    };
     let json = serde_json::to_string_pretty(&cfg)
         .map_err(|e| format!("serialise MCP config: {}", e))?;
     fs::write(&path, json).map_err(|e| format!("write MCP config: {}", e))?;
@@ -2701,11 +2948,21 @@ async fn finalize_skill_install(
 // IPC: install_marketplace_mcp (spec §3.4)
 // ============================================================================
 
+/// `url_variables`: HTTP-only — values for `HttpMcpConfig.url_variables`.
+/// Each key is the variable name (e.g. `HAPI_FQDN`), value is the user
+/// input. Substituted into `url` before the config file is written so
+/// the resulting `.mcp.json` carries a static URL Claude Code can dial.
+///
+/// `headers`: HTTP-only — values for `HttpMcpConfig.headers`. Written
+/// verbatim into `~/.ensemble/mcps/<name>.json` (so sync re-applies
+/// them to projects) and the `.mcp.json` `headers` field.
 #[tauri::command]
 pub async fn install_marketplace_mcp(
     app: AppHandle,
     item: MarketplaceMcpItem,
     conflict_action: Option<ConflictAction>,
+    url_variables: Option<std::collections::HashMap<String, String>>,
+    headers: Option<std::collections::HashMap<String, String>>,
 ) -> Result<InstallOutcome, String> {
     // B-P0-1 — security: validate `item.name` before any FS join.
     let safe_name = match sanitize_resource_name(&item.name) {
@@ -2808,14 +3065,51 @@ pub async fn install_marketplace_mcp(
         repo_subpath: None,
         last_synced_at: now,
     };
-    let (command, args, mcp_type, url, env_map) = match item.mcp_type.as_str() {
+    let (command, args, mcp_type, url, env_map, headers_map) = match item.mcp_type.as_str() {
         "http" => {
             let http = item.http_config.clone().unwrap_or(HttpMcpConfig {
                 url: String::new(),
                 transport: "sse".to_string(),
                 oauth_authorization_url: None,
+                url_variables: Vec::new(),
+                headers: Vec::new(),
             });
-            (String::new(), Some(Vec::<String>::new()), Some("http".to_string()), Some(http.url), None)
+            // Substitute `{VAR}` placeholders in the URL with the values
+            // the user typed in the URL-variables panel. Claude Code does
+            // not perform any template substitution at config-read time;
+            // the `.mcp.json` URL has to be a static string.
+            let url_subs = url_variables.clone().unwrap_or_default();
+            let mut final_url = http.url.clone();
+            for (name, value) in &url_subs {
+                final_url = final_url.replace(&format!("{{{}}}", name), value);
+            }
+            // Pre-seed the headers map with user-provided values plus
+            // empty placeholders for any header spec the user has not
+            // touched yet — the detail panel will let them edit those
+            // post-install via `update_mcp_http_config`.
+            let user_headers = headers.clone().unwrap_or_default();
+            let mut header_map: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            for spec in &http.headers {
+                let value = user_headers
+                    .get(&spec.name)
+                    .cloned()
+                    .unwrap_or_else(|| spec.default_value.clone().unwrap_or_default());
+                header_map.insert(spec.name.clone(), value);
+            }
+            let headers_opt = if header_map.is_empty() {
+                None
+            } else {
+                Some(header_map)
+            };
+            (
+                String::new(),
+                Some(Vec::<String>::new()),
+                Some("http".to_string()),
+                Some(final_url),
+                None,
+                headers_opt,
+            )
         }
         _ => {
             let stdio = item.stdio_config.clone().unwrap_or(StdioMcpConfig {
@@ -2830,7 +3124,14 @@ pub async fn install_marketplace_mcp(
                 .iter()
                 .map(|e| (e.name.clone(), String::new()))
                 .collect();
-            (stdio.command, Some(stdio.args), Some("stdio".to_string()), None, Some(env_map))
+            (
+                stdio.command,
+                Some(stdio.args),
+                Some("stdio".to_string()),
+                None,
+                Some(env_map),
+                None,
+            )
         }
     };
 
@@ -2842,6 +3143,7 @@ pub async fn install_marketplace_mcp(
         env: env_map,
         provided_tools: None,
         url,
+        headers: headers_map,
         mcp_type,
         install_source: Some("marketplace".to_string()),
         plugin_id: None,

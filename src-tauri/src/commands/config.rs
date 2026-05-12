@@ -44,6 +44,18 @@ pub fn write_mcp_config(project_path: String, mcp_servers: Vec<McpServer>) -> Re
             }
         }
 
+        // Claude Code reads `headers` as an object on HTTP MCP entries
+        // (verified against the official MCP docs, 2026-05-12). Forward
+        // any non-empty header map verbatim so Authorization / X-API-Key
+        // / Bearer tokens reach the upstream MCP server.
+        if is_http {
+            if let Some(headers) = mcp.headers {
+                if !headers.is_empty() {
+                    server_config["headers"] = json!(headers);
+                }
+            }
+        }
+
         mcp_config.insert(mcp.name.clone(), server_config);
     }
 

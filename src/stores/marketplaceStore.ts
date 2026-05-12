@@ -394,7 +394,16 @@ export interface MarketplaceState {
 
   // Install
   installSkill: (item: MarketplaceSkillItem, conflictAction?: ConflictAction) => Promise<void>;
-  installMcp: (item: MarketplaceMcpItem, conflictAction?: ConflictAction) => Promise<void>;
+  installMcp: (
+    item: MarketplaceMcpItem,
+    conflictAction?: ConflictAction,
+    /** HTTP-only: values for `httpConfig.urlVariables`, keyed by var name.
+     *  Substituted into the URL at install. */
+    urlVariables?: Record<string, string>,
+    /** HTTP-only: values for `httpConfig.headers`, keyed by header name.
+     *  Written to `.mcp.json` `headers`. */
+    headers?: Record<string, string>,
+  ) => Promise<void>;
 
   // Select
   selectSkillItem: (id: string | null) => void;
@@ -1502,7 +1511,7 @@ export const useMarketplaceStore = create<MarketplaceState>()(
         }
       },
 
-      installMcp: async (item, conflictAction) => {
+      installMcp: async (item, conflictAction, urlVariables, headers) => {
         if (!isTauri()) {
           console.warn('MarketplaceStore: Cannot install MCP in browser mode');
           return;
@@ -1525,6 +1534,8 @@ export const useMarketplaceStore = create<MarketplaceState>()(
           const outcome = await safeInvoke<InstallOutcome>('install_marketplace_mcp', {
             item,
             conflictAction: conflictAction ?? null,
+            urlVariables: urlVariables ?? null,
+            headers: headers ?? null,
           });
 
           if (!outcome) {
@@ -2011,16 +2022,16 @@ export const useMarketplaceStore = create<MarketplaceState>()(
       // clearing only the README slices — listings + topic map + settings
       // survive untouched, so the UX cost is one silent re-fetch the next
       // time the user opens any detail panel.
-      // version 4 (2026-05-12): backend `MarketplaceMcpItem` gained
-      // `title` / `websiteUrl` / `publisher` / `keywords` / `examples`
-      // + license now comes from `_meta.publisher-provided.license`
-      // instead of being permanently `None`. Items persisted under v3
-      // lack these fields, so the detail panel sees `undefined` for
-      // each addition regardless of what the upstream actually publishes.
-      // Migrate by clearing the MCP listing / search caches; the next
-      // mount silently refetches with the new schema. Skill caches +
-      // topic map + onboarding flags survive.
-      version: 4,
+      // version 5 (2026-05-12): backend `RegistryPackage` deserializer
+      // was rewritten against the live wire schema (real `registryType` /
+      // `identifier` / `transport` / `environmentVariables` /
+      // `packageArguments` instead of stale snake_case names that
+      // silently default-deserialised to empty). Stdio MCPs cached
+      // under v4 carry empty `requiredEnvVars` and `command="node"`
+      // placeholders; HTTP MCPs lack `urlVariables` / `headers`.
+      // Migration clears the MCP listing + search caches so the next
+      // load refetches with the corrected schema.
+      version: 5,
       migrate: (persistedState, version) => {
         const state = persistedState as Partial<MarketplaceState> | undefined;
         if (!state) return state;
@@ -2028,7 +2039,7 @@ export const useMarketplaceStore = create<MarketplaceState>()(
         if (version < 3) {
           next = { ...next, skillReadmes: {}, mcpReadmes: {} };
         }
-        if (version < 4) {
+        if (version < 5) {
           next = {
             ...next,
             mcpsListing: state.mcpsListing

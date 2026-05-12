@@ -684,6 +684,7 @@ fn extract_mcp_config(
                             env: mcp_config.env.clone(),
                             provided_tools: None,
                             url: mcp_config.url.clone(),
+                            headers: mcp_config.headers.clone(),
                             mcp_type: mcp_config.mcp_type.clone(),
                             install_source: Some("local".to_string()),
                             plugin_id: None,
@@ -710,6 +711,7 @@ fn extract_mcp_config(
                                 env: mcp_config.env.clone(),
                                 provided_tools: None,
                                 url: mcp_config.url.clone(),
+                                headers: mcp_config.headers.clone(),
                                 mcp_type: mcp_config.mcp_type.clone(),
                                 install_source: Some("local".to_string()),
                                 plugin_id: None,
@@ -747,6 +749,7 @@ fn extract_mcp_config(
                 env: mcp_config.env.clone(),
                 provided_tools: None,
                 url: mcp_config.url.clone(),
+                headers: mcp_config.headers.clone(),
                 mcp_type: mcp_config.mcp_type.clone(),
                 install_source: Some("local".to_string()),
                 plugin_id: None,
@@ -917,6 +920,7 @@ pub fn update_mcp_scope(
                 args: mcp_config.args.clone(),
                 env: mcp_config.env.clone(),
                 url: mcp_config.url.clone(),
+                headers: mcp_config.headers.clone(),
                 mcp_type: mcp_config.mcp_type.clone(),
             };
             claude_json

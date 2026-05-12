@@ -7,6 +7,7 @@ import EmptyState from '@/components/common/EmptyState';
 import { MarketplaceListItem } from '@/components/marketplace/MarketplaceListItem';
 import { MarketplaceCollisionModal } from '@/components/marketplace/MarketplaceCollisionModal';
 import { MarketplaceSourceBadge } from '@/components/marketplace/MarketplaceSourceBadge';
+import { MarkdownBody } from '@/components/marketplace/MarkdownBody';
 import { AddToSceneTriggerButton } from '@/components/marketplace/MarketplaceShortcutBanner';
 import { SyncIndicator } from '@/components/marketplace/SyncIndicator';
 import { useMarketplaceStore } from '@/stores/marketplaceStore';
@@ -657,11 +658,26 @@ function SkillDetailContent({ item }: { item: MarketplaceSkillItem }) {
   const loadingReadmes = useMarketplaceStore((s) => s.loadingReadmes);
   const readmeErrors = useMarketplaceStore((s) => s.readmeErrors);
   const loadSkillReadme = useMarketplaceStore((s) => s.loadSkillReadme);
+  const repoStars = useMarketplaceStore((s) => s.repoStars);
+  const loadRepoStars = useMarketplaceStore((s) => s.loadRepoStars);
 
   const itemKey = `${item.source}/${item.skillId}`;
   const cached = skillReadmes[itemKey];
   const isLoadingReadme = loadingReadmes.has(itemKey);
   const readmeError = readmeErrors[itemKey];
+
+  // Derive (owner, repo) for the Stars fetch. V2 catalog items carry
+  // `source = "<owner>/<repo>"`; V1 items carry `owner` + `repo` directly.
+  const [ownerForStars, repoForStars] = (() => {
+    if (item.owner && item.repo) return [item.owner, item.repo];
+    if (item.source && item.source.includes('/')) {
+      const [o, r] = item.source.split('/');
+      return [o ?? '', r ?? ''];
+    }
+    return ['', ''];
+  })();
+  const starsKey = ownerForStars && repoForStars ? `${ownerForStars}/${repoForStars}` : '';
+  const starsCount = starsKey && starsKey in repoStars ? repoStars[starsKey] : undefined;
 
   // Trigger README fetch on detail open / item change. The store memoises
   // by key + 5-min TTL so this is idempotent for repeat opens.
@@ -669,6 +685,13 @@ function SkillDetailContent({ item }: { item: MarketplaceSkillItem }) {
     if (!item.source || !item.skillId) return;
     void loadSkillReadme(item.source, item.skillId);
   }, [item.source, item.skillId, loadSkillReadme]);
+
+  // Trigger Stars fetch alongside README. Backend dedupes per (owner, repo)
+  // for 5 minutes; swallows rate-limit errors silently.
+  useEffect(() => {
+    if (!ownerForStars || !repoForStars) return;
+    void loadRepoStars(ownerForStars, repoForStars);
+  }, [ownerForStars, repoForStars, loadRepoStars]);
 
   const installs = item.installs ?? 0;
   const installsYesterday = item.installsYesterday;
@@ -680,6 +703,9 @@ function SkillDetailContent({ item }: { item: MarketplaceSkillItem }) {
       <div className="flex gap-8">
         <InfoItem label="Source" value={item.source ?? '—'} />
         <InfoItem label="Installs" value={installs > 0 ? formatCompactNumber(installs) : '—'} />
+        {typeof starsCount === 'number' && (
+          <InfoItem label="Stars" value={formatCompactNumber(starsCount)} />
+        )}
         {typeof installsYesterday === 'number' && (
           <InfoItem label="24h" value={formatCompactNumber(installsYesterday)} />
         )}
@@ -738,9 +764,7 @@ function SkillDetailContent({ item }: { item: MarketplaceSkillItem }) {
                   </button>
                 </div>
               ) : hasReadmeContent ? (
-                <pre className="whitespace-pre-wrap break-words font-sans text-xs leading-relaxed text-[#52525B]">
-                  {cached!.content}
-                </pre>
+                <MarkdownBody source={cached!.content} />
               ) : (
                 <p className="text-xs text-[#A1A1AA]">No README available.</p>
               )}

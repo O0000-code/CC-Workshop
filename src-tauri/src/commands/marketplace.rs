@@ -129,6 +129,17 @@ const README_CACHE_TTL_SECS: i64 = 5 * 60;
 /// browse pattern; the LRU upgrade is in V1.5 backlog).
 const README_CACHE_MAX_ENTRIES: usize = 64;
 
+/// In-memory GitHub repo-stats (currently just stars count) cache TTL.
+/// Mirrors the README cache window so the two settle into the same
+/// freshness contract from the user's perspective. Stars change slowly,
+/// 5 minutes is more than tight enough.
+const REPO_STATS_CACHE_TTL_SECS: i64 = 5 * 60;
+
+/// Same FIFO bound as the README cache. A typical browse session opens
+/// at most a few dozen unique detail panels in 5 minutes; 64 is safely
+/// above that.
+const REPO_STATS_CACHE_MAX_ENTRIES: usize = 64;
+
 /// User-Agent string sent to skills.sh — must look like a browser. The
 /// upstream rejects requests whose UA matches `*reqwest*` or empty UA.
 /// Verified 2026-05-10 via curl.
@@ -812,6 +823,56 @@ fn readme_cache_put(key: String, body: String) {
     );
 }
 
+// ============================================================================
+// GitHub repo-stats cache (parallels README cache; keyed by `owner/repo`)
+// ============================================================================
+
+struct RepoStatsCacheEntry {
+    stars: u32,
+    fetched_at: i64,
+}
+
+static REPO_STATS_CACHE: OnceLock<std::sync::Mutex<HashMap<String, RepoStatsCacheEntry>>> =
+    OnceLock::new();
+
+fn repo_stats_cache() -> &'static std::sync::Mutex<HashMap<String, RepoStatsCacheEntry>> {
+    REPO_STATS_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn repo_stats_cache_get(key: &str) -> Option<u32> {
+    let now = chrono::Utc::now().timestamp();
+    let cache = repo_stats_cache().lock().ok()?;
+    let entry = cache.get(key)?;
+    if now - entry.fetched_at > REPO_STATS_CACHE_TTL_SECS {
+        return None;
+    }
+    Some(entry.stars)
+}
+
+fn repo_stats_cache_put(key: String, stars: u32) {
+    let now = chrono::Utc::now().timestamp();
+    let mut cache = match repo_stats_cache().lock() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    if cache.len() >= REPO_STATS_CACHE_MAX_ENTRIES && !cache.contains_key(&key) {
+        if let Some(oldest_key) = cache
+            .iter()
+            .min_by_key(|(_, v)| v.fetched_at)
+            .map(|(k, _)| k.clone())
+        {
+            cache.remove(&oldest_key);
+        }
+    }
+    cache.insert(
+        key,
+        RepoStatsCacheEntry {
+            stars,
+            fetched_at: now,
+        },
+    );
+}
+
 /// Try `https://raw.githubusercontent.com/{source}/HEAD/{skill_id}/SKILL.md`
 /// first (skill in subfolder), then fall back to
 /// `https://raw.githubusercontent.com/{source}/HEAD/SKILL.md` (skill at
@@ -1412,6 +1473,73 @@ pub async fn get_marketplace_skill_readme(
     skill_id: String,
 ) -> Result<String, String> {
     fetch_skill_readme_github(&source, &skill_id).await
+}
+
+// ============================================================================
+// IPC: get_marketplace_repo_stars (Phase 2 mirror — GitHub stars badge)
+// ============================================================================
+//
+// Single api.github.com call to `/repos/<owner>/<repo>` to read the
+// `stargazers_count` field, then cache it under (owner, repo) for
+// REPO_STATS_CACHE_TTL_SECS. Surface in the detail panel as a trust
+// signal alongside `Installs` (Ensemble's `find-skills` install button
+// already gives users one-click install — the upstream skills.sh detail
+// page surfaces stars + installs together; we mirror that pairing).
+//
+// Rate-limit handling: api.github.com unauth cap is 60 req/h per IP. We
+// surface the cap to the caller as `Err("rate-limit")` so the frontend
+// can omit the Stars column silently rather than poison the UI with a
+// hard error — Stars is decorative, not load-bearing.
+async fn fetch_github_repo_stars_impl(owner: &str, repo: &str) -> Result<u32, String> {
+    let cache_key = format!("{}/{}", owner, repo);
+    if let Some(stars) = repo_stats_cache_get(&cache_key) {
+        return Ok(stars);
+    }
+
+    let url = format!("https://api.github.com/repos/{}/{}", owner, repo);
+    let resp = marketplace_http()
+        .get(&url)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .send()
+        .await
+        .map_err(|e| format!("network: {}", e))?;
+
+    if resp.status() == reqwest::StatusCode::FORBIDDEN
+        || resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+    {
+        return Err("rate-limit".to_string());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    #[derive(Deserialize)]
+    struct RepoResp {
+        #[serde(default)]
+        stargazers_count: u32,
+    }
+    let parsed: RepoResp = resp
+        .json()
+        .await
+        .map_err(|e| format!("parse: {}", e))?;
+    repo_stats_cache_put(cache_key, parsed.stargazers_count);
+    Ok(parsed.stargazers_count)
+}
+
+#[tauri::command]
+pub async fn get_marketplace_repo_stars(
+    owner: String,
+    repo: String,
+) -> Result<u32, String> {
+    // Defence-in-depth: `owner` / `repo` segments must pass the same
+    // alphabet check used elsewhere in install. Reject anything carrying
+    // path separators or unusual chars before constructing the URL.
+    let safe_owner = sanitize_resource_name(&owner)
+        .map_err(|e| format!("invalid owner: {}", e))?;
+    let safe_repo = sanitize_resource_name(&repo)
+        .map_err(|e| format!("invalid repo: {}", e))?;
+    fetch_github_repo_stars_impl(&safe_owner, &safe_repo).await
 }
 
 // ============================================================================

@@ -268,6 +268,15 @@ export interface MarketplaceState {
   loadingMcpReadmes: Set<string>;
   mcpReadmeErrors: Record<string, string>;
 
+  /** GitHub stargazers count per `${owner}/${repo}`. Populated lazily on
+   *  detail-panel open by `loadRepoStars`; backend caps each entry to
+   *  5 minutes and caps the cache at 64 entries (FIFO). Memory-only —
+   *  not persisted to localStorage (would be stale across launches and
+   *  the rate-limit cost of a fresh fetch is one request per panel). */
+  repoStars: Record<string, number>;
+  /** Loading-keys set so repeat detail-panel opens don't refetch. */
+  loadingRepoStars: Set<string>;
+
   // MCP marketplace (V2: cursor-paginated realtime mirror, 2026-05-11).
   /** Active listing state. `view` inside drives which IPC backs page
    *  loads ('all' → main listing, 'recently-updated' → updated-since
@@ -332,6 +341,11 @@ export interface MarketplaceState {
   loadSkillReadme: (source: string, skillId: string) => Promise<void>;
   /** Fetch a single MCP's README. Memoised per `repositoryUrl`. */
   loadMcpReadme: (repositoryUrl: string) => Promise<void>;
+  /** Fetch the GitHub stargazers count for `${owner}/${repo}`. Memoised
+   *  per repo key; backend caps to 5 minutes + 64 entries. Silently no-ops
+   *  on rate-limit / network failure — the Info row simply omits the
+   *  Stars column rather than surfacing an error to the user. */
+  loadRepoStars: (owner: string, repo: string) => Promise<void>;
   /** Load the skills.sh topic → skill reverse map (powers Stage 0 of the
    *  icon resolver). Backend caches 24h. Idempotent: no-op when already
    *  loaded or in flight. */
@@ -513,6 +527,9 @@ export const useMarketplaceStore = create<MarketplaceState>()(
       mcpReadmes: {},
       loadingMcpReadmes: new Set<string>(),
       mcpReadmeErrors: {},
+
+      repoStars: {},
+      loadingRepoStars: new Set<string>(),
 
       mcpsListing: initialMcpsListing,
       mcpsSearch: null,
@@ -867,6 +884,47 @@ export const useMarketplaceStore = create<MarketplaceState>()(
               loadingMcpReadmes: next,
               mcpReadmeErrors: { ...state.mcpReadmeErrors, [key]: message },
             };
+          });
+        }
+      },
+
+      loadRepoStars: async (owner, repo) => {
+        if (!owner || !repo) return;
+        const key = `${owner}/${repo}`;
+        const { repoStars, loadingRepoStars } = get();
+        // Cached within session → skip. Backend TTL is 5 minutes so the
+        // shape of "what counts as fresh" is on the backend, not here.
+        if (key in repoStars) return;
+        if (loadingRepoStars.has(key)) return;
+        if (!isTauri()) return;
+
+        set((state) => {
+          const next = new Set(state.loadingRepoStars);
+          next.add(key);
+          return { loadingRepoStars: next };
+        });
+
+        try {
+          const stars = await safeInvoke<number>('get_marketplace_repo_stars', {
+            owner,
+            repo,
+          });
+          set((state) => {
+            const next = new Set(state.loadingRepoStars);
+            next.delete(key);
+            return {
+              repoStars:
+                typeof stars === 'number' ? { ...state.repoStars, [key]: stars } : state.repoStars,
+              loadingRepoStars: next,
+            };
+          });
+        } catch {
+          // Stars is a decorative trust signal — swallow rate-limit /
+          // network errors silently so the detail panel reads clean.
+          set((state) => {
+            const next = new Set(state.loadingRepoStars);
+            next.delete(key);
+            return { loadingRepoStars: next };
           });
         }
       },

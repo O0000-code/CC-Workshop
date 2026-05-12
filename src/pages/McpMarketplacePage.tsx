@@ -6,6 +6,7 @@ import { Input } from '@/components/common/Input';
 import { MarketplaceListItem } from '@/components/marketplace/MarketplaceListItem';
 import { MarketplaceCollisionModal } from '@/components/marketplace/MarketplaceCollisionModal';
 import { MarketplaceSourceBadge } from '@/components/marketplace/MarketplaceSourceBadge';
+import { MarkdownBody } from '@/components/marketplace/MarkdownBody';
 import { AddToSceneTriggerButton } from '@/components/marketplace/MarketplaceShortcutBanner';
 import { SyncIndicator } from '@/components/marketplace/SyncIndicator';
 import { safeInvoke } from '@/utils/tauri';
@@ -54,6 +55,15 @@ function formatDate(dateString?: string): string {
   } catch {
     return 'Unknown';
   }
+}
+
+/** Compact integer formatter — `1234` → `1.2K`, `1234567` → `1.2M`. Mirrors
+ *  the helper used in `SkillMarketplacePage` so the two info rows render
+ *  the Stars value identically. */
+function formatCompactNumber(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`;
+  return n.toLocaleString();
 }
 
 function formatRelativeTime(dateString?: string): string {
@@ -148,6 +158,8 @@ export function McpMarketplacePage() {
   const selectMcpItem = useMarketplaceStore((s) => s.selectMcpItem);
   const installMcp = useMarketplaceStore((s) => s.installMcp);
   const isMcpInstalled = useMarketplaceStore((s) => s.isMcpInstalled);
+  const repoStars = useMarketplaceStore((s) => s.repoStars);
+  const loadRepoStars = useMarketplaceStore((s) => s.loadRepoStars);
 
   // ----- Cross-store reads (SSoT) -----
   const mcpServers = useMcpsStore((s) => s.mcpServers);
@@ -222,6 +234,23 @@ export function McpMarketplacePage() {
     () => (selectedItem ? findLocalMcpId(mcpServers, selectedItem) : null),
     [mcpServers, selectedItem],
   );
+
+  // Parse `(owner, repo)` from the MCP's `repositoryUrl` so we can fetch
+  // GitHub stars. Handles `https://github.com/<o>/<r>`,
+  // `https://github.com/<o>/<r>.git`, and subpaths like
+  // `https://github.com/<o>/<r>/tree/main/src/everything`.
+  const [mcpOwner, mcpRepo] = useMemo(() => {
+    const url = selectedItem?.repositoryUrl ?? '';
+    const match = url.match(/^https?:\/\/github\.com\/([^/]+)\/([^/.]+)/i);
+    return match ? [match[1] ?? '', match[2] ?? ''] : ['', ''];
+  }, [selectedItem]);
+  const mcpStarsKey = mcpOwner && mcpRepo ? `${mcpOwner}/${mcpRepo}` : '';
+  const mcpStars = mcpStarsKey && mcpStarsKey in repoStars ? repoStars[mcpStarsKey] : undefined;
+
+  useEffect(() => {
+    if (!mcpOwner || !mcpRepo) return;
+    void loadRepoStars(mcpOwner, mcpRepo);
+  }, [mcpOwner, mcpRepo, loadRepoStars]);
 
   const usedInScenesCount = useMemo(() => {
     if (!localMcpId) return 0;
@@ -541,6 +570,9 @@ export function McpMarketplacePage() {
         <InfoItem label="Author" value={selectedItem.author || 'Unknown'} />
         <InfoItem label="Last Updated" value={formatRelativeTime(selectedItem.lastUpdatedAt)} />
         <InfoItem label="Type" value={selectedItem.mcpType === 'stdio' ? 'stdio' : 'HTTP'} />
+        {typeof mcpStars === 'number' && (
+          <InfoItem label="Stars" value={formatCompactNumber(mcpStars)} />
+        )}
       </section>
 
       {/* Block 2: Reference info. */}
@@ -871,9 +903,7 @@ function McpReadmeBlock({ item }: { item: MarketplaceMcpItem }) {
             </button>
           </div>
         ) : hasContent ? (
-          <pre className="whitespace-pre-wrap break-words font-sans text-xs leading-relaxed text-[#52525B]">
-            {cached!.content}
-          </pre>
+          <MarkdownBody source={cached!.content} />
         ) : (
           <p className="text-xs text-[#A1A1AA]">No README provided.</p>
         )}

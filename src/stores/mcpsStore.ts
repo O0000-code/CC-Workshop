@@ -6,6 +6,7 @@ import {
   UsageStats,
   ClassifyItem,
   ClassifyResult,
+  ClassifyScope,
 } from '@/types';
 import { useSettingsStore } from './settingsStore';
 import { usePluginsStore } from './pluginsStore';
@@ -56,7 +57,7 @@ interface McpsState {
   clearError: () => void;
   fetchMcpTools: (mcpId: string, showSuccessAnimation?: boolean) => Promise<FetchMcpToolsResult>;
   loadUsageStats: () => Promise<void>;
-  autoClassify: () => Promise<void>;
+  autoClassify: (scope?: ClassifyScope) => Promise<void>;
 
   // Computed getters (via selectors)
   getFilteredMcps: () => McpServer[];
@@ -379,7 +380,7 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
     }
   },
 
-  autoClassify: async () => {
+  autoClassify: async (scope?: ClassifyScope) => {
     if (!isTauri()) {
       console.warn('McpsStore: Cannot auto-classify in browser mode');
       set({ error: 'Auto-classification is not available in browser mode' });
@@ -389,16 +390,38 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
     const { mcpServers } = get();
     const { categories, tags } = useAppStore.getState();
 
-    if (mcpServers.length === 0) {
-      set({ error: 'No MCP servers to classify.' });
+    // Apply scope filter when provided. See `skillsStore.autoClassify` for
+    // the rationale — same dual-read (`categoryId` preferred, fall back to
+    // legacy name) and same caller contract (caller pre-expands descendants).
+    const tagNameById = new Map(tags.map((t) => [t.id, t.name]));
+    const targetTagName = scope?.tagId ? tagNameById.get(scope.tagId) : undefined;
+    const categoryNameSet = scope?.categoryIds
+      ? new Set(categories.filter((c) => scope.categoryIds!.has(c.id)).map((c) => c.name))
+      : undefined;
+    const mcpsToClassify = mcpServers.filter((m) => {
+      if (scope?.categoryIds) {
+        const match = m.categoryId
+          ? scope.categoryIds.has(m.categoryId)
+          : (categoryNameSet?.has(m.category) ?? false);
+        if (!match) return false;
+      }
+      if (targetTagName !== undefined && !m.tags.includes(targetTagName)) {
+        return false;
+      }
+      return true;
+    });
+
+    if (mcpsToClassify.length === 0) {
+      set({
+        error: scope ? 'No MCP servers to classify in this scope.' : 'No MCP servers to classify.',
+      });
       return;
     }
 
     set({ isClassifying: true, classifySuccess: false, error: null });
 
     try {
-      // Prepare all MCPs for classification
-      const items: ClassifyItem[] = mcpServers.map((m) => ({
+      const items: ClassifyItem[] = mcpsToClassify.map((m) => ({
         id: m.id,
         name: m.name,
         description: m.description,

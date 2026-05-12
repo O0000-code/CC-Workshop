@@ -4,9 +4,11 @@ import { Github, BookOpen, FileText, ChevronDown, Check } from 'lucide-react';
 import { TrashRecoveryModal } from '@/components/modals';
 import { PageHeader } from '@/components/layout/PageHeader';
 import Toggle from '@/components/common/Toggle';
-import { useSettingsStore, useSkillsStore, useMcpsStore } from '@/stores';
+import { useSettingsStore, useSkillsStore, useMcpsStore, useAppStore } from '@/stores';
 import { useClaudeMdStore } from '@/stores/claudeMdStore';
+import Modal from '@/components/common/Modal';
 import { safeInvoke } from '@/utils/tauri';
+import type { ClassifyModel } from '@/types';
 
 // ============================================================================
 // Settings Page
@@ -51,9 +53,13 @@ interface RowProps {
 }
 
 function Row({ children, noBorder = false }: RowProps) {
+  // `gap-4` enforces a 16px minimum gap between the left text block and the
+  // right control, even when the left description wraps to multiple lines.
+  // Without it, long descriptions visually collide with the trailing
+  // dropdown / toggle.
   return (
     <div
-      className={`flex items-center justify-between px-5 py-4 ${
+      className={`flex items-center justify-between gap-4 px-5 py-4 ${
         noBorder ? '' : 'border-b border-[#E5E5E5]'
       } last:border-b-0`}
     >
@@ -76,9 +82,23 @@ interface CustomSelectProps {
   options: CustomSelectOption[];
   onChange: (value: string) => void;
   className?: string;
+  /**
+   * Minimum trigger width in pixels. Default 140 fits longer labels like
+   * `./.claude/CLAUDE.md`. Override with a smaller value for short
+   * single-word labels (e.g. model picker — `Opus` / `Sonnet` / `Haiku`).
+   * The dropdown menu inherits the trigger's measured width, so this
+   * shrinks both surfaces consistently.
+   */
+  minWidth?: number;
 }
 
-function CustomSelect({ value, options, onChange, className = '' }: CustomSelectProps) {
+function CustomSelect({
+  value,
+  options,
+  onChange,
+  className = '',
+  minWidth = 140,
+}: CustomSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0, width: 0 });
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -108,7 +128,8 @@ function CustomSelect({ value, options, onChange, className = '' }: CustomSelect
       <button
         ref={triggerRef}
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center justify-between gap-2 h-9 px-3 min-w-[140px] rounded-md border border-[#E5E5E5] hover:bg-[#FAFAFA] transition-colors cursor-pointer"
+        style={{ minWidth: `${minWidth}px` }}
+        className="flex items-center justify-between gap-2 h-9 px-3 rounded-md border border-[#E5E5E5] hover:bg-[#FAFAFA] transition-colors cursor-pointer"
       >
         <span className="text-[13px] text-[#18181B]">{selectedOption?.label || value}</span>
         <ChevronDown
@@ -171,17 +192,53 @@ function CustomSelect({ value, options, onChange, className = '' }: CustomSelect
 // Main Settings Page Component
 // ============================================================================
 
+// Stat row inside the Reset confirm modal. Number on the left in a fixed
+// 3-character column (tabular-nums + right-align) so multi-row numbers line
+// up regardless of digit count — same layout idea as macOS Finder "Get Info".
+// Number 14px medium (token), label 13px regular zinc-600.
+interface ResetStatRowProps {
+  count: number;
+  label: string;
+}
+
+function ResetStatRow({ count, label }: ResetStatRowProps) {
+  return (
+    <div className="flex items-baseline gap-3">
+      <span className="w-[3ch] text-right text-[14px] font-medium text-[#18181B] tabular-nums">
+        {count}
+      </span>
+      <span className="text-[13px] text-[#52525B]">{label}</span>
+    </div>
+  );
+}
+
 // Action Button Component for consistent styling
 interface ActionButtonProps {
   onClick: () => void;
   children: React.ReactNode;
+  variant?: 'default' | 'danger';
+  disabled?: boolean;
 }
 
-function ActionButton({ onClick, children }: ActionButtonProps) {
+function ActionButton({
+  onClick,
+  children,
+  variant = 'default',
+  disabled = false,
+}: ActionButtonProps) {
+  // Default: neutral foreground that darkens on hover (matches the
+  // section-action voice of every other Row entry). Danger: red accent,
+  // used for irreversible operations only — currently the Reset entry
+  // in the Auto Classify section.
+  const variantClass =
+    variant === 'danger'
+      ? 'text-[var(--color-error)] hover:opacity-80'
+      : 'text-[#71717A] hover:text-[#18181B]';
   return (
     <button
       onClick={onClick}
-      className="text-xs font-medium text-[#71717A] hover:text-[#18181B] transition-colors"
+      disabled={disabled}
+      className={`text-xs font-medium ${variantClass} transition-colors disabled:opacity-40 disabled:cursor-not-allowed`}
     >
       {children}
     </button>
@@ -194,6 +251,8 @@ export function SettingsPage() {
   >('idle');
   const [_quickActionMessage, setQuickActionMessage] = useState('');
   const [showTrashModal, setShowTrashModal] = useState(false);
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
 
   const {
     terminalApp,
@@ -201,17 +260,20 @@ export function SettingsPage() {
     warpOpenMode,
     claudeMdDistributionPath,
     autoClassifyNewItems,
+    classifyModel,
     setTerminalApp,
     setClaudeCommand,
     setWarpOpenMode,
     setClaudeMdDistributionPath,
     setAutoClassifyNewItems,
+    setClassifyModel,
   } = useSettingsStore();
 
-  // Get reload functions from stores to refresh data after recovery
-  const { loadSkills } = useSkillsStore();
-  const { loadMcps } = useMcpsStore();
-  const { loadFiles: loadClaudeMdFiles } = useClaudeMdStore();
+  // Get reload functions from stores to refresh data after recovery / reset
+  const { loadSkills, skills } = useSkillsStore();
+  const { loadMcps, mcpServers } = useMcpsStore();
+  const { loadFiles: loadClaudeMdFiles, files: claudeMdFiles } = useClaudeMdStore();
+  const { loadCategories, loadTags, categories, tags } = useAppStore();
   const supportsOpenMode = terminalApp === 'Warp' || terminalApp === 'Ghostty';
   const terminalOpenModeLabel = terminalApp === 'Ghostty' ? 'Ghostty Open Mode' : 'Warp Open Mode';
 
@@ -221,6 +283,47 @@ export function SettingsPage() {
     // This ensures sidebar counts and lists update without page refresh
     await Promise.all([loadSkills(), loadMcps(), loadClaudeMdFiles()]);
   }, [loadSkills, loadMcps, loadClaudeMdFiles]);
+
+  // Reset every auto-classify-produced classification (categories, tags,
+  // and all item ↔ classification links). Items themselves stay; their
+  // category / tag assignments are cleared. Used by the Settings "Reset
+  // auto-classify data" button — sized for the case where a manual
+  // Auto Classify run produced a result the user wants to throw away.
+  const handleConfirmReset = useCallback(async () => {
+    setIsResetting(true);
+    try {
+      await safeInvoke('reset_auto_classify_data');
+      // Reload every surface that mirrors the cleared backend state.
+      // `loadCategories` / `loadTags` carry the sidebar; the three item
+      // stores carry the per-item category / tag chips.
+      await Promise.all([
+        loadCategories(),
+        loadTags(),
+        loadSkills(),
+        loadMcps(),
+        loadClaudeMdFiles(),
+      ]);
+      setShowResetModal(false);
+    } catch (error) {
+      console.error('Failed to reset auto-classify data:', error);
+    } finally {
+      setIsResetting(false);
+    }
+  }, [loadCategories, loadTags, loadSkills, loadMcps, loadClaudeMdFiles]);
+
+  // Pre-compute counts shown in the confirm modal. These are read once
+  // when the modal opens (snapshotted via current React render); user
+  // mutations after that point are extremely rare given the modal is
+  // dismissed within seconds.
+  const skillsWithClassification = skills.filter(
+    (s) => s.categoryId || s.category || s.tags.length > 0,
+  ).length;
+  const mcpsWithClassification = mcpServers.filter(
+    (m) => m.categoryId || m.category || m.tags.length > 0,
+  ).length;
+  const claudeMdWithClassification = claudeMdFiles.filter(
+    (f) => f.categoryId || (f.tagIds?.length ?? 0) > 0,
+  ).length;
 
   const handleInstallQuickAction = async () => {
     setQuickActionStatus('installing');
@@ -297,18 +400,39 @@ export function SettingsPage() {
             </Card>
           </section>
 
-          {/* Marketplace Section — V2.0 (D-Imp-12, spec §3.5).
-              Single Toggle controlling whether installs from Skill /
-              MCP Marketplace trigger a single-item auto-classify on
-              completion. Default ON; persisted via settingsStore →
-              backend `write_settings`. */}
+          {/* Auto Classify Section.
+              Houses both (a) the model used by manual + Marketplace auto-classify
+              runs (single source of truth read by backend `auto_classify`), and
+              (b) the V2.0 D-Imp-12 toggle controlling whether Marketplace installs
+              auto-classify on completion. Two distinct settings live together
+              because they both shape the same feature surface. */}
           <section>
             <SectionHeader
-              title="Marketplace"
-              description="Configure Marketplace install behavior"
+              title="Auto Classify"
+              description="Configure how items are categorized"
             />
             <Card>
-              <Row noBorder>
+              <Row>
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[13px] font-medium text-[#18181B]">
+                    Classification model
+                  </span>
+                  <span className="text-xs text-[#71717A]">
+                    Claude model used by Auto Classify.
+                  </span>
+                </div>
+                <CustomSelect
+                  value={classifyModel}
+                  onChange={(value) => setClassifyModel(value as ClassifyModel)}
+                  minWidth={110}
+                  options={[
+                    { value: 'opus', label: 'Opus' },
+                    { value: 'sonnet', label: 'Sonnet' },
+                    { value: 'haiku', label: 'Haiku' },
+                  ]}
+                />
+              </Row>
+              <Row>
                 <div className="flex flex-col gap-0.5">
                   <span className="text-[13px] font-medium text-[#18181B]">
                     Auto-classify newly installed items
@@ -319,6 +443,35 @@ export function SettingsPage() {
                   </span>
                 </div>
                 <Toggle checked={autoClassifyNewItems} onChange={setAutoClassifyNewItems} />
+              </Row>
+              {/* Destructive entry — "reset auto-classify data". Lives at the
+                  bottom of the Auto Classify section because conceptually it
+                  undoes the rest of the section. Items themselves stay; only
+                  classification assignments are wiped. The button is text-only
+                  (no icon) to keep visual weight low; danger is communicated
+                  by the accent color and the confirm-modal copy. */}
+              <Row noBorder>
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[13px] font-medium text-[#18181B]">
+                    Reset auto-classify data
+                  </span>
+                  <span className="text-xs text-[#71717A]">
+                    Remove all categories and tags. Items themselves stay.
+                  </span>
+                </div>
+                <ActionButton
+                  variant="danger"
+                  onClick={() => setShowResetModal(true)}
+                  disabled={
+                    categories.length === 0 &&
+                    tags.length === 0 &&
+                    skillsWithClassification === 0 &&
+                    mcpsWithClassification === 0 &&
+                    claudeMdWithClassification === 0
+                  }
+                >
+                  Reset
+                </ActionButton>
               </Row>
             </Card>
           </section>
@@ -570,6 +723,81 @@ export function SettingsPage() {
         onClose={() => setShowTrashModal(false)}
         onRestoreComplete={handleRestoreComplete}
       />
+
+      {/* Reset Auto-Classify Confirm Modal.
+          Design language rationale (see `.claude/rules/design-language.md`):
+          - No subtitle "This cannot be undone." — the danger button colour
+            and the listed counts already encode irreversibility.
+          - Stat rows: tabular-nums right-aligned numbers + secondary label,
+            mirroring macOS Finder Get Info's "N items, N bytes" pattern.
+            14px medium for the number (font-size token), 13px for the label.
+          - Zero rows are hidden; nothing reads "0 categories".
+          - Body / Footer split by a 1px divider matches the system modal
+            convention (System Preferences sheets, Finder Get Info). */}
+      <Modal
+        isOpen={showResetModal}
+        onClose={() => !isResetting && setShowResetModal(false)}
+        title="Reset auto-classify data?"
+        maxWidth="460px"
+        closeOnOverlayClick={!isResetting}
+      >
+        <div className="flex flex-col">
+          <div className="px-7 py-6 flex flex-col gap-5">
+            <div className="flex flex-col gap-2.5">
+              {categories.length > 0 && (
+                <ResetStatRow
+                  count={categories.length}
+                  label={categories.length === 1 ? 'category' : 'categories'}
+                />
+              )}
+              {tags.length > 0 && (
+                <ResetStatRow count={tags.length} label={tags.length === 1 ? 'tag' : 'tags'} />
+              )}
+              {skillsWithClassification > 0 && (
+                <ResetStatRow
+                  count={skillsWithClassification}
+                  label={`${skillsWithClassification === 1 ? 'skill' : 'skills'} with assignments`}
+                />
+              )}
+              {mcpsWithClassification > 0 && (
+                <ResetStatRow
+                  count={mcpsWithClassification}
+                  label={`MCP ${mcpsWithClassification === 1 ? 'server' : 'servers'} with assignments`}
+                />
+              )}
+              {claudeMdWithClassification > 0 && (
+                <ResetStatRow
+                  count={claudeMdWithClassification}
+                  label={`CLAUDE.md ${claudeMdWithClassification === 1 ? 'file' : 'files'} with assignments`}
+                />
+              )}
+            </div>
+
+            <p className="text-[12px] text-[#71717A] leading-relaxed">
+              Skills, MCP servers, and CLAUDE.md files themselves are not removed.
+            </p>
+          </div>
+
+          <div className="flex justify-end gap-2 px-7 py-4 border-t border-[#E5E5E5]">
+            <button
+              type="button"
+              onClick={() => setShowResetModal(false)}
+              disabled={isResetting}
+              className="px-3 py-1.5 text-[13px] font-medium text-[#3F3F46] hover:bg-[#FAFAFA] rounded transition-colors disabled:opacity-40"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirmReset}
+              disabled={isResetting}
+              className="px-3 py-1.5 text-[13px] font-medium text-white bg-[var(--color-error)] hover:opacity-90 rounded transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {isResetting ? 'Resetting…' : 'Reset'}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

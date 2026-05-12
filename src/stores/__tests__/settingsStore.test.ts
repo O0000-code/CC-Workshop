@@ -12,6 +12,7 @@ describe('settingsStore - utility methods and state', () => {
       claudeConfigDir: '~/.claude',
       anthropicApiKey: '',
       autoClassifyNewItems: true,
+      classifyModel: 'opus',
       terminalApp: 'Terminal',
       claudeCommand: 'claude',
       warpOpenMode: 'window',

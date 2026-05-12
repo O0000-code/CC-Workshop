@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AppSettings, ClaudeMdDistributionPath } from '../types';
+import type { AppSettings, ClassifyModel, ClaudeMdDistributionPath } from '../types';
 import { isTauri, safeInvoke } from '@/utils/tauri';
 
 // ============================================================================
@@ -26,6 +26,7 @@ export interface SettingsState {
 
   // Auto classify settings
   autoClassifyNewItems: boolean;
+  classifyModel: ClassifyModel;
 
   // Terminal and launch settings
   terminalApp: string;
@@ -51,6 +52,7 @@ export interface SettingsState {
   setClaudeConfigDir: (dir: string) => void;
   setAnthropicApiKey: (key: string) => void;
   setAutoClassifyNewItems: (enabled: boolean) => void;
+  setClassifyModel: (model: ClassifyModel) => void;
   setTerminalApp: (app: string) => void;
   setClaudeCommand: (command: string) => void;
   setWarpOpenMode: (mode: 'tab' | 'window') => void;
@@ -79,6 +81,11 @@ const defaultSettings = {
   // discover the toggle. Users can still disable in Settings; backend
   // `spawn_auto_classify` reads this flag before dispatching.
   autoClassifyNewItems: true,
+  // Default to Opus for the highest classification quality. Users can
+  // pick Sonnet (faster) or Haiku (fastest, lowest quality) in Settings.
+  // Backend reads this from settings.json at the start of each
+  // `auto_classify` call (see `src-tauri/src/commands/classify.rs`).
+  classifyModel: 'opus' as ClassifyModel,
   terminalApp: 'Terminal',
   claudeCommand: 'claude',
   warpOpenMode: 'window' as const,
@@ -121,6 +128,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   setAutoClassifyNewItems: (enabled: boolean) => {
     set({ autoClassifyNewItems: enabled });
+    get().saveSettings();
+  },
+
+  setClassifyModel: (model: ClassifyModel) => {
+    set({ classifyModel: model });
     get().saveSettings();
   },
 
@@ -173,6 +185,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           claudeConfigDir: settings.claudeConfigDir,
           anthropicApiKey: settings.anthropicApiKey || '',
           autoClassifyNewItems: settings.autoClassifyNewItems,
+          classifyModel: (settings.classifyModel || 'opus') as ClassifyModel,
           terminalApp: settings.terminalApp || 'Terminal',
           claudeCommand: settings.claudeCommand || 'claude',
           warpOpenMode: settings.warpOpenMode || 'window',
@@ -206,6 +219,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           claudeConfigDir: state.claudeConfigDir,
           anthropicApiKey: state.anthropicApiKey,
           autoClassifyNewItems: state.autoClassifyNewItems,
+          classifyModel: state.classifyModel,
           terminalApp: state.terminalApp,
           claudeCommand: state.claudeCommand,
           warpOpenMode: state.warpOpenMode,

@@ -33,9 +33,27 @@ export function TagPage() {
 
   // Get data from stores
   const { tags } = useAppStore();
-  const { skills, deleteSkill, autoClassify, isClassifying } = useSkillsStore();
-  const { mcpServers, deleteMcp } = useMcpsStore();
-  const { files: claudeMdFiles, deleteFile: deleteClaudeMd } = useClaudeMdStore();
+  const {
+    skills,
+    deleteSkill,
+    autoClassify: autoClassifySkills,
+    isClassifying: isSkillsClassifying,
+  } = useSkillsStore();
+  const {
+    mcpServers,
+    deleteMcp,
+    autoClassify: autoClassifyMcps,
+    isClassifying: isMcpsClassifying,
+  } = useMcpsStore();
+  const {
+    files: claudeMdFiles,
+    deleteFile: deleteClaudeMd,
+    autoClassify: autoClassifyClaudeMd,
+    isAutoClassifying: isClaudeMdClassifying,
+  } = useClaudeMdStore();
+  // Same OR'd state as CategoryPage so the spinner reflects all three
+  // type-scoped runs.
+  const isClassifying = isSkillsClassifying || isMcpsClassifying || isClaudeMdClassifying;
 
   // Find the current tag
   const tag = tags.find((t) => t.id === tagId);
@@ -45,28 +63,22 @@ export function TagPage() {
   // Get selected skill/mcp/claudeMd objects
   const selectedSkill = useMemo(
     () => skills.find((s) => s.id === selectedSkillId) || null,
-    [skills, selectedSkillId]
+    [skills, selectedSkillId],
   );
   const selectedMcp = useMemo(
     () => mcpServers.find((m) => m.id === selectedMcpId) || null,
-    [mcpServers, selectedMcpId]
+    [mcpServers, selectedMcpId],
   );
   const selectedClaudeMd = useMemo(
     () => claudeMdFiles.find((f) => f.id === selectedClaudeMdId) || null,
-    [claudeMdFiles, selectedClaudeMdId]
+    [claudeMdFiles, selectedClaudeMdId],
   );
 
   // Filter skills and MCPs that have this tag (using tag name, not id)
   // For claudeMd, filter by tagIds (uses tag ID, not name)
-  const filteredSkills = skills.filter((s) =>
-    tagName && s.tags.includes(tagName)
-  );
-  const filteredMcps = mcpServers.filter((m) =>
-    tagName && m.tags.includes(tagName)
-  );
-  const filteredClaudeMd = claudeMdFiles.filter((f) =>
-    tagId && f.tagIds?.includes(tagId)
-  );
+  const filteredSkills = skills.filter((s) => tagName && s.tags.includes(tagName));
+  const filteredMcps = mcpServers.filter((m) => tagName && m.tags.includes(tagName));
+  const filteredClaudeMd = claudeMdFiles.filter((f) => tagId && f.tagIds?.includes(tagId));
 
   // Apply search filter
   const searchLower = search.toLowerCase();
@@ -74,7 +86,7 @@ export function TagPage() {
     ? filteredSkills.filter(
         (skill) =>
           skill.name.toLowerCase().includes(searchLower) ||
-          skill.description.toLowerCase().includes(searchLower)
+          skill.description.toLowerCase().includes(searchLower),
       )
     : filteredSkills;
 
@@ -82,7 +94,7 @@ export function TagPage() {
     ? filteredMcps.filter(
         (mcp) =>
           mcp.name.toLowerCase().includes(searchLower) ||
-          mcp.description.toLowerCase().includes(searchLower)
+          mcp.description.toLowerCase().includes(searchLower),
       )
     : filteredMcps;
 
@@ -90,7 +102,7 @@ export function TagPage() {
     ? filteredClaudeMd.filter(
         (file) =>
           file.name.toLowerCase().includes(searchLower) ||
-          file.description.toLowerCase().includes(searchLower)
+          file.description.toLowerCase().includes(searchLower),
       )
     : filteredClaudeMd;
 
@@ -135,7 +147,15 @@ export function TagPage() {
   };
 
   const handleAutoClassify = async () => {
-    await autoClassify();
+    // Same parallel pattern as CategoryPage — classify all three item types
+    // restricted to the current tag.
+    if (!tagId) return;
+    const scope = { tagId };
+    await Promise.all([
+      autoClassifySkills(scope),
+      autoClassifyMcps(scope),
+      autoClassifyClaudeMd(scope),
+    ]);
   };
 
   const handleCloseSkillPanel = () => {
@@ -189,7 +209,9 @@ export function TagPage() {
           >
             {isClassifying ? (
               <span className="ai-classifying-text">Classifying...</span>
-            ) : 'Auto Classify'}
+            ) : (
+              'Auto Classify'
+            )}
           </Button>
         }
       />
@@ -281,13 +303,14 @@ export function TagPage() {
           )}
 
           {/* Empty search results */}
-          {displayedSkills.length === 0 && displayedMcps.length === 0 && displayedClaudeMd.length === 0 && search && (
-            <div className="flex flex-col items-center justify-center py-12">
-              <p className="text-sm text-[#71717A]">
-                No results found for "{search}"
-              </p>
-            </div>
-          )}
+          {displayedSkills.length === 0 &&
+            displayedMcps.length === 0 &&
+            displayedClaudeMd.length === 0 &&
+            search && (
+              <div className="flex flex-col items-center justify-center py-12">
+                <p className="text-sm text-[#71717A]">No results found for "{search}"</p>
+              </div>
+            )}
         </div>
       </div>
 
@@ -299,11 +322,7 @@ export function TagPage() {
       />
 
       {/* MCP Detail Panel - Always render, control visibility with isOpen */}
-      <McpDetailPanel
-        mcp={selectedMcp}
-        isOpen={!!selectedMcpId}
-        onClose={handleCloseMcpPanel}
-      />
+      <McpDetailPanel mcp={selectedMcp} isOpen={!!selectedMcpId} onClose={handleCloseMcpPanel} />
 
       {/* CLAUDE.md Detail Panel - Always render, control visibility with isOpen */}
       <ClaudeMdDetailPanel

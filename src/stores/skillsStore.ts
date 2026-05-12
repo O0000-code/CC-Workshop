@@ -1,5 +1,12 @@
 import { create } from 'zustand';
-import type { Skill, SkillUsage, UsageStats, ClassifyItem, ClassifyResult } from '../types';
+import type {
+  Skill,
+  SkillUsage,
+  UsageStats,
+  ClassifyItem,
+  ClassifyResult,
+  ClassifyScope,
+} from '../types';
 import { useSettingsStore } from './settingsStore';
 import { useAppStore } from './appStore';
 import { usePluginsStore } from './pluginsStore';
@@ -58,7 +65,7 @@ interface SkillsState {
   setFilter: (filter: Partial<SkillsFilter>) => void;
   clearFilter: () => void;
   clearError: () => void;
-  autoClassify: () => Promise<void>;
+  autoClassify: (scope?: ClassifyScope) => Promise<void>;
   loadUsageStats: () => Promise<void>;
 
   // Computed
@@ -316,7 +323,7 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
 
   clearError: () => set({ error: null }),
 
-  autoClassify: async () => {
+  autoClassify: async (scope?: ClassifyScope) => {
     // Skip in non-Tauri environment
     if (!isTauri()) {
       console.warn('SkillsStore: Cannot auto-classify in browser mode');
@@ -327,20 +334,52 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
     const { skills } = get();
     const { categories, tags } = useAppStore.getState();
 
-    if (skills.length === 0) {
-      set({ error: 'No skills to classify.' });
+    // Apply scope filter when provided. `categoryIds` is a Set of id strings
+    // (caller has already expanded descendants for hierarchical categories);
+    // `tagId` matches against the skill's tags array. Items must satisfy
+    // every provided field. Dual-read on category: prefer `categoryId`,
+    // fall back to the legacy name match against `category` (same logic
+    // as `CategoryPage`'s filteredData).
+    const tagNameById = new Map(tags.map((t) => [t.id, t.name]));
+    const targetTagName = scope?.tagId ? tagNameById.get(scope.tagId) : undefined;
+    const categoryNameSet = scope?.categoryIds
+      ? new Set(categories.filter((c) => scope.categoryIds!.has(c.id)).map((c) => c.name))
+      : undefined;
+    const skillsToClassify = skills.filter((s) => {
+      if (scope?.categoryIds) {
+        const match = s.categoryId
+          ? scope.categoryIds.has(s.categoryId)
+          : (categoryNameSet?.has(s.category) ?? false);
+        if (!match) return false;
+      }
+      if (targetTagName !== undefined && !s.tags.includes(targetTagName)) {
+        return false;
+      }
+      return true;
+    });
+
+    if (skillsToClassify.length === 0) {
+      set({ error: scope ? 'No skills to classify in this scope.' : 'No skills to classify.' });
       return;
     }
 
     set({ isClassifying: true, classifySuccess: false, error: null });
 
     try {
-      // Prepare all skills for classification
-      const items: ClassifyItem[] = skills.map((s) => ({
+      // Prepare skills for classification.
+      //
+      // `instructions` (the SKILL.md body) is intentionally omitted. Sending
+      // the body for every skill in a single prompt pushes the request past
+      // Sonnet's 200K context window on libraries of ~50+ skills (the user
+      // reported a real `Prompt is too long` failure). The frontmatter
+      // `description` already encodes the trigger words a classifier needs;
+      // empirical comparison on a 20-skill panel showed description-only
+      // produces equal-or-better category accuracy than the full body.
+      // See `.dev/auto-classify-context-overflow/05_recommendation.md`.
+      const items: ClassifyItem[] = skillsToClassify.map((s) => ({
         id: s.id,
         name: s.name,
         description: s.description,
-        instructions: s.instructions,
       }));
 
       // Existing categories carry hierarchy (parentName) so the model

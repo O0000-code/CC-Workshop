@@ -121,20 +121,41 @@ Before using any existing category, check if it's VALID:
 | Only INVALID categories exist | CREATE a new meaningful one |
 | No category covers this domain | CREATE a new one |
 
-### Step 3: Consider Sub-categories (Optional)
-When a root category is broad enough that splitting by sub-domain genuinely helps users find things (e.g. `category: "Frontend"`, `parent_category: "Development"`), set `parent_category` to the root name. Otherwise leave `parent_category` unset and the category stays at root. Only one level of nesting is supported (root → child); never use an existing sub-category as `parent_category`.
+### Step 3: Use Sub-categories Whenever a Root Holds Multiple Sub-domains
 
-### Standard Categories (use these when applicable)
+When the items you are about to classify contain **two or more** that share the same root category but represent **clearly distinct sub-domains**, you MUST use sub-categories. Set `parent_category` to the root, and pick a `category` that names the sub-domain. Look across the whole batch before deciding — sub-categories are a property of the batch's natural structure, not of any one item in isolation.
+
+**Examples of when to nest** (these are common patterns; create others when the data calls for it):
+
+| If the batch contains… | Nest as |
+|---|---|
+| React, GSAP, Tailwind, Vue tooling | `category: "Frontend", parent_category: "Development"` |
+| Postgres tools, ORM tools, migration tools | `category: "Database", parent_category: "Development"` |
+| LLM clients, RAG pipelines, embedding tools | `category: "LLM", parent_category: "AI"` |
+| Image generation, image editing | `category: "Image", parent_category: "AI"` |
+| Systematic review, meta-analysis, scoping review | `category: "Literature Review", parent_category: "Research"` |
+| Slide tools, doc tools, spreadsheet tools | `category: "Office", parent_category: "Productivity"` |
+| Video editing, audio editing, TTS | `category: "Media", parent_category: "Productivity"` |
+| Lint tools, test tools, CI tools | `category: "Quality", parent_category: "Development"` |
+
+**When NOT to nest**:
+- A root would hold only one item in this batch → keep it at root.
+- The split is hairline (you cannot describe the sub-domain in 1-3 words) → keep it at root.
+- Existing categories already cover the domain well → match the existing one and skip nesting.
+
+Only one level of nesting is supported (root → child). Never set `parent_category` to a value that is itself a child of another category.
+
+### Standard Root Categories (use these when applicable)
 - **Development**: coding tools, git, testing, debugging, code generation
 - **Database**: SQL, NoSQL, data storage, queries
 - **Web**: HTTP, APIs, web scraping, browsers
 - **DevOps**: deployment, CI/CD, containers, infrastructure
 - **AI**: machine learning, LLMs, embeddings, RAG
-- **Research**: search, analysis, information gathering
-- **Writing**: documentation, content, markdown
-- **Design**: UI/UX, graphics, styling
+- **Research**: search, analysis, information gathering, literature
+- **Writing**: documentation, content, markdown, editing
+- **Design**: UI/UX, graphics, styling, animation
 - **Communication**: messaging, email, notifications
-- **Productivity**: automation, workflow, organization
+- **Productivity**: automation, workflow, organization, office, media
 
 ### Existing Categories to Evaluate
 {categories_list}
@@ -236,6 +257,26 @@ pub async fn auto_classify(
         "required": ["classifications"]
     });
 
+    // Resolve which Claude model to use. The setting is a single source of
+    // truth read from `~/.ensemble/settings.json`; both this manual entry
+    // and the marketplace single-item entry (via the same `auto_classify`
+    // function) honour the same value without each call-site re-deciding.
+    //
+    // Validation against a small allow-list defends against a hand-edited
+    // settings.json containing arbitrary subprocess arguments. Anything
+    // outside the list silently falls back to the safe default `opus`.
+    let model = match crate::commands::data::read_settings() {
+        Ok(s) => {
+            let m = s.classify_model.trim().to_string();
+            if matches!(m.as_str(), "opus" | "sonnet" | "haiku") {
+                m
+            } else {
+                "opus".to_string()
+            }
+        }
+        Err(_) => "opus".to_string(),
+    };
+
     // Execute Claude CLI (PATH is fixed at app startup in main.rs)
     let output = Command::new("claude")
         .arg("-p")
@@ -246,7 +287,7 @@ pub async fn auto_classify(
         .arg(schema.to_string())
         .arg("--dangerously-skip-permissions")
         .arg("--model")
-        .arg("sonnet")
+        .arg(&model)
         .output()
         .map_err(|e| format!("Failed to execute Claude CLI: {}. Make sure Claude CLI is installed and available in PATH.", e))?;
 

@@ -11,7 +11,7 @@ import {
   ClaudeMdDistributionResult,
   SetGlobalResult,
 } from '@/types/claudeMd';
-import { ClassifyItem, ClassifyResult } from '@/types';
+import { ClassifyItem, ClassifyResult, ClassifyScope } from '@/types';
 import { ICON_NAMES } from '@/components/common/IconPicker';
 import { isTauri, safeInvoke } from '@/utils/tauri';
 import {
@@ -85,7 +85,7 @@ interface ClaudeMdState {
   ) => Promise<ClaudeMdDistributionResult | null>;
 
   // Auto-classify actions
-  autoClassify: () => Promise<void>;
+  autoClassify: (scope?: ClassifyScope) => Promise<void>;
 
   // Filter actions
   setFilter: (filter: Partial<ClaudeMdFilter>) => void;
@@ -409,7 +409,7 @@ export const useClaudeMdStore = create<ClaudeMdState>((set, get) => ({
   // ========================================================================
   // Auto-classify
   // ========================================================================
-  autoClassify: async () => {
+  autoClassify: async (scope?: ClassifyScope) => {
     if (!isTauri()) {
       console.warn('ClaudeMdStore: Cannot auto-classify in browser mode');
       set({ error: 'Auto-classification is not available in browser mode' });
@@ -419,17 +419,33 @@ export const useClaudeMdStore = create<ClaudeMdState>((set, get) => ({
     const { files } = get();
     const { categories, tags } = useAppStore.getState();
 
-    if (files.length === 0) {
-      set({ error: 'No CLAUDE.md files to classify.' });
+    // Apply scope filter when provided. CLAUDE.md uses id-only references
+    // (`categoryId` + `tagIds`), so no name-fallback path is needed.
+    const filesToClassify = files.filter((f) => {
+      if (scope?.categoryIds) {
+        if (!f.categoryId || !scope.categoryIds.has(f.categoryId)) return false;
+      }
+      if (scope?.tagId && !(f.tagIds?.includes(scope.tagId) ?? false)) {
+        return false;
+      }
+      return true;
+    });
+
+    if (filesToClassify.length === 0) {
+      set({
+        error: scope
+          ? 'No CLAUDE.md files to classify in this scope.'
+          : 'No CLAUDE.md files to classify.',
+      });
       return;
     }
 
     set({ isAutoClassifying: true, classifySuccess: false, error: null });
 
     try {
-      // Prepare all files for classification
+      // Prepare files for classification
       // Use content summary (first 500 chars) to avoid too large prompts
-      const items: ClassifyItem[] = files.map((f) => ({
+      const items: ClassifyItem[] = filesToClassify.map((f) => ({
         id: f.id,
         name: f.name,
         description: f.description,

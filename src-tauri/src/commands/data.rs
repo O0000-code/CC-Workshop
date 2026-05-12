@@ -575,6 +575,41 @@ pub fn delete_category(id: String) -> Result<(), String> {
     // Now remove the deleted category itself.
     data.categories.retain(|c| c.id != id);
 
+    // Cascade clear: any skill / mcp / CLAUDE.md metadata that referenced
+    // the deleted category must drop the reference, otherwise downstream
+    // reads (`scan_skills`, `scan_mcps`) hand the front-end a dangling
+    // category_id / stale category name and the item appears in nowhere-
+    // visible state (not under any sidebar category, but the detail panel
+    // shows the now-deleted category name as if it still applied).
+    //
+    // Match by id first (the canonical reference). For legacy entries where
+    // metadata only carries the name (pre-`category_id` migration), fall
+    // back to a name match so they get cleaned up too. Clearing both fields
+    // (category_id AND category) leaves the metadata in a clean "no
+    // category" state regardless of which read path the UI uses.
+    let deleted_name = deleted_parent_name.clone();
+    for meta in data.skill_metadata.values_mut() {
+        let by_id = meta.category_id.as_deref() == Some(&id);
+        let by_name = deleted_name.as_deref().is_some_and(|n| meta.category == n);
+        if by_id || by_name {
+            meta.category_id = None;
+            meta.category = String::new();
+        }
+    }
+    for meta in data.mcp_metadata.values_mut() {
+        let by_id = meta.category_id.as_deref() == Some(&id);
+        let by_name = deleted_name.as_deref().is_some_and(|n| meta.category == n);
+        if by_id || by_name {
+            meta.category_id = None;
+            meta.category = String::new();
+        }
+    }
+    for file in data.claude_md_files.iter_mut() {
+        if file.category_id.as_deref() == Some(&id) {
+            file.category_id = None;
+        }
+    }
+
     write_app_data(data)?;
     Ok(())
 }
@@ -817,7 +852,78 @@ pub fn update_tag(id: String, name: String) -> Result<(), String> {
 pub fn delete_tag(id: String) -> Result<(), String> {
     let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
     let mut data = read_app_data()?;
+
+    // Find the tag by id before we drop it — skill/mcp metadata reference
+    // tags by name (legacy: there's no `tag_ids` mirror, only `tags: Vec<String>`).
+    // CLAUDE.md is id-based (`tag_ids: Vec<String>`).
+    let deleted_name = data
+        .tags
+        .iter()
+        .find(|t| t.id == id)
+        .map(|t| t.name.clone());
+
     data.tags.retain(|t| t.id != id);
+
+    // Cascade clear from every item that carried the tag. Without this the
+    // tag name persists in `SkillMetadata.tags` even though the canonical
+    // Tag entry is gone — the UI then renders an "orphan tag" pill that
+    // points to nowhere, and a future `add_tag` with the same name would
+    // collide silently.
+    if let Some(name) = &deleted_name {
+        for meta in data.skill_metadata.values_mut() {
+            meta.tags.retain(|t| t != name);
+        }
+        for meta in data.mcp_metadata.values_mut() {
+            meta.tags.retain(|t| t != name);
+        }
+    }
+    for file in data.claude_md_files.iter_mut() {
+        file.tag_ids.retain(|t| t != &id);
+    }
+
+    write_app_data(data)?;
+    Ok(())
+}
+
+/// Reset every auto-classify-produced classification in one atomic write.
+///
+/// Clears `data.categories`, `data.tags`, every item's `category` / `category_id`
+/// / `tags` (Skills + MCPs) and every CLAUDE.md file's `category_id` / `tag_ids`.
+/// **Items themselves are NOT removed** — only their classification assignments.
+///
+/// The UX surface is the Settings page "Reset auto-classify data" button. Users
+/// reach for it after a manual `Auto Classify` run whose results they dislike —
+/// the alternative was deleting categories one by one in the sidebar, then
+/// tags one by one (the latter being especially tedious when a single run
+/// produced 20+ tags). Single atomic IPC keeps backend writes consistent and
+/// avoids partial-state windows the UI would need to handle.
+///
+/// Tests / data-migration code that calls this should NOT rely on it being
+/// idempotent in any deeper sense — repeated calls all settle on the same
+/// final state (everything cleared) which is the only relevant invariant.
+#[tauri::command]
+pub fn reset_auto_classify_data() -> Result<(), String> {
+    let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
+    let mut data = read_app_data()?;
+
+    data.categories.clear();
+    data.tags.clear();
+
+    for meta in data.skill_metadata.values_mut() {
+        meta.category = String::new();
+        meta.category_id = None;
+        meta.tags.clear();
+    }
+    for meta in data.mcp_metadata.values_mut() {
+        meta.category = String::new();
+        meta.category_id = None;
+        meta.tags.clear();
+    }
+    for file in data.claude_md_files.iter_mut() {
+        file.category_id = None;
+        file.tag_ids.clear();
+    }
+
     write_app_data(data)?;
     Ok(())
 }

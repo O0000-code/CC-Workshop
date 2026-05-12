@@ -33,9 +33,28 @@ export function CategoryPage() {
 
   // Get data from stores
   const { categories } = useAppStore();
-  const { skills, deleteSkill, autoClassify, isClassifying } = useSkillsStore();
-  const { mcpServers, deleteMcp } = useMcpsStore();
-  const { files: claudeMdFiles, deleteFile: deleteClaudeMd } = useClaudeMdStore();
+  const {
+    skills,
+    deleteSkill,
+    autoClassify: autoClassifySkills,
+    isClassifying: isSkillsClassifying,
+  } = useSkillsStore();
+  const {
+    mcpServers,
+    deleteMcp,
+    autoClassify: autoClassifyMcps,
+    isClassifying: isMcpsClassifying,
+  } = useMcpsStore();
+  const {
+    files: claudeMdFiles,
+    deleteFile: deleteClaudeMd,
+    autoClassify: autoClassifyClaudeMd,
+    isAutoClassifying: isClaudeMdClassifying,
+  } = useClaudeMdStore();
+  // Button reflects ANY active classification run across the three types
+  // so the user does not see the spinner stop while two other runs are still
+  // in flight.
+  const isClassifying = isSkillsClassifying || isMcpsClassifying || isClaudeMdClassifying;
 
   // Find current category
   const category = categories.find((c) => c.id === categoryId);
@@ -162,7 +181,19 @@ export function CategoryPage() {
   };
 
   const handleAutoClassify = async () => {
-    await autoClassify();
+    // Classify all three item types within the current category scope.
+    // `visibleIds` already includes descendants (collectDescendantIds), so
+    // each store filters its items by the same hierarchical match. We run
+    // the three stores in parallel — the backend serialises behind the
+    // Claude CLI subprocess anyway, but kicking them off together keeps
+    // the spinner duration close to max(skills, mcps, claudeMd) rather
+    // than their sum.
+    const scope = { categoryIds: visibleIds };
+    await Promise.all([
+      autoClassifySkills(scope),
+      autoClassifyMcps(scope),
+      autoClassifyClaudeMd(scope),
+    ]);
   };
 
   const handleCloseSkillPanel = () => {

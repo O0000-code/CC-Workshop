@@ -178,6 +178,46 @@ pub fn clear_project_config(projectPath: String) -> Result<(), String> {
         let _ = fs::remove_file(&claude_md_local);
     }
 
+    // Clear Ensemble-managed Rule files from <project>/.claude/rules/.
+    //
+    // We only delete files whose filename matches a Rule currently tracked in
+    // data.json — never the entire `rules/` directory — because users may
+    // hand-write project-local rules alongside the Ensemble-managed ones, and
+    // a Sync should never wipe out unmanaged content. Silently skip on any
+    // IO error: clearing is a best-effort operation and must not break the
+    // primary clear flow (deleting skill symlinks / .mcp.json).
+    let rules_dir = claude_dir.join("rules");
+    if rules_dir.exists() && rules_dir.is_dir() {
+        // Read managed filenames from data.json. If the read fails we skip
+        // rule cleanup entirely rather than risk deleting unmanaged files.
+        if let Ok(content) =
+            fs::read_to_string(crate::utils::get_app_data_dir().join("data.json"))
+        {
+            if let Ok(value) = serde_json::from_str::<Value>(&content) {
+                if let Some(rules_arr) = value.get("rules").and_then(|v| v.as_array()) {
+                    let managed_filenames: std::collections::HashSet<String> = rules_arr
+                        .iter()
+                        .filter_map(|r| r.get("filename").and_then(|f| f.as_str()).map(String::from))
+                        .collect();
+
+                    if let Ok(entries) = fs::read_dir(&rules_dir) {
+                        for entry in entries.filter_map(|e| e.ok()) {
+                            let path = entry.path();
+                            if !path.is_file() {
+                                continue;
+                            }
+                            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                                if managed_filenames.contains(name) {
+                                    let _ = fs::remove_file(&path);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 

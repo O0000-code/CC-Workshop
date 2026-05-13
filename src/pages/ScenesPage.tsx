@@ -257,15 +257,21 @@ export const ScenesPage: React.FC = () => {
     description: string;
     skillIds: string[];
     mcpIds: string[];
+    claudeMdIds?: string[];
+    ruleIds?: string[];
   }) => {
     try {
-      // Directly call Tauri backend with snake_case parameters
+      // Directly call Tauri backend. `claudeMdIds` and `ruleIds` are both
+      // forwarded so the new Scene captures every type the user selected in
+      // the Create modal.
       const newScene = await safeInvoke<Scene>('add_scene', {
         name: sceneData.name.trim(),
         description: sceneData.description.trim(),
         icon: 'layers',
         skillIds: sceneData.skillIds,
         mcpIds: sceneData.mcpIds,
+        claudeMdIds: sceneData.claudeMdIds,
+        ruleIds: sceneData.ruleIds,
       });
       if (newScene) {
         // Update local state with the new scene from backend
@@ -290,6 +296,7 @@ export const ScenesPage: React.FC = () => {
       skillIds: string[];
       mcpIds: string[];
       claudeMdIds?: string[];
+      ruleIds?: string[];
     },
   ) => {
     try {
@@ -300,6 +307,7 @@ export const ScenesPage: React.FC = () => {
         skillIds: sceneData.skillIds,
         mcpIds: sceneData.mcpIds,
         claudeMdIds: sceneData.claudeMdIds,
+        ruleIds: sceneData.ruleIds,
       });
 
       // Update local state
@@ -313,6 +321,7 @@ export const ScenesPage: React.FC = () => {
                 skillIds: sceneData.skillIds,
                 mcpIds: sceneData.mcpIds,
                 claudeMdIds: sceneData.claudeMdIds,
+                ruleIds: sceneData.ruleIds,
               }
             : scene,
         ),

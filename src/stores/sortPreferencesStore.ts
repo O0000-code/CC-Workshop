@@ -19,7 +19,7 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 //     `{ sort: Record<page, sortValue>, group: Record<page, 'none'> }`.
 // ============================================================================
 
-export type SortPage = 'skills' | 'mcps' | 'claudeMd' | 'scenes' | 'projects';
+export type SortPage = 'skills' | 'mcps' | 'claudeMd' | 'rules' | 'scenes' | 'projects';
 
 interface SortPreferencesState {
   sort: Record<SortPage, string>;
@@ -32,6 +32,7 @@ const SORT_DEFAULTS: Record<SortPage, string> = {
   skills: 'name',
   mcps: 'name',
   claudeMd: 'name',
+  rules: 'name',
   scenes: 'name',
   projects: 'name',
 };
@@ -40,6 +41,7 @@ const GROUP_DEFAULTS: Record<SortPage, string> = {
   skills: 'none',
   mcps: 'none',
   claudeMd: 'none',
+  rules: 'none',
   scenes: 'none',
   projects: 'none',
 };

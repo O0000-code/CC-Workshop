@@ -140,6 +140,12 @@ export interface Scene {
   lastUsed?: string;
   /** 关联的 CLAUDE.md 文件 ID 列表 (排除 isGlobal=true 的) */
   claudeMdIds?: string[];
+  /**
+   * Associated Rule IDs (multi-select). Each ruleId references a `Rule` in
+   * the rules store. Empty / undefined = no rules bound to this Scene.
+   * Mirror of Rust `Scene::rule_ids`.
+   */
+  ruleIds?: string[];
 }
 
 export interface Project {
@@ -450,6 +456,10 @@ export * from './plugin';
 // ==================== CLAUDE.md 相关类型导出 ====================
 
 export * from './claudeMd';
+
+// ==================== Rule 相关类型导出 ====================
+
+export * from './rule';
 
 // ==================== Trash 相关类型导出 ====================
 

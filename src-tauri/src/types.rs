@@ -149,6 +149,11 @@ pub struct Scene {
     /// Associated CLAUDE.md file IDs (excluding isGlobal=true files)
     #[serde(default)]
     pub claude_md_ids: Vec<String>,
+    /// Associated Rule IDs (multi-select). Rule is modular by design, so Scene
+    /// can bundle multiple Rules. Each rule_id references a `Rule` in
+    /// `AppData::rules`. Empty vec = no rules bound to this Scene.
+    #[serde(default)]
+    pub rule_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,6 +170,9 @@ pub struct TrashedScene {
     pub deleted_at: String,
     #[serde(default)]
     pub claude_md_ids: Vec<String>,
+    /// Mirrors `Scene::rule_ids` so a restored Scene retains its Rule bindings.
+    #[serde(default)]
+    pub rule_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -236,6 +244,14 @@ pub struct AppData {
     /// Current global CLAUDE.md file ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global_claude_md_id: Option<String>,
+    /// Managed Rule files list. Each Rule corresponds to a `.claude/rules/*.md`
+    /// file under Claude Code's modular rules directory. Unlike CLAUDE.md, Rule
+    /// supports multiple files being "global" simultaneously (each writes to
+    /// `~/.claude/rules/<filename>.md` independently), so there is no
+    /// `global_rule_id` pointer here — iterate `rules.iter().filter(|r| r.is_global)`
+    /// when the set of global rules is needed.
+    #[serde(default)]
+    pub rules: Vec<Rule>,
     /// V1 hierarchy migration state. Set to `true` by
     /// `migrate_category_id_for_skills_mcps` after a successful run; subsequent
     /// app launches skip the migration. Stored in `AppData` (NOT `AppSettings`)
@@ -1024,6 +1040,208 @@ pub struct SetGlobalResult {
 }
 
 // ============================================================================
+// Rule types
+//
+// Mirrors the CLAUDE.md type family with 6 deliberate deviations (see
+// `.dev/rule-management/01_design.md`):
+// 1. Scene `rule_ids` is `Vec<String>` (multi-select), not single-element.
+// 2. Each Rule has its own `is_global` flag — no global pointer on `AppData`.
+// 3. `filename` is persisted and immutable after import (Claude Code indexes
+//    Rules by filename).
+// 4. Distribution path is fixed to `<project>/.claude/rules/<filename>.md` —
+//    no per-Rule target-path enum.
+// 5. No `source_type` enum — Rule has no Global/Project/Local trichotomy in
+//    the way CLAUDE.md does (rules live under `.claude/rules/` only).
+// 6. `distribute_scene_rules` is a real batch operation over `rule_ids`.
+// ============================================================================
+
+/// Rule file info (managed file). One row per imported `.claude/rules/*.md`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Rule {
+    /// Unique identifier (UUID).
+    pub id: String,
+
+    /// Display name (user-editable).
+    pub name: String,
+
+    /// Description (user-editable).
+    pub description: String,
+
+    /// Original `.md` filename, e.g. `validate-no-public-api-claim.md`.
+    /// **Immutable** after import — Claude Code indexes rules by filename.
+    /// Persisted in `data.json` so deployment / global-set / clear can use it
+    /// without re-reading the source.
+    pub filename: String,
+
+    /// Original source path (where the file was scanned from).
+    pub source_path: String,
+
+    /// File content — runtime-populated from independent file. Stored as empty
+    /// string in `data.json`; actual content lives at
+    /// `~/.ensemble/rules/{id}/<filename>.md`.
+    #[serde(default)]
+    pub content: String,
+
+    /// Managed file path. Always `Some` for imported Rules (no migration
+    /// backward-compat path since Rule is a new V1 feature).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub managed_path: Option<String>,
+
+    /// Whether this Rule is currently set as a global rule. Multiple Rules
+    /// may have `is_global=true` simultaneously (each writes its own file
+    /// under `~/.claude/rules/`).
+    pub is_global: bool,
+
+    /// Category ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<String>,
+
+    /// Tag ID list.
+    #[serde(default)]
+    pub tag_ids: Vec<String>,
+
+    /// Created time (ISO 8601).
+    pub created_at: String,
+
+    /// Updated time (ISO 8601).
+    pub updated_at: String,
+
+    /// File size in bytes.
+    pub size: u64,
+
+    /// Custom icon name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+}
+
+/// Scan result item for a `.claude/rules/*.md` file discovered on disk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleScanItem {
+    /// File path.
+    pub path: String,
+
+    /// File size (bytes).
+    pub size: u64,
+
+    /// Last modified time (ISO 8601).
+    pub modified_at: String,
+
+    /// Whether already imported.
+    pub is_imported: bool,
+
+    /// Corresponding `Rule.id` (if imported).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imported_id: Option<String>,
+
+    /// Content preview (first 500 chars).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+
+    /// Project name (None for user-scope `~/.claude/rules/` items).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
+
+    /// Where the rule was discovered: `"user"` for `~/.claude/rules/`,
+    /// `"project"` for `<project>/.claude/rules/`. UI uses this to group
+    /// scan results.
+    pub source_scope: String,
+}
+
+/// Scan result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleScanResult {
+    pub items: Vec<RuleScanItem>,
+    pub scanned_dirs: u32,
+    pub duration: u64,
+    #[serde(default)]
+    pub errors: Vec<String>,
+}
+
+/// Import options for `import_rule`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleImportOptions {
+    /// Source file path.
+    pub source_path: String,
+
+    /// Custom name (optional; defaults to filename stem).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
+    /// Custom description (optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    /// Category ID (optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<String>,
+
+    /// Tag ID list (optional).
+    #[serde(default)]
+    pub tag_ids: Vec<String>,
+}
+
+/// Import result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleImportResult {
+    pub success: bool,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<Rule>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Distribution options for `distribute_rule`. Note: no `target_path` field —
+/// rules always land at `<project>/.claude/rules/<filename>.md`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleDistributionOptions {
+    pub rule_id: String,
+    pub project_path: String,
+    #[serde(default)]
+    pub conflict_resolution: ClaudeMdConflictResolution,
+}
+
+/// Distribution result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleDistributionResult {
+    pub success: bool,
+    pub target_path: String,
+    pub action: String, // "created" | "overwritten" | "backed_up" | "skipped"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Result of `set_global_rule`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetGlobalRuleResult {
+    pub success: bool,
+
+    /// Backup path of the prior unmanaged file at `~/.claude/rules/<filename>.md`
+    /// when one existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_path: Option<String>,
+
+    /// ID of the auto-imported "Original" Rule when an existing unmanaged file
+    /// was preserved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_imported_id: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+// ============================================================================
 // Trash Recovery types
 // ============================================================================
 
@@ -1059,6 +1277,21 @@ pub struct TrashedClaudeMd {
     pub deleted_at: String,
 }
 
+/// Trashed Rule file information. Mirrors `TrashedClaudeMd` plus the
+/// `filename` field (Rule is filename-indexed by Claude Code, so the
+/// original `.md` filename must round-trip through trash to restore).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashedRule {
+    pub id: String,
+    pub name: String,
+    pub filename: String,
+    pub path: String,
+    pub deleted_at: String,
+    #[serde(default)]
+    pub description: String,
+}
+
 /// Collection of all trashed items
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1066,6 +1299,8 @@ pub struct TrashedItems {
     pub skills: Vec<TrashedSkill>,
     pub mcps: Vec<TrashedMcp>,
     pub claude_md_files: Vec<TrashedClaudeMd>,
+    #[serde(default)]
+    pub rules: Vec<TrashedRule>,
 }
 
 // ============================================================================
@@ -1492,6 +1727,7 @@ mod tests {
         assert!(data.imported_plugin_mcps.is_empty());
         assert!(data.claude_md_files.is_empty());
         assert!(data.global_claude_md_id.is_none());
+        assert!(data.rules.is_empty());
         assert!(!data.has_completed_category_id_migration);
     }
 

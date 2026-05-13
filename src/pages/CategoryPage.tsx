@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
-import { Sparkles, Plug, FileText } from 'lucide-react';
+import { Sparkles, Plug, FileText, ScrollText } from 'lucide-react';
 import PageHeader from '../components/layout/PageHeader';
 import { SkillListItem } from '../components/skills/SkillListItem';
 import { SkillDetailPanel } from '../components/skills/SkillDetailPanel';
@@ -8,12 +8,15 @@ import { McpListItem } from '../components/mcps/McpListItem';
 import { McpDetailPanel } from '../components/mcps/McpDetailPanel';
 import { ClaudeMdCard } from '../components/claude-md/ClaudeMdCard';
 import { ClaudeMdDetailPanel } from '../components/claude-md/ClaudeMdDetailPanel';
+import { RuleCard } from '../components/rules/RuleCard';
+import { RuleDetailPanel } from '../components/rules/RuleDetailPanel';
 import { FilteredEmptyState } from '../components/common/FilteredEmptyState';
 import Button from '../components/common/Button';
 import { useAppStore } from '../stores/appStore';
 import { useSkillsStore } from '../stores/skillsStore';
 import { useMcpsStore } from '../stores/mcpsStore';
 import { useClaudeMdStore } from '../stores/claudeMdStore';
+import { useRulesStore } from '../stores/rulesStore';
 import { collectDescendantIds } from '@/utils/categoryTree';
 import type { Skill } from '../types';
 
@@ -30,6 +33,7 @@ export function CategoryPage() {
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const [selectedMcpId, setSelectedMcpId] = useState<string | null>(null);
   const [selectedClaudeMdId, setSelectedClaudeMdId] = useState<string | null>(null);
+  const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
 
   // Get data from stores
   const { categories } = useAppStore();
@@ -51,10 +55,16 @@ export function CategoryPage() {
     autoClassify: autoClassifyClaudeMd,
     isAutoClassifying: isClaudeMdClassifying,
   } = useClaudeMdStore();
-  // Button reflects ANY active classification run across the three types
-  // so the user does not see the spinner stop while two other runs are still
-  // in flight.
-  const isClassifying = isSkillsClassifying || isMcpsClassifying || isClaudeMdClassifying;
+  const {
+    rules,
+    deleteRule,
+    autoClassify: autoClassifyRules,
+    isAutoClassifying: isRulesClassifying,
+  } = useRulesStore();
+  // Button reflects ANY active classification run across all four types so
+  // the user does not see the spinner stop while other runs are still in flight.
+  const isClassifying =
+    isSkillsClassifying || isMcpsClassifying || isClaudeMdClassifying || isRulesClassifying;
 
   // Find current category
   const category = categories.find((c) => c.id === categoryId);
@@ -79,7 +89,7 @@ export function CategoryPage() {
     [categories, visibleIds],
   );
 
-  // Get selected skill/mcp/claudeMd objects
+  // Get selected skill/mcp/claudeMd/rule objects
   const selectedSkill = useMemo(
     () => skills.find((s) => s.id === selectedSkillId) || null,
     [skills, selectedSkillId],
@@ -92,12 +102,17 @@ export function CategoryPage() {
     () => claudeMdFiles.find((f) => f.id === selectedClaudeMdId) || null,
     [claudeMdFiles, selectedClaudeMdId],
   );
+  const selectedRule = useMemo(
+    () => rules.find((r) => r.id === selectedRuleId) || null,
+    [rules, selectedRuleId],
+  );
 
-  // Filter skills, mcps, and claudeMd by category (dual-read), then by search
+  // Filter skills, mcps, claudeMd, and rules by category (dual-read where
+  // applicable), then by search.
   const filteredData = useMemo(() => {
     // Dual-read: prefer canonical `categoryId` (post-T1e migration); fall back
-    // to legacy `category` name match for pre-migration entries. CLAUDE.md
-    // already uses id-only references (no legacy name field), so no fallback.
+    // to legacy `category` name match for pre-migration entries. CLAUDE.md and
+    // Rules already use id-only references (no legacy name field).
     const categorySkills = skills.filter((s) =>
       s.categoryId ? visibleIds.has(s.categoryId) : visibleNames.has(s.category),
     );
@@ -107,6 +122,9 @@ export function CategoryPage() {
     const categoryClaudeMd = claudeMdFiles.filter(
       (f) => f.categoryId !== undefined && visibleIds.has(f.categoryId),
     );
+    const categoryRules = rules.filter(
+      (r) => r.categoryId !== undefined && visibleIds.has(r.categoryId),
+    );
 
     // Then filter by search if search is active
     if (!search) {
@@ -114,6 +132,7 @@ export function CategoryPage() {
         skills: categorySkills,
         mcps: categoryMcps,
         claudeMd: categoryClaudeMd,
+        rules: categoryRules,
       };
     }
 
@@ -134,8 +153,13 @@ export function CategoryPage() {
           file.name.toLowerCase().includes(searchLower) ||
           file.description.toLowerCase().includes(searchLower),
       ),
+      rules: categoryRules.filter(
+        (rule) =>
+          rule.name.toLowerCase().includes(searchLower) ||
+          rule.description.toLowerCase().includes(searchLower),
+      ),
     };
-  }, [skills, mcpServers, claudeMdFiles, visibleIds, visibleNames, search]);
+  }, [skills, mcpServers, claudeMdFiles, rules, visibleIds, visibleNames, search]);
 
   const handleSearchChange = (value: string) => {
     setSearch(value);
@@ -145,18 +169,28 @@ export function CategoryPage() {
     setSelectedSkillId(skill.id);
     setSelectedMcpId(null);
     setSelectedClaudeMdId(null);
+    setSelectedRuleId(null);
   };
 
   const handleMcpClick = (mcpId: string) => {
     setSelectedMcpId(mcpId);
     setSelectedSkillId(null);
     setSelectedClaudeMdId(null);
+    setSelectedRuleId(null);
   };
 
   const handleClaudeMdClick = (fileId: string) => {
     setSelectedClaudeMdId(fileId);
     setSelectedSkillId(null);
     setSelectedMcpId(null);
+    setSelectedRuleId(null);
+  };
+
+  const handleRuleClick = (ruleId: string) => {
+    setSelectedRuleId(ruleId);
+    setSelectedSkillId(null);
+    setSelectedMcpId(null);
+    setSelectedClaudeMdId(null);
   };
 
   const handleSkillDelete = (skillId: string) => {
@@ -180,19 +214,25 @@ export function CategoryPage() {
     }
   };
 
+  const handleRuleDelete = (ruleId: string) => {
+    deleteRule(ruleId);
+    if (selectedRuleId === ruleId) {
+      setSelectedRuleId(null);
+    }
+  };
+
   const handleAutoClassify = async () => {
-    // Classify all three item types within the current category scope.
+    // Classify all four item types within the current category scope.
     // `visibleIds` already includes descendants (collectDescendantIds), so
-    // each store filters its items by the same hierarchical match. We run
-    // the three stores in parallel — the backend serialises behind the
-    // Claude CLI subprocess anyway, but kicking them off together keeps
-    // the spinner duration close to max(skills, mcps, claudeMd) rather
-    // than their sum.
+    // each store filters its items by the same hierarchical match. Run them
+    // in parallel — the backend serialises behind the Claude CLI subprocess
+    // anyway, but the spinner duration stays close to max() rather than sum().
     const scope = { categoryIds: visibleIds };
     await Promise.all([
       autoClassifySkills(scope),
       autoClassifyMcps(scope),
       autoClassifyClaudeMd(scope),
+      autoClassifyRules(scope),
     ]);
   };
 
@@ -208,14 +248,20 @@ export function CategoryPage() {
     setSelectedClaudeMdId(null);
   };
 
+  const handleCloseRulePanel = () => {
+    setSelectedRuleId(null);
+  };
+
   const isEmpty =
     filteredData.skills.length === 0 &&
     filteredData.mcps.length === 0 &&
-    filteredData.claudeMd.length === 0;
+    filteredData.claudeMd.length === 0 &&
+    filteredData.rules.length === 0;
   const displayCategoryName = categoryName || 'Unknown Category';
 
   // Check if any panel is open for layout adjustment
-  const isPanelOpen = !!selectedSkillId || !!selectedMcpId || !!selectedClaudeMdId;
+  const isPanelOpen =
+    !!selectedSkillId || !!selectedMcpId || !!selectedClaudeMdId || !!selectedRuleId;
 
   // Empty state
   if (isEmpty && !search) {
@@ -365,6 +411,31 @@ export function CategoryPage() {
                 </div>
               </section>
             )}
+
+            {/* Rules Section */}
+            {filteredData.rules.length > 0 && (
+              <section className="flex flex-col gap-3">
+                {/* Section Header */}
+                <div className="flex items-center gap-2 pb-2">
+                  <ScrollText size={14} className="text-[#71717A]" />
+                  <span className="text-xs font-semibold text-[#71717A]">
+                    Rules ({filteredData.rules.length})
+                  </span>
+                </div>
+                {/* Rule Items */}
+                <div className="flex flex-col gap-3">
+                  {filteredData.rules.map((rule) => (
+                    <RuleCard
+                      key={rule.id}
+                      rule={rule}
+                      compact={isPanelOpen}
+                      onClick={() => handleRuleClick(rule.id)}
+                      onDelete={() => handleRuleDelete(rule.id)}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
         )}
       </div>
@@ -384,6 +455,13 @@ export function CategoryPage() {
         file={selectedClaudeMd}
         isOpen={!!selectedClaudeMdId}
         onClose={handleCloseClaudeMdPanel}
+      />
+
+      {/* Rule Detail Panel - Always render, control visibility with isOpen */}
+      <RuleDetailPanel
+        rule={selectedRule}
+        isOpen={!!selectedRuleId}
+        onClose={handleCloseRulePanel}
       />
     </div>
   );

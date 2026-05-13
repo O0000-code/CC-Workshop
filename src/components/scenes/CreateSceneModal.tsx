@@ -15,12 +15,14 @@ import {
   FileCode,
   Zap,
   FileText,
+  ScrollText,
 } from 'lucide-react';
 import { Skill, McpServer } from '@/types';
 import { Dropdown, type DropdownOption } from '@/components/common/Dropdown';
 import { usePluginsStore } from '@/stores/pluginsStore';
 import { useScenesStore } from '@/stores/scenesStore';
 import { useClaudeMdStore } from '@/stores/claudeMdStore';
+import { useRulesStore } from '@/stores/rulesStore';
 import { useAppStore } from '@/stores/appStore';
 import { flattenTree } from '@/components/sidebar/dnd/treeUtilities';
 
@@ -34,6 +36,8 @@ interface SceneData {
   skillIds: string[];
   mcpIds: string[];
   claudeMdIds?: string[];
+  /** Rule IDs (multi-select). Mirror of Scene.ruleIds. */
+  ruleIds?: string[];
 }
 
 interface CreateSceneModalProps {
@@ -51,10 +55,11 @@ interface CreateSceneModalProps {
     skillIds: string[];
     mcpIds: string[];
     claudeMdIds?: string[];
+    ruleIds?: string[];
   };
 }
 
-type TabType = 'skills' | 'mcps' | 'claudeMd';
+type TabType = 'skills' | 'mcps' | 'claudeMd' | 'rules';
 
 // ============================================================================
 // Icon Mapping for Skills/MCPs
@@ -251,13 +256,38 @@ const CheckableItem: React.FC<CheckableItemProps> = ({
 interface SelectedItemProps {
   id: string;
   name: string;
-  type: 'skill' | 'mcp' | 'claudeMd';
+  type: 'skill' | 'mcp' | 'claudeMd' | 'rule';
   onRemove: (id: string) => void;
 }
 
 const SelectedItem: React.FC<SelectedItemProps> = ({ id, name, type, onRemove }) => {
-  const isSkill = type === 'skill';
-  const isMcp = type === 'mcp';
+  // Resolve icon + color tokens per type. The token set is intentionally kept
+  // identical to the prior CLAUDE.md / Skill / MCP swatches; Rule introduces a
+  // fourth palette slot (purple) chosen to mirror the Globe badge on
+  // RuleBadge / RuleCard for visual consistency.
+  let bg = 'bg-[#F4F4F5]';
+  let Icon: React.FC<{ className?: string }> = Sparkles;
+  let iconColor = 'text-[#18181B]';
+
+  if (type === 'skill') {
+    bg = 'bg-[#F4F4F5]';
+    Icon = Sparkles;
+    iconColor = 'text-[#18181B]';
+  } else if (type === 'mcp') {
+    bg = 'bg-[#DCFCE7]';
+    Icon = Plug;
+    iconColor = 'text-[#16A34A]';
+  } else if (type === 'claudeMd') {
+    bg = 'bg-[#E0E7FF]';
+    Icon = FileText;
+    iconColor = 'text-[#4F46E5]';
+  } else if (type === 'rule') {
+    // Same purple family as RuleBadge (#7C3AED) so the picker swatch and the
+    // managed-rule badge tell the same story at a glance.
+    bg = 'bg-[#EDE9FE]';
+    Icon = ScrollText;
+    iconColor = 'text-[#7C3AED]';
+  }
 
   return (
     <div className="flex items-center justify-between rounded-md border border-[#E5E5E5] bg-white px-3 py-2.5">
@@ -271,16 +301,10 @@ const SelectedItem: React.FC<SelectedItemProps> = ({ id, name, type, onRemove })
             items-center
             justify-center
             rounded
-            ${isSkill ? 'bg-[#F4F4F5]' : isMcp ? 'bg-[#DCFCE7]' : 'bg-[#E0E7FF]'}
+            ${bg}
           `}
         >
-          {isSkill ? (
-            <Sparkles className="h-3 w-3 text-[#18181B]" />
-          ) : isMcp ? (
-            <Plug className="h-3 w-3 text-[#16A34A]" />
-          ) : (
-            <FileText className="h-3 w-3 text-[#4F46E5]" />
-          )}
+          <Icon className={`h-3 w-3 ${iconColor}`} />
         </div>
         <span className="text-xs font-medium text-[#18181B]">{name}</span>
       </div>
@@ -357,16 +381,20 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
   // Plugin state for filtering
   const { pluginEnabledStatus, loadInstalledPlugins } = usePluginsStore();
 
-  // CLAUDE.md state from stores
-  const { getDistributableClaudeMd } = useScenesStore();
+  // CLAUDE.md + Rule state from stores
+  const { getDistributableClaudeMd, getAvailableRules } = useScenesStore();
   const { files: claudeMdFiles, loadFiles: loadClaudeMdFiles } = useClaudeMdStore();
+  const { rules: allRules, loadRules } = useRulesStore();
   // V2 [P0-DATA-4]: categoryFilter is keyed by `categoryId` (D1=A migration),
   // not by category name. With hierarchical categories, two children of
   // different parents could share a name ("Tools/Web" vs "Research/Web") —
   // filtering by name would silently merge their content. The full category
   // list is read here so we can build hierarchy-aware options + map back
   // selected ids → name for display.
-  const { categories: allCategories } = useAppStore();
+  //
+  // appTags is read so the Rules tab can resolve filter tag-names back to
+  // tag-ids (Rule.tagIds is id-keyed, not name-keyed).
+  const { categories: allCategories, tags: appTags } = useAppStore();
 
   // Local state - initialize with initialScene values if in edit mode
   const [name, setName] = useState('');
@@ -379,6 +407,8 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
   const [selectedMcpIds, setSelectedMcpIds] = useState<string[]>([]);
   // Single select for CLAUDE.md - a Scene can have at most one CLAUDE.md
   const [selectedClaudeMdId, setSelectedClaudeMdId] = useState<string | null>(null);
+  // Multi-select for Rules — Scene.ruleIds is a real list.
+  const [selectedRuleIds, setSelectedRuleIds] = useState<string[]>([]);
 
   // Reset form when modal opens or initialScene changes
   useEffect(() => {
@@ -390,12 +420,14 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
         setSelectedMcpIds(initialScene.mcpIds || []);
         // Take the first CLAUDE.md ID if exists (single select)
         setSelectedClaudeMdId(initialScene.claudeMdIds?.[0] || null);
+        setSelectedRuleIds(initialScene.ruleIds || []);
       } else {
         setName('');
         setDescription('');
         setSelectedSkillIds([]);
         setSelectedMcpIds([]);
         setSelectedClaudeMdId(null);
+        setSelectedRuleIds([]);
       }
       setActiveTab('skills');
       setSearchQuery('');
@@ -407,13 +439,18 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
   // Get distributable CLAUDE.md files (exclude global ones)
   const distributableClaudeMd = useMemo(() => getDistributableClaudeMd(), [claudeMdFiles]);
 
-  // Load plugin status and CLAUDE.md files when modal opens
+  // Available Rules — read straight from store (global ones are kept, per
+  // scenesStore.getAvailableRules comment).
+  const availableRules = useMemo(() => getAvailableRules(), [allRules]);
+
+  // Load plugin status, CLAUDE.md, and Rules when modal opens
   useEffect(() => {
     if (isOpen) {
       loadInstalledPlugins();
       loadClaudeMdFiles();
+      loadRules();
     }
-  }, [isOpen, loadInstalledPlugins, loadClaudeMdFiles]);
+  }, [isOpen, loadInstalledPlugins, loadClaudeMdFiles, loadRules]);
 
   // Check if a Skill should be disabled (from an enabled plugin)
   const isSkillDisabled = useCallback(
@@ -654,6 +691,43 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
     setSelectedMcpIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }, []);
 
+  // Rules tab filtered list. Independent of the Skills/MCPs filtered list
+  // because Rules don't go through Plugin enable/disable. Category filter
+  // reuses the same id-set computed for Skills/MCPs (`categoryFilterIds`);
+  // tag filter is resolved name → id against the in-scope `appTags`.
+  const filteredRuleItems = useMemo(() => {
+    return availableRules.filter((rule) => {
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        if (
+          !rule.name.toLowerCase().includes(q) &&
+          !rule.description.toLowerCase().includes(q) &&
+          !rule.sourcePath.toLowerCase().includes(q)
+        ) {
+          return false;
+        }
+      }
+      // Category filter — id-based, hierarchy expansion. Rules have no
+      // legacy name-only fallback.
+      if (categoryFilter) {
+        if (categoryFilter.startsWith('__legacy:')) return false;
+        if (categoryFilterIds && categoryFilterIds.size > 0) {
+          if (!rule.categoryId || !categoryFilterIds.has(rule.categoryId)) return false;
+        }
+      }
+      // Tag filter resolution: the modal's tag dropdown is keyed by name
+      // (from Skill/MCP item tags), but Rule.tagIds is id-keyed. Resolve.
+      if (tagFilter.length > 0) {
+        const tagIds = tagFilter
+          .map((name) => appTags.find((t) => t.name === name)?.id)
+          .filter((id): id is string => !!id);
+        const hasTag = tagIds.some((id) => rule.tagIds.includes(id));
+        if (!hasTag) return false;
+      }
+      return true;
+    });
+  }, [availableRules, searchQuery, categoryFilter, categoryFilterIds, tagFilter, appTags]);
+
   const handleSelectAll = useCallback(() => {
     if (activeTab === 'skills') {
       // Filter out disabled skills
@@ -665,7 +739,7 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
       } else {
         setSelectedSkillIds((prev) => [...new Set([...prev, ...selectableIds])]);
       }
-    } else {
+    } else if (activeTab === 'mcps') {
       // Filter out disabled MCPs
       const selectableItems = filteredItems.filter((item) => !isMcpDisabled(item as McpServer));
       const selectableIds = selectableItems.map((item) => item.id);
@@ -675,13 +749,32 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
       } else {
         setSelectedMcpIds((prev) => [...new Set([...prev, ...selectableIds])]);
       }
+    } else if (activeTab === 'rules') {
+      const ruleIds = filteredRuleItems.map((r) => r.id);
+      const allSelected = ruleIds.every((id) => selectedRuleIds.includes(id));
+      if (allSelected) {
+        setSelectedRuleIds((prev) => prev.filter((id) => !ruleIds.includes(id)));
+      } else {
+        setSelectedRuleIds((prev) => [...new Set([...prev, ...ruleIds])]);
+      }
     }
-  }, [activeTab, filteredItems, selectedSkillIds, selectedMcpIds, isSkillDisabled, isMcpDisabled]);
+    // CLAUDE.md tab: single-select — "All" doesn't apply, no-op.
+  }, [
+    activeTab,
+    filteredItems,
+    filteredRuleItems,
+    selectedSkillIds,
+    selectedMcpIds,
+    selectedRuleIds,
+    isSkillDisabled,
+    isMcpDisabled,
+  ]);
 
   const handleClearAll = useCallback(() => {
     setSelectedSkillIds([]);
     setSelectedMcpIds([]);
     setSelectedClaudeMdId(null);
+    setSelectedRuleIds([]);
   }, []);
 
   // CLAUDE.md selection handler (single select - toggle behavior)
@@ -689,15 +782,23 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
     setSelectedClaudeMdId((prev) => (prev === id ? null : id));
   }, []);
 
+  // Rule selection handler (multi-select toggle)
+  const handleToggleRule = useCallback((id: string) => {
+    setSelectedRuleIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  }, []);
+
   const handleSubmit = useCallback(() => {
     if (!name.trim()) return;
-    const sceneData = {
+    const sceneData: SceneData = {
       name: name.trim(),
       description: description.trim(),
       skillIds: selectedSkillIds,
       mcpIds: selectedMcpIds,
       // Convert single selection to array for backend compatibility
       claudeMdIds: selectedClaudeMdId ? [selectedClaudeMdId] : [],
+      ruleIds: selectedRuleIds,
     };
 
     if (isEditMode && initialScene && onUpdateScene) {
@@ -712,6 +813,7 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
     selectedSkillIds,
     selectedMcpIds,
     selectedClaudeMdId,
+    selectedRuleIds,
     onCreateScene,
     onUpdateScene,
     onClose,
@@ -735,6 +837,12 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
     () =>
       selectedClaudeMdId ? claudeMdFiles.find((f) => f.id === selectedClaudeMdId) || null : null,
     [claudeMdFiles, selectedClaudeMdId],
+  );
+
+  // Get the selected Rules (multi-select)
+  const selectedRules = useMemo(
+    () => availableRules.filter((r) => selectedRuleIds.includes(r.id)),
+    [availableRules, selectedRuleIds],
   );
 
   if (!isOpen) return null;
@@ -850,6 +958,23 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
                       }`}
                     >
                       {selectedClaudeMdId ? '1 selected' : '0 selected'}
+                    </span>
+                  </div>
+
+                  {/* Rules */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <ScrollText className="h-4 w-4 text-[#71717A]" />
+                      <span className="text-[13px] font-normal text-[#52525B]">Rules</span>
+                    </div>
+                    <span
+                      className={`rounded px-2.5 py-1 text-xs font-medium ${
+                        selectedRuleIds.length > 0
+                          ? 'bg-[#EDE9FE] text-[#7C3AED]'
+                          : 'bg-[#F4F4F5] text-[#18181B]'
+                      }`}
+                    >
+                      {selectedRuleIds.length} selected
                     </span>
                   </div>
                 </div>
@@ -984,6 +1109,40 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
                     {distributableClaudeMd.length}
                   </span>
                 </button>
+
+                {/* Rules Tab */}
+                <button
+                  onClick={() => setActiveTab('rules')}
+                  className={`flex items-center gap-2 px-5 py-2.5 ${
+                    activeTab === 'rules'
+                      ? 'border-b-2 border-[#18181B]'
+                      : 'border-b-2 border-transparent'
+                  }`}
+                >
+                  <ScrollText
+                    className={`h-4 w-4 ${
+                      activeTab === 'rules' ? 'text-[#18181B]' : 'text-[#71717A]'
+                    }`}
+                  />
+                  <span
+                    className={`text-[13px] ${
+                      activeTab === 'rules'
+                        ? 'font-semibold text-[#18181B]'
+                        : 'font-normal text-[#71717A]'
+                    }`}
+                  >
+                    Rules
+                  </span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                      activeTab === 'rules'
+                        ? 'bg-[#FAFAFA] text-[#52525B]'
+                        : 'bg-[#FAFAFA] text-[#71717A]'
+                    }`}
+                  >
+                    {availableRules.length}
+                  </span>
+                </button>
               </div>
 
               {/* Filters Row */}
@@ -995,7 +1154,15 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder={`Search ${activeTab === 'skills' ? 'skills' : activeTab === 'mcps' ? 'MCP servers' : 'CLAUDE.md files'}...`}
+                    placeholder={`Search ${
+                      activeTab === 'skills'
+                        ? 'skills'
+                        : activeTab === 'mcps'
+                          ? 'MCP servers'
+                          : activeTab === 'claudeMd'
+                            ? 'CLAUDE.md files'
+                            : 'rules'
+                    }...`}
                     className="flex-1 bg-transparent text-[13px] text-[#18181B] placeholder:text-[#A1A1AA] focus:outline-none"
                   />
                 </div>
@@ -1197,6 +1364,126 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
                     )}
                   </>
                 )}
+
+                {/* Rules list — multi-select (Scene.ruleIds is a real list).
+                    Mirrors Skills/MCPs checkbox row, but the icon + accent
+                    color use the same purple family as RuleBadge. */}
+                {activeTab === 'rules' && (
+                  <>
+                    {filteredRuleItems.map((rule) => {
+                      const isSelected = selectedRuleIds.includes(rule.id);
+                      return (
+                        <div
+                          key={rule.id}
+                          onClick={() => handleToggleRule(rule.id)}
+                          className={`
+                            relative
+                            flex
+                            cursor-pointer
+                            items-center
+                            gap-3.5
+                            rounded-lg
+                            border
+                            px-4
+                            py-3.5
+                            transition-colors
+                            ${
+                              isSelected
+                                ? 'border-[#E5E5E5] bg-[#FAFAFA]'
+                                : 'border-[#E5E5E5] bg-white hover:bg-[#FAFAFA]'
+                            }
+                          `}
+                        >
+                          {/* Checkbox (multi-select) */}
+                          <div
+                            className={`
+                              flex
+                              h-5
+                              w-5
+                              flex-shrink-0
+                              items-center
+                              justify-center
+                              rounded
+                              transition-colors
+                              ${isSelected ? 'bg-[#18181B]' : 'border-2 border-[#D4D4D4]'}
+                            `}
+                          >
+                            {isSelected && (
+                              <Check className="h-3.5 w-3.5 text-white" strokeWidth={3} />
+                            )}
+                          </div>
+
+                          {/* Icon Container — purple family mirrors RuleBadge */}
+                          <div
+                            className={`
+                              flex
+                              h-9
+                              w-9
+                              flex-shrink-0
+                              items-center
+                              justify-center
+                              rounded-lg
+                              ${isSelected ? 'bg-white' : 'bg-[#FAFAFA]'}
+                            `}
+                          >
+                            <ScrollText
+                              className={`h-[18px] w-[18px] ${
+                                isSelected ? 'text-[#18181B]' : 'text-[#52525B]'
+                              }`}
+                            />
+                          </div>
+
+                          {/* Info */}
+                          <div className="flex min-w-0 flex-1 flex-col gap-1">
+                            <span
+                              className={`
+                                text-[13px]
+                                ${
+                                  isSelected
+                                    ? 'font-semibold text-[#18181B]'
+                                    : 'font-medium text-[#18181B]'
+                                }
+                              `}
+                            >
+                              {rule.name}
+                            </span>
+                            <span
+                              className={`
+                                truncate text-xs font-normal
+                                ${isSelected ? 'text-[#52525B]' : 'text-[#71717A]'}
+                              `}
+                            >
+                              {rule.sourcePath}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {filteredRuleItems.length === 0 && availableRules.length === 0 && (
+                      <div className="flex flex-col items-center justify-center py-12 text-center">
+                        <ScrollText className="h-8 w-8 text-[#D4D4D8]" />
+                        <p className="mt-3 text-sm font-medium text-[#71717A]">
+                          No Rules available
+                        </p>
+                        <p className="mt-1 text-xs text-[#A1A1AA]">
+                          Import Rules in the Rules management page
+                        </p>
+                      </div>
+                    )}
+                    {filteredRuleItems.length === 0 && availableRules.length > 0 && (
+                      <div className="flex flex-col items-center justify-center py-12 text-center">
+                        <Search className="h-8 w-8 text-[#D4D4D8]" />
+                        <p className="mt-3 text-sm font-medium text-[#71717A]">
+                          No rules match your filters
+                        </p>
+                        <p className="mt-1 text-xs text-[#A1A1AA]">
+                          Try adjusting your search or filters
+                        </p>
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -1208,7 +1495,8 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
               <span className="text-sm font-semibold text-[#18181B]">Selected Items</span>
               {(selectedSkillIds.length > 0 ||
                 selectedMcpIds.length > 0 ||
-                selectedClaudeMdId !== null) && (
+                selectedClaudeMdId !== null ||
+                selectedRuleIds.length > 0) && (
                 <button
                   onClick={handleClearAll}
                   className="rounded px-2.5 py-1 text-[11px] font-medium text-[#DC2626] transition-colors hover:bg-[#FEE2E2]"
@@ -1279,6 +1567,27 @@ export const CreateSceneModal: React.FC<CreateSceneModalProps> = ({
                     />
                   ) : (
                     <p className="py-2 text-xs text-[#A1A1AA]">No CLAUDE.md file selected</p>
+                  )}
+                </CollapsibleGroup>
+
+                {/* Rules Group (multi-select) */}
+                <CollapsibleGroup
+                  title="Rules"
+                  count={selectedRules.length}
+                  icon={<ScrollText className="h-3.5 w-3.5 text-[#7C3AED]" />}
+                >
+                  {selectedRules.length > 0 ? (
+                    selectedRules.map((rule) => (
+                      <SelectedItem
+                        key={rule.id}
+                        id={rule.id}
+                        name={rule.name}
+                        type="rule"
+                        onRemove={handleToggleRule}
+                      />
+                    ))
+                  ) : (
+                    <p className="py-2 text-xs text-[#A1A1AA]">No rules selected</p>
                   )}
                 </CollapsibleGroup>
               </div>

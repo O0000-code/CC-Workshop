@@ -8,6 +8,7 @@ pub mod marketplace;
 pub mod marketplace_seed;
 pub mod mcps;
 pub mod plugins;
+pub mod rules;
 pub mod skills;
 pub mod symlink;
 pub mod trash;

@@ -182,9 +182,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
     try {
       await safeInvoke('update_project', { id, ...data });
       set((state) => ({
-        projects: state.projects.map((p) =>
-          p.id === id ? { ...p, ...data } : p
-        ),
+        projects: state.projects.map((p) => (p.id === id ? { ...p, ...data } : p)),
       }));
     } catch (error) {
       set({ error: String(error) });
@@ -240,7 +238,19 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
           claudeMdIds: scene.claudeMdIds,
           projectPath: project.path,
           targetPath: claudeMdDistributionPath,
-          conflictResolution: 'backup',  // Backup existing files
+          conflictResolution: 'backup', // Backup existing files
+        });
+      }
+
+      // Distribute Rules if the Scene references any. Target is fixed at
+      // `<project>/.claude/rules/<filename>.md` per `.dev/rule-management/01_design.md`,
+      // so there is no `targetPath` parameter — conflict policy stays `backup`
+      // for parity with the CLAUDE.md branch above.
+      if (scene.ruleIds && scene.ruleIds.length > 0) {
+        await safeInvoke('distribute_scene_rules', {
+          ruleIds: scene.ruleIds,
+          projectPath: project.path,
+          conflictResolution: 'backup',
         });
       }
 
@@ -249,9 +259,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
       await safeInvoke('update_project', { id, lastSynced: now });
 
       set((state) => ({
-        projects: state.projects.map((p) =>
-          p.id === id ? { ...p, lastSynced: now } : p
-        ),
+        projects: state.projects.map((p) => (p.id === id ? { ...p, lastSynced: now } : p)),
         syncingProjectId: null,
       }));
     } catch (error) {
@@ -277,9 +285,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
       await safeInvoke('update_project', { id, lastSynced: null });
 
       set((state) => ({
-        projects: state.projects.map((p) =>
-          p.id === id ? { ...p, lastSynced: undefined } : p
-        ),
+        projects: state.projects.map((p) => (p.id === id ? { ...p, lastSynced: undefined } : p)),
       }));
     } catch (error) {
       set({ error: String(error) });
@@ -317,8 +323,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
       await safeInvoke('delete_project', { id });
       set((state) => ({
         projects: state.projects.filter((p) => p.id !== id),
-        selectedProjectId:
-          state.selectedProjectId === id ? null : state.selectedProjectId,
+        selectedProjectId: state.selectedProjectId === id ? null : state.selectedProjectId,
       }));
     } catch (error) {
       set({ error: String(error) });

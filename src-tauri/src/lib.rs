@@ -3,7 +3,7 @@ pub mod types;
 mod utils;
 
 use commands::claude_md::migrate_claude_md_storage;
-use commands::{classify, claude_md, config, data, dialog, import, marketplace, mcps, plugins, skills, symlink, trash, usage};
+use commands::{classify, claude_md, config, data, dialog, import, marketplace, mcps, plugins, rules, skills, symlink, trash, usage};
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -164,11 +164,23 @@ pub fn run() {
             claude_md::unset_global_claude_md,
             claude_md::distribute_claude_md,
             claude_md::distribute_scene_claude_md,
+            // Rule commands
+            rules::scan_rules,
+            rules::import_rule,
+            rules::read_rule,
+            rules::get_rules,
+            rules::update_rule,
+            rules::delete_rule,
+            rules::set_global_rule,
+            rules::unset_global_rule,
+            rules::distribute_rule,
+            rules::distribute_scene_rules,
             // Trash recovery commands
             trash::list_trashed_items,
             trash::restore_skill,
             trash::restore_mcp,
             trash::restore_claude_md,
+            trash::restore_rule,
             // Marketplace commands
             marketplace::list_marketplace_skills,
             marketplace::search_marketplace_skills,

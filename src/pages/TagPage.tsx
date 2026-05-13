@@ -1,10 +1,11 @@
 import { useState, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
-import { Sparkles, Plug, FileText } from 'lucide-react';
+import { Sparkles, Plug, FileText, ScrollText } from 'lucide-react';
 import { useAppStore } from '@/stores/appStore';
 import { useSkillsStore } from '@/stores/skillsStore';
 import { useMcpsStore } from '@/stores/mcpsStore';
 import { useClaudeMdStore } from '@/stores/claudeMdStore';
+import { useRulesStore } from '@/stores/rulesStore';
 import PageHeader from '@/components/layout/PageHeader';
 import { SkillListItem } from '@/components/skills/SkillListItem';
 import { SkillDetailPanel } from '@/components/skills/SkillDetailPanel';
@@ -12,6 +13,8 @@ import { McpListItem } from '@/components/mcps/McpListItem';
 import { McpDetailPanel } from '@/components/mcps/McpDetailPanel';
 import { ClaudeMdCard } from '@/components/claude-md/ClaudeMdCard';
 import { ClaudeMdDetailPanel } from '@/components/claude-md/ClaudeMdDetailPanel';
+import { RuleCard } from '@/components/rules/RuleCard';
+import { RuleDetailPanel } from '@/components/rules/RuleDetailPanel';
 import { FilteredEmptyState } from '@/components/common/FilteredEmptyState';
 import Button from '@/components/common/Button';
 import type { Skill } from '@/types';
@@ -30,6 +33,7 @@ export function TagPage() {
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const [selectedMcpId, setSelectedMcpId] = useState<string | null>(null);
   const [selectedClaudeMdId, setSelectedClaudeMdId] = useState<string | null>(null);
+  const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
 
   // Get data from stores
   const { tags } = useAppStore();
@@ -51,16 +55,23 @@ export function TagPage() {
     autoClassify: autoClassifyClaudeMd,
     isAutoClassifying: isClaudeMdClassifying,
   } = useClaudeMdStore();
-  // Same OR'd state as CategoryPage so the spinner reflects all three
-  // type-scoped runs.
-  const isClassifying = isSkillsClassifying || isMcpsClassifying || isClaudeMdClassifying;
+  const {
+    rules,
+    deleteRule,
+    autoClassify: autoClassifyRules,
+    isAutoClassifying: isRulesClassifying,
+  } = useRulesStore();
+  // OR'd state across all four type-scoped runs so the spinner reflects ANY
+  // active classification.
+  const isClassifying =
+    isSkillsClassifying || isMcpsClassifying || isClaudeMdClassifying || isRulesClassifying;
 
   // Find the current tag
   const tag = tags.find((t) => t.id === tagId);
   // Get tag name for filtering (skill.tags stores tag names, not ids)
   const tagName = tag?.name;
 
-  // Get selected skill/mcp/claudeMd objects
+  // Get selected skill/mcp/claudeMd/rule objects
   const selectedSkill = useMemo(
     () => skills.find((s) => s.id === selectedSkillId) || null,
     [skills, selectedSkillId],
@@ -73,12 +84,16 @@ export function TagPage() {
     () => claudeMdFiles.find((f) => f.id === selectedClaudeMdId) || null,
     [claudeMdFiles, selectedClaudeMdId],
   );
+  const selectedRule = useMemo(
+    () => rules.find((r) => r.id === selectedRuleId) || null,
+    [rules, selectedRuleId],
+  );
 
-  // Filter skills and MCPs that have this tag (using tag name, not id)
-  // For claudeMd, filter by tagIds (uses tag ID, not name)
+  // Filter skills and MCPs by tag name (legacy); claudeMd and rules use tagIds.
   const filteredSkills = skills.filter((s) => tagName && s.tags.includes(tagName));
   const filteredMcps = mcpServers.filter((m) => tagName && m.tags.includes(tagName));
   const filteredClaudeMd = claudeMdFiles.filter((f) => tagId && f.tagIds?.includes(tagId));
+  const filteredRules = rules.filter((r) => tagId && r.tagIds?.includes(tagId));
 
   // Apply search filter
   const searchLower = search.toLowerCase();
@@ -106,11 +121,20 @@ export function TagPage() {
       )
     : filteredClaudeMd;
 
+  const displayedRules = search
+    ? filteredRules.filter(
+        (rule) =>
+          rule.name.toLowerCase().includes(searchLower) ||
+          rule.description.toLowerCase().includes(searchLower),
+      )
+    : filteredRules;
+
   // Handlers
   const handleSkillClick = (skill: Skill) => {
     setSelectedSkillId(skill.id);
     setSelectedMcpId(null);
     setSelectedClaudeMdId(null);
+    setSelectedRuleId(null);
   };
 
   const handleSkillDelete = (skillId: string) => {
@@ -124,6 +148,7 @@ export function TagPage() {
     setSelectedMcpId(mcpId);
     setSelectedSkillId(null);
     setSelectedClaudeMdId(null);
+    setSelectedRuleId(null);
   };
 
   const handleMcpDelete = (mcpId: string) => {
@@ -137,6 +162,7 @@ export function TagPage() {
     setSelectedClaudeMdId(fileId);
     setSelectedSkillId(null);
     setSelectedMcpId(null);
+    setSelectedRuleId(null);
   };
 
   const handleClaudeMdDelete = (fileId: string) => {
@@ -146,15 +172,29 @@ export function TagPage() {
     }
   };
 
+  const handleRuleClick = (ruleId: string) => {
+    setSelectedRuleId(ruleId);
+    setSelectedSkillId(null);
+    setSelectedMcpId(null);
+    setSelectedClaudeMdId(null);
+  };
+
+  const handleRuleDelete = (ruleId: string) => {
+    deleteRule(ruleId);
+    if (selectedRuleId === ruleId) {
+      setSelectedRuleId(null);
+    }
+  };
+
   const handleAutoClassify = async () => {
-    // Same parallel pattern as CategoryPage — classify all three item types
-    // restricted to the current tag.
+    // Classify all four item types restricted to the current tag scope.
     if (!tagId) return;
     const scope = { tagId };
     await Promise.all([
       autoClassifySkills(scope),
       autoClassifyMcps(scope),
       autoClassifyClaudeMd(scope),
+      autoClassifyRules(scope),
     ]);
   };
 
@@ -170,11 +210,21 @@ export function TagPage() {
     setSelectedClaudeMdId(null);
   };
 
+  const handleCloseRulePanel = () => {
+    setSelectedRuleId(null);
+  };
+
   // Check if any panel is open for layout adjustment
-  const isPanelOpen = !!selectedSkillId || !!selectedMcpId || !!selectedClaudeMdId;
+  const isPanelOpen =
+    !!selectedSkillId || !!selectedMcpId || !!selectedClaudeMdId || !!selectedRuleId;
 
   // Empty state - no items with this tag at all
-  if (filteredSkills.length === 0 && filteredMcps.length === 0 && filteredClaudeMd.length === 0) {
+  if (
+    filteredSkills.length === 0 &&
+    filteredMcps.length === 0 &&
+    filteredClaudeMd.length === 0 &&
+    filteredRules.length === 0
+  ) {
     return (
       <div className="relative flex h-full flex-col overflow-hidden">
         <PageHeader
@@ -302,10 +352,36 @@ export function TagPage() {
             </section>
           )}
 
+          {/* Rules Section */}
+          {displayedRules.length > 0 && (
+            <section className="flex flex-col gap-3">
+              {/* Section Header */}
+              <div className="flex items-center gap-2 pb-2">
+                <ScrollText size={14} className="text-[#71717A]" />
+                <span className="text-xs font-semibold text-[#71717A]">
+                  Rules ({displayedRules.length})
+                </span>
+              </div>
+              {/* Rule List */}
+              <div className="flex flex-col gap-3">
+                {displayedRules.map((rule) => (
+                  <RuleCard
+                    key={rule.id}
+                    rule={rule}
+                    compact={isPanelOpen}
+                    onClick={() => handleRuleClick(rule.id)}
+                    onDelete={() => handleRuleDelete(rule.id)}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+
           {/* Empty search results */}
           {displayedSkills.length === 0 &&
             displayedMcps.length === 0 &&
             displayedClaudeMd.length === 0 &&
+            displayedRules.length === 0 &&
             search && (
               <div className="flex flex-col items-center justify-center py-12">
                 <p className="text-sm text-[#71717A]">No results found for "{search}"</p>
@@ -329,6 +405,13 @@ export function TagPage() {
         file={selectedClaudeMd}
         isOpen={!!selectedClaudeMdId}
         onClose={handleCloseClaudeMdPanel}
+      />
+
+      {/* Rule Detail Panel - Always render, control visibility with isOpen */}
+      <RuleDetailPanel
+        rule={selectedRule}
+        isOpen={!!selectedRuleId}
+        onClose={handleCloseRulePanel}
       />
     </div>
   );

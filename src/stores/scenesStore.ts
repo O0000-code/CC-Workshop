@@ -1,8 +1,10 @@
 import { create } from 'zustand';
 import { Scene, Skill, McpServer, ClaudeMdFile, AppData } from '@/types';
+import type { Rule } from '@/types/rule';
 import { useSkillsStore } from './skillsStore';
 import { useMcpsStore } from './mcpsStore';
 import { useClaudeMdStore } from './claudeMdStore';
+import { useRulesStore } from './rulesStore';
 import { isTauri, safeInvoke } from '@/utils/tauri';
 
 // ============================================================================
@@ -16,7 +18,9 @@ export interface CreateModalState {
   selectedSkillIds: string[];
   selectedMcpIds: string[];
   selectedClaudeMdId: string | null;
-  activeTab: 'skills' | 'mcps' | 'claudeMd';
+  /** Multi-select — Scene.ruleIds is a true list (per 01_design.md row 1). */
+  selectedRuleIds: string[];
+  activeTab: 'skills' | 'mcps' | 'claudeMd' | 'rules';
   search: string;
   categoryFilter: string;
   tagFilter: string[];
@@ -68,10 +72,15 @@ interface ScenesState {
   toggleClaudeMdSelection: (id: string) => void;
   setClaudeMdSelection: (id: string | null) => void;
 
-  // Getters for available skills/mcps/claudeMd
+  // Rule selection (multi-select)
+  toggleRuleSelection: (ruleId: string) => void;
+  selectAllRules: (ruleIds: string[]) => void;
+
+  // Getters for available skills/mcps/claudeMd/rules
   getAvailableSkills: () => Skill[];
   getAvailableMcps: () => McpServer[];
   getDistributableClaudeMd: () => ClaudeMdFile[];
+  getAvailableRules: () => Rule[];
 
   /**
    * Resolve the current "active" Scene from `lastEditedSceneId`. Returns
@@ -94,6 +103,7 @@ const initialCreateModalState: CreateModalState = {
   selectedSkillIds: [],
   selectedMcpIds: [],
   selectedClaudeMdId: null,
+  selectedRuleIds: [],
   activeTab: 'skills',
   search: '',
   categoryFilter: '',
@@ -182,6 +192,7 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
         skillIds: createModal.selectedSkillIds,
         mcpIds: createModal.selectedMcpIds,
         claudeMdIds: createModal.selectedClaudeMdId ? [createModal.selectedClaudeMdId] : [],
+        ruleIds: createModal.selectedRuleIds,
       });
 
       if (!scene) {
@@ -355,6 +366,7 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
         selectedSkillIds: [],
         selectedMcpIds: [],
         selectedClaudeMdId: null,
+        selectedRuleIds: [],
       },
     })),
 
@@ -376,7 +388,30 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
       },
     })),
 
-  // Getters for available skills/mcps/claudeMd from other stores
+  // Rule selection (multi-select; Scene.ruleIds is a real list).
+  toggleRuleSelection: (ruleId) =>
+    set((state) => {
+      const { selectedRuleIds } = state.createModal;
+      const newIds = selectedRuleIds.includes(ruleId)
+        ? selectedRuleIds.filter((id) => id !== ruleId)
+        : [...selectedRuleIds, ruleId];
+      return {
+        createModal: {
+          ...state.createModal,
+          selectedRuleIds: newIds,
+        },
+      };
+    }),
+
+  selectAllRules: (ruleIds) =>
+    set((state) => ({
+      createModal: {
+        ...state.createModal,
+        selectedRuleIds: ruleIds,
+      },
+    })),
+
+  // Getters for available skills/mcps/claudeMd/rules from other stores
   getAvailableSkills: () => {
     return useSkillsStore.getState().skills;
   },
@@ -390,6 +425,15 @@ export const useScenesStore = create<ScenesState>((set, get) => ({
     const files = useClaudeMdStore.getState().files;
     // Exclude isGlobal=true files - they don't need to be added to Scene
     return files.filter((file) => !file.isGlobal);
+  },
+
+  // Get all rules available to add to a Scene. Unlike CLAUDE.md, global Rules
+  // are NOT excluded — they may still want to be distributed to specific
+  // projects (Claude Code merges global + project rules, but the user may
+  // want the same rule installed locally for redundancy or per-project
+  // override semantics).
+  getAvailableRules: () => {
+    return useRulesStore.getState().rules;
   },
 
   // Resolve the active Scene from `lastEditedSceneId` against the current

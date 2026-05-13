@@ -1,5 +1,8 @@
 use crate::commands::data::{read_app_data, write_app_data, DATA_MUTEX};
-use crate::types::{ClaudeMdFile, McpConfigFile, TrashedClaudeMd, TrashedItems, TrashedMcp, TrashedSkill};
+use crate::types::{
+    ClaudeMdFile, McpConfigFile, Rule, TrashedClaudeMd, TrashedItems, TrashedMcp, TrashedRule,
+    TrashedSkill,
+};
 use crate::utils::{expand_path, get_app_data_dir, parse_skill_md};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use regex::Regex;
@@ -97,6 +100,17 @@ fn read_claude_md_info(claude_md_dir: &Path) -> Option<String> {
     None
 }
 
+/// Read Rule info.json from a trashed rule directory. Returns the full
+/// `Rule` payload when info.json deserialises cleanly; `None` otherwise.
+fn read_rule_info(rule_dir: &Path) -> Option<Rule> {
+    let info_path = rule_dir.join("info.json");
+    if !info_path.exists() {
+        return None;
+    }
+    let content = fs::read_to_string(&info_path).ok()?;
+    serde_json::from_str::<Rule>(&content).ok()
+}
+
 // ============================================================================
 // Trash commands
 // ============================================================================
@@ -111,6 +125,7 @@ pub fn list_trashed_items(ensemble_dir: String) -> Result<TrashedItems, String> 
     let mut skills: Vec<TrashedSkill> = Vec::new();
     let mut mcps: Vec<TrashedMcp> = Vec::new();
     let mut claude_md_files: Vec<TrashedClaudeMd> = Vec::new();
+    let mut rules: Vec<TrashedRule> = Vec::new();
 
     // Scan trashed skills
     let skills_trash_dir = ensemble_path.join("trash").join("skills");
@@ -242,15 +257,82 @@ pub fn list_trashed_items(ensemble_dir: String) -> Result<TrashedItems, String> 
         }
     }
 
+    // Scan trashed Rules
+    let rules_trash_dir = ensemble_path.join("trash").join("rules");
+    if rules_trash_dir.exists() {
+        if let Ok(entries) = fs::read_dir(&rules_trash_dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let entry_path = entry.path();
+
+                if entry_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().starts_with('.'))
+                    .unwrap_or(true)
+                {
+                    continue;
+                }
+                if !entry_path.is_dir() {
+                    continue;
+                }
+
+                let dir_name = entry_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let (original_id, deleted_at) = parse_timestamp_from_name(&dir_name, false);
+                let deleted_at = deleted_at
+                    .or_else(|| get_file_modified_time(&entry_path))
+                    .unwrap_or_else(|| Utc::now().to_rfc3339());
+
+                // Prefer info.json (carries name + filename + description); fall
+                // back to a synthesised entry inferring filename from the only
+                // .md file in the directory.
+                let info = read_rule_info(&entry_path);
+                let (name, filename, description) = if let Some(rule) = info {
+                    (rule.name, rule.filename, rule.description)
+                } else {
+                    // Inferred fallback: pick the first .md sibling as filename.
+                    let inferred_filename = fs::read_dir(&entry_path)
+                        .ok()
+                        .and_then(|entries| {
+                            entries
+                                .filter_map(|e| e.ok())
+                                .map(|e| e.file_name().to_string_lossy().to_string())
+                                .find(|n| n.ends_with(".md"))
+                        })
+                        .unwrap_or_else(|| format!("{}.md", &original_id));
+                    let inferred_name = inferred_filename
+                        .strip_suffix(".md")
+                        .unwrap_or(&inferred_filename)
+                        .to_string();
+                    (inferred_name, inferred_filename, String::new())
+                };
+
+                rules.push(TrashedRule {
+                    id: dir_name.clone(),
+                    name,
+                    filename,
+                    path: entry_path.to_string_lossy().to_string(),
+                    deleted_at,
+                    description,
+                });
+            }
+        }
+    }
+
     // Sort by deleted_at (newest first)
     skills.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at));
     mcps.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at));
     claude_md_files.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at));
+    rules.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at));
 
     Ok(TrashedItems {
         skills,
         mcps,
         claude_md_files,
+        rules,
     })
 }
 
@@ -442,6 +524,127 @@ pub fn restore_claude_md(trash_path: String) -> Result<(), String> {
             };
 
             app_data.claude_md_files.push(restored_file);
+            write_app_data(app_data)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Restore a Rule from trash.
+///
+/// Moves the trashed directory back to `~/.ensemble/rules/{id}/` and restores
+/// the row in `data.json` from the directory's `info.json`. The restored
+/// Rule's `is_global` is always reset to `false` so trash-restore never
+/// silently re-writes `~/.claude/rules/<filename>.md`.
+#[tauri::command]
+pub fn restore_rule(trash_path: String) -> Result<(), String> {
+    let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
+    let trash_path = expand_path(&trash_path);
+
+    if !trash_path.exists() {
+        return Err(format!("Trash path not found: {}", trash_path.display()));
+    }
+
+    let dir_name = trash_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("Invalid trash path")?;
+
+    let (original_id, _) = parse_timestamp_from_name(dir_name, false);
+
+    let rules_dir = get_app_data_dir().join("rules");
+    let target_path = rules_dir.join(&original_id);
+
+    if target_path.exists() {
+        return Err("A Rule with the same ID already exists".to_string());
+    }
+
+    fs::create_dir_all(&rules_dir)
+        .map_err(|e| format!("Failed to create rules directory: {}", e))?;
+
+    fs::rename(&trash_path, &target_path)
+        .map_err(|e| format!("Failed to restore Rule: {}", e))?;
+
+    // Restore record in data.json.
+    let info_path = target_path.join("info.json");
+
+    if info_path.exists() {
+        let info_content = fs::read_to_string(&info_path)
+            .map_err(|e| format!("Failed to read info.json: {}", e))?;
+
+        let rule_info: Rule = serde_json::from_str(&info_content)
+            .map_err(|e| format!("Failed to parse info.json: {}", e))?;
+
+        let mut app_data = read_app_data()?;
+        if !app_data.rules.iter().any(|r| r.id == original_id) {
+            let rule_file_path = target_path.join(&rule_info.filename);
+            let restored = Rule {
+                id: original_id.clone(),
+                name: rule_info.name,
+                description: rule_info.description,
+                filename: rule_info.filename.clone(),
+                source_path: rule_info.source_path,
+                content: String::new(),
+                managed_path: Some(rule_file_path.to_string_lossy().to_string()),
+                is_global: false,
+                category_id: rule_info.category_id,
+                tag_ids: rule_info.tag_ids,
+                created_at: rule_info.created_at,
+                updated_at: chrono::Utc::now().to_rfc3339(),
+                size: rule_info.size,
+                icon: rule_info.icon,
+            };
+            app_data.rules.push(restored);
+            write_app_data(app_data)?;
+        }
+    } else {
+        // No info.json — synthesise a minimal row by sniffing the first
+        // .md file in the directory.
+        let mut app_data = read_app_data()?;
+        if !app_data.rules.iter().any(|r| r.id == original_id) {
+            let inferred_filename = fs::read_dir(&target_path)
+                .ok()
+                .and_then(|entries| {
+                    entries
+                        .filter_map(|e| e.ok())
+                        .map(|e| e.file_name().to_string_lossy().to_string())
+                        .find(|n| n.ends_with(".md"))
+                });
+
+            let filename = inferred_filename.unwrap_or_else(|| format!("{}.md", &original_id));
+            let rule_file_path = target_path.join(&filename);
+            let size = if rule_file_path.exists() {
+                fs::metadata(&rule_file_path)
+                    .map(|m| m.len())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+
+            let now = chrono::Utc::now().to_rfc3339();
+            let inferred_name = filename
+                .strip_suffix(".md")
+                .unwrap_or(&filename)
+                .to_string();
+
+            let restored = Rule {
+                id: original_id.clone(),
+                name: format!("Restored {}", inferred_name),
+                description: "Restored from trash".to_string(),
+                filename: filename.clone(),
+                source_path: String::new(),
+                content: String::new(),
+                managed_path: Some(rule_file_path.to_string_lossy().to_string()),
+                is_global: false,
+                category_id: None,
+                tag_ids: vec![],
+                created_at: now.clone(),
+                updated_at: now,
+                size,
+                icon: None,
+            };
+            app_data.rules.push(restored);
             write_app_data(app_data)?;
         }
     }

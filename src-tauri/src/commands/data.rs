@@ -350,6 +350,7 @@ pub fn init_app_data() -> Result<(), String> {
             imported_plugin_mcps: vec![],
             claude_md_files: vec![],
             global_claude_md_id: None,
+            rules: vec![],
             has_completed_category_id_migration: false,
             last_edited_scene_id: None,
             imported_marketplace_skills: vec![],
@@ -959,8 +960,9 @@ pub fn add_scene(
     skillIds: Vec<String>,
     mcpIds: Vec<String>,
     claudeMdIds: Option<Vec<String>>,
+    ruleIds: Option<Vec<String>>,
 ) -> Result<Scene, String> {
-    println!("add_scene called: name={}, skillIds={:?}, mcpIds={:?}, claudeMdIds={:?}", name, skillIds, mcpIds, claudeMdIds);
+    println!("add_scene called: name={}, skillIds={:?}, mcpIds={:?}, claudeMdIds={:?}, ruleIds={:?}", name, skillIds, mcpIds, claudeMdIds, ruleIds);
     let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
     let mut data = read_app_data()?;
     println!("Current scenes count: {}", data.scenes.len());
@@ -973,6 +975,7 @@ pub fn add_scene(
         skill_ids: skillIds,
         mcp_ids: mcpIds,
         claude_md_ids: claudeMdIds.unwrap_or_default(),
+        rule_ids: ruleIds.unwrap_or_default(),
         created_at: chrono::Utc::now().to_rfc3339(),
         last_used: None,
     };
@@ -996,6 +999,7 @@ pub fn update_scene(
     skill_ids: Option<Vec<String>>,
     mcp_ids: Option<Vec<String>>,
     claude_md_ids: Option<Vec<String>>,
+    rule_ids: Option<Vec<String>>,
 ) -> Result<(), String> {
     let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
     let mut data = read_app_data()?;
@@ -1018,6 +1022,9 @@ pub fn update_scene(
         }
         if let Some(c) = claude_md_ids {
             scene.claude_md_ids = c;
+        }
+        if let Some(r) = rule_ids {
+            scene.rule_ids = r;
         }
         // V2 Marketplace D-Imp-6: any scene update bumps the active id so
         // the user's most recent intent drives the post-install short-cut.
@@ -1048,6 +1055,7 @@ pub fn delete_scene(id: String) -> Result<(), String> {
             skill_ids: scene.skill_ids,
             mcp_ids: scene.mcp_ids,
             claude_md_ids: scene.claude_md_ids,
+            rule_ids: scene.rule_ids,
             created_at: scene.created_at,
             last_used: scene.last_used,
             deleted_at: chrono::Utc::now().to_rfc3339(),
@@ -3091,6 +3099,7 @@ mod scene_lifecycle_tests {
             vec![],
             vec![],
             None,
+            None,
         )
         .expect("add_scene");
 
@@ -3104,9 +3113,9 @@ mod scene_lifecycle_tests {
         write_app_data(AppData::default()).expect("seed");
 
         let first =
-            add_scene("a".into(), String::new(), String::new(), vec![], vec![], None).expect("a");
+            add_scene("a".into(), String::new(), String::new(), vec![], vec![], None, None).expect("a");
         let second =
-            add_scene("b".into(), String::new(), String::new(), vec![], vec![], None).expect("b");
+            add_scene("b".into(), String::new(), String::new(), vec![], vec![], None, None).expect("b");
         // Sanity — `add_scene("b")` should already have set lastEdited to b.
         let after_add = read_app_data().expect("read");
         assert_eq!(after_add.last_edited_scene_id, Some(second.id.clone()));
@@ -3115,6 +3124,7 @@ mod scene_lifecycle_tests {
         update_scene(
             first.id.clone(),
             Some("a-renamed".to_string()),
+            None,
             None,
             None,
             None,
@@ -3132,9 +3142,9 @@ mod scene_lifecycle_tests {
         write_app_data(AppData::default()).expect("seed");
 
         let a =
-            add_scene("a".into(), String::new(), String::new(), vec![], vec![], None).expect("a");
+            add_scene("a".into(), String::new(), String::new(), vec![], vec![], None, None).expect("a");
         let b =
-            add_scene("b".into(), String::new(), String::new(), vec![], vec![], None).expect("b");
+            add_scene("b".into(), String::new(), String::new(), vec![], vec![], None, None).expect("b");
         // Active is currently b (last add).
         delete_scene(b.id.clone()).expect("delete b");
 
@@ -3150,7 +3160,7 @@ mod scene_lifecycle_tests {
         write_app_data(AppData::default()).expect("seed");
 
         let only =
-            add_scene("solo".into(), String::new(), String::new(), vec![], vec![], None).expect("a");
+            add_scene("solo".into(), String::new(), String::new(), vec![], vec![], None, None).expect("a");
         delete_scene(only.id).expect("delete");
 
         let after_delete = read_app_data().expect("read");
@@ -3163,9 +3173,9 @@ mod scene_lifecycle_tests {
         write_app_data(AppData::default()).expect("seed");
 
         let a =
-            add_scene("a".into(), String::new(), String::new(), vec![], vec![], None).expect("a");
+            add_scene("a".into(), String::new(), String::new(), vec![], vec![], None, None).expect("a");
         let b =
-            add_scene("b".into(), String::new(), String::new(), vec![], vec![], None).expect("b");
+            add_scene("b".into(), String::new(), String::new(), vec![], vec![], None, None).expect("b");
         // Active is b. Deleting a should NOT change active.
         delete_scene(a.id).expect("delete a");
 

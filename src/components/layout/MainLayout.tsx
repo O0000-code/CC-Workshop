@@ -10,6 +10,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useSkillsStore } from '@/stores/skillsStore';
 import { useMcpsStore } from '@/stores/mcpsStore';
 import { useClaudeMdStore } from '@/stores/claudeMdStore';
+import { useRulesStore } from '@/stores/rulesStore';
 import { useScenesStore } from '@/stores/scenesStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useImportStore } from '@/stores/importStore';
@@ -84,6 +85,7 @@ export default function MainLayout() {
   const { skills, loadSkills, setFilter: setSkillsFilter } = useSkillsStore();
   const { mcpServers, loadMcps, setFilter: setMcpsFilter } = useMcpsStore();
   const { files: claudeMdFiles, loadFiles: loadClaudeMdFiles } = useClaudeMdStore();
+  const { rules, loadRules } = useRulesStore();
   const { scenes, loadScenes } = useScenesStore();
   const { projects, loadProjects } = useProjectsStore();
   const { detectExistingConfig } = useImportStore();
@@ -105,10 +107,18 @@ export default function MainLayout() {
       skills: skills.length,
       mcpServers: mcpServers.length,
       claudeMd: claudeMdFiles.length,
+      rules: rules.length,
       scenes: scenes.length,
       projects: projects.length,
     }),
-    [skills.length, mcpServers.length, claudeMdFiles.length, scenes.length, projects.length],
+    [
+      skills.length,
+      mcpServers.length,
+      claudeMdFiles.length,
+      rules.length,
+      scenes.length,
+      projects.length,
+    ],
   );
 
   // Dynamically calculate category counts from skills, mcps, and claudeMd files.
@@ -130,21 +140,24 @@ export default function MainLayout() {
           mcpServers.filter((m) =>
             m.categoryId ? idSet.has(m.categoryId) : nameSet.has(m.category),
           ).length +
-          claudeMdFiles.filter((f) => f.categoryId !== undefined && idSet.has(f.categoryId)).length,
+          claudeMdFiles.filter((f) => f.categoryId !== undefined && idSet.has(f.categoryId))
+            .length +
+          rules.filter((r) => r.categoryId !== undefined && idSet.has(r.categoryId)).length,
       };
     });
-  }, [categories, skills, mcpServers, claudeMdFiles]);
+  }, [categories, skills, mcpServers, claudeMdFiles, rules]);
 
-  // Dynamically calculate tag counts from skills, mcps, and claudeMd files
+  // Dynamically calculate tag counts from skills, mcps, claudeMd, and rules
   const tagsWithCounts = useMemo(() => {
     return tags.map((tag) => ({
       ...tag,
       count:
         skills.filter((s) => s.tags?.includes(tag.name)).length +
         mcpServers.filter((m) => m.tags?.includes(tag.name)).length +
-        claudeMdFiles.filter((f) => f.tagIds?.includes(tag.id)).length,
+        claudeMdFiles.filter((f) => f.tagIds?.includes(tag.id)).length +
+        rules.filter((r) => r.tagIds?.includes(tag.id)).length,
     }));
-  }, [tags, skills, mcpServers, claudeMdFiles]);
+  }, [tags, skills, mcpServers, claudeMdFiles, rules]);
 
   // Smart launch path handler - checks if project exists and has scene
   const handleLaunchPath = useCallback(async (path: string) => {
@@ -249,6 +262,7 @@ export default function MainLayout() {
           loadSkills(),
           loadMcps(),
           loadClaudeMdFiles(),
+          loadRules(),
           loadScenes(),
           loadProjects(),
         ]);
@@ -394,6 +408,7 @@ export default function MainLayout() {
     | 'skills'
     | 'mcp-servers'
     | 'claude-md'
+    | 'rules'
     | 'scenes'
     | 'projects'
     | 'settings'
@@ -412,6 +427,7 @@ export default function MainLayout() {
     if (path.startsWith('/skills')) return 'skills';
     if (path.startsWith('/mcp-servers')) return 'mcp-servers';
     if (path.startsWith('/claude-md')) return 'claude-md';
+    if (path.startsWith('/rules')) return 'rules';
     if (path.startsWith('/scenes')) return 'scenes';
     if (path.startsWith('/projects')) return 'projects';
     if (path.startsWith('/settings')) return 'settings';
@@ -580,13 +596,30 @@ export default function MainLayout() {
 
     setIsRefreshing(true);
     try {
-      await Promise.all([initApp(), loadSkills(), loadMcps(), loadScenes(), loadProjects()]);
+      await Promise.all([
+        initApp(),
+        loadSkills(),
+        loadMcps(),
+        loadClaudeMdFiles(),
+        loadRules(),
+        loadScenes(),
+        loadProjects(),
+      ]);
     } catch (error) {
       console.error('Failed to refresh data:', error);
     } finally {
       setIsRefreshing(false);
     }
-  }, [isRefreshing, initApp, loadSkills, loadMcps, loadScenes, loadProjects]);
+  }, [
+    isRefreshing,
+    initApp,
+    loadSkills,
+    loadMcps,
+    loadClaudeMdFiles,
+    loadRules,
+    loadScenes,
+    loadProjects,
+  ]);
 
   // Reorder handlers - delegate to store actions (which perform optimistic update + IPC + fallback)
   // 2026-05-04: pass through directly so the caller's try/catch can observe

@@ -4,6 +4,7 @@ import {
   Sparkles,
   Plug,
   FileText,
+  ScrollText,
   Layers,
   Folder,
   Plus,
@@ -55,6 +56,7 @@ export interface SidebarProps {
     | 'skills'
     | 'mcp-servers'
     | 'claude-md'
+    | 'rules'
     | 'scenes'
     | 'projects'
     | 'settings'
@@ -69,6 +71,7 @@ export interface SidebarProps {
     skills: number;
     mcpServers: number;
     claudeMd: number;
+    rules: number;
     scenes: number;
     projects: number;
   };
@@ -135,11 +138,14 @@ export interface SidebarProps {
   isDragging: boolean;
 }
 
-// Navigation items configuration
+// Navigation items configuration. Rules sits directly below CLAUDE.md to
+// reflect their kinship (both are markdown configuration that Claude Code
+// loads at session start) — see `.dev/rule-management/01_design.md`.
 const navItems = [
   { id: 'skills', label: 'Skills', icon: Sparkles, countKey: 'skills' as const },
   { id: 'mcp-servers', label: 'MCP Servers', icon: Plug, countKey: 'mcpServers' as const },
   { id: 'claude-md', label: 'CLAUDE.md', icon: FileText, countKey: 'claudeMd' as const },
+  { id: 'rules', label: 'Rules', icon: ScrollText, countKey: 'rules' as const },
   { id: 'scenes', label: 'Scenes', icon: Layers, countKey: 'scenes' as const },
   { id: 'projects', label: 'Projects', icon: Folder, countKey: 'projects' as const },
 ];

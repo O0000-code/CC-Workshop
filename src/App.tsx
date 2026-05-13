@@ -3,6 +3,7 @@ import MainLayout from './components/layout/MainLayout';
 import SkillsPage from './pages/SkillsPage';
 import McpServersPage from './pages/McpServersPage';
 import ClaudeMdPage from './pages/ClaudeMdPage';
+import RulesPage from './pages/RulesPage';
 import ScenesPage from './pages/ScenesPage';
 import ProjectsPage from './pages/ProjectsPage';
 import SettingsPage from './pages/SettingsPage';
@@ -26,6 +27,7 @@ function App() {
           <Route path="skills" element={<SkillsPage />} />
           <Route path="mcp-servers" element={<McpServersPage />} />
           <Route path="claude-md" element={<ClaudeMdPage />} />
+          <Route path="rules" element={<RulesPage />} />
           <Route path="scenes" element={<ScenesPage />} />
           <Route path="projects" element={<ProjectsPage />} />
           <Route path="category/:categoryId" element={<CategoryPage />} />

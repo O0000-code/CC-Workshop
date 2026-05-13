@@ -194,6 +194,7 @@ src/
 │   ├── McpMarketplacePage.tsx       # MCP Marketplace catalog + install
 │   ├── McpServersPage.tsx           # MCP Servers list page
 │   ├── ProjectsPage.tsx             # Projects management page
+│   ├── RulesPage.tsx                # Rules management page
 │   ├── SceneDetailPage.tsx          # Scene detail page
 │   ├── ScenesPage.tsx               # Scenes list page
 │   ├── SettingsPage.tsx             # Application settings page
@@ -247,6 +248,7 @@ src-tauri/
 │   │   ├── import.rs                # Import existing configurations
 │   │   ├── mcps.rs                  # MCP Server scanning and management
 │   │   ├── plugins.rs               # Plugin detection and import
+│   │   ├── rules.rs                 # Rule file scanning and management
 │   │   ├── skills.rs                # Skill scanning and management
 │   │   ├── symlink.rs               # Symlink creation/removal for deployment
 │   │   ├── trash.rs                 # Trash recovery operations
@@ -271,6 +273,7 @@ Defined in `src/App.tsx`, all routes are nested under the `MainLayout` component
 | `/skills` | `SkillsPage` | Skills management |
 | `/mcp-servers` | `McpServersPage` | MCP Servers management |
 | `/claude-md` | `ClaudeMdPage` | CLAUDE.md file management |
+| `/rules` | `RulesPage` | Rule file management |
 | `/scenes` | `ScenesPage` | Scene composition |
 | `/projects` | `ProjectsPage` | Project management |
 | `/category/:categoryId` | `CategoryPage` | Items filtered by category |
@@ -455,6 +458,7 @@ Ensemble stores its data in `~/.ensemble/`:
 | `~/.ensemble/skills/` | Skill files (each skill is a directory with `SKILL.md`) |
 | `~/.ensemble/mcps/` | MCP Server config files (`.json` files) |
 | `~/.ensemble/claude-md/` | Managed CLAUDE.md content files |
+| `~/.ensemble/rules/` | Managed Rule content files (each in `{id}/<filename>.md`) |
 | `~/.ensemble/trash/` | Soft-deleted items for recovery |
 
 ### Registered Tauri Commands (Complete)
@@ -503,8 +507,12 @@ All commands registered in `lib.rs` grouped by module:
 `update_claude_md`, `delete_claude_md`, `set_global_claude_md`, `unset_global_claude_md`,
 `distribute_claude_md`, `distribute_scene_claude_md`
 
+**Rules** (`commands/rules.rs`):
+`scan_rules`, `import_rule`, `read_rule`, `get_rules`, `update_rule`, `delete_rule`,
+`set_global_rule`, `unset_global_rule`, `distribute_rule`, `distribute_scene_rules`
+
 **Trash** (`commands/trash.rs`):
-`list_trashed_items`, `restore_skill`, `restore_mcp`, `restore_claude_md`
+`list_trashed_items`, `restore_skill`, `restore_mcp`, `restore_claude_md`, `restore_rule`
 
 **Marketplace** (`commands/marketplace.rs`):
 `list_marketplace_skills`, `search_marketplace_skills`, `get_marketplace_skill_readme`, `get_marketplace_mcp_readme`,
@@ -587,6 +595,6 @@ Defined in `tauri.conf.json`:
 
 When reporting bugs, please include:
 - macOS version
-- Ensemble version (currently 2.0.0)
+- Ensemble version (currently 2.1.0)
 - Steps to reproduce
 - Expected vs actual behavior

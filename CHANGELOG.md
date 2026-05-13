@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-05-14
+
+### Added
+
+#### Rules Management
+- **Rule** as a first-class managed entity alongside Skills, MCPs, and CLAUDE.md
+  - Scans `~/.claude/rules/` (user-scope) and `<project>/.claude/rules/` (project-scope) for `.md` files
+  - Imports preserve the original filename (Claude Code indexes Rules by filename); the displayed name can be renamed independently
+  - Per-Rule `Set as Global` toggle writes to `~/.claude/rules/<filename>.md`; any number of Rules can be global simultaneously
+  - Edits to a globally-active Rule propagate to `~/.claude/rules/<filename>.md` immediately (no re-toggle required)
+  - Distribute a Rule to a project at `<project>/.claude/rules/<filename>.md` (Claude Code's only scanned location for project Rules)
+  - Soft-delete to trash; restore from Settings; clearing a project's config removes only Ensemble-managed Rule filenames (user-authored `.md` files in the same directory are never touched)
+- **Scenes include Rules**: multi-select Rules tab in the Create Scene modal; Project sync writes each selected Rule via batch distribute
+- **Category and Tag pages** include a Rules section alongside Skills, MCPs, and CLAUDE.md
+
+[Unreleased]: https://github.com/O0000-code/Ensemble/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/O0000-code/Ensemble/compare/v2.0.0...v2.1.0
+
 ## [2.0.0] - 2026-05-12
 
 ### Added
@@ -131,6 +149,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Zustand state management
 - Native macOS window with custom titlebar
 
-[Unreleased]: https://github.com/O0000-code/Ensemble/compare/v2.0.0...HEAD
 [2.0.0]: https://github.com/O0000-code/Ensemble/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/O0000-code/Ensemble/releases/tag/v1.0.0

@@ -59,7 +59,7 @@ MCP (Model Context Protocol) Servers extend Claude Code with additional tools an
 
 ### Scenes
 
-Scenes are configuration bundles that combine multiple Skills, MCPs, and an optional CLAUDE.md file into a reusable profile.
+Scenes are configuration bundles that combine multiple Skills, MCPs, an optional CLAUDE.md file, and any number of Rules into a reusable profile.
 
 **Creating a Scene:**
 
@@ -70,6 +70,7 @@ Scenes are configuration bundles that combine multiple Skills, MCPs, and an opti
    - **Skills** -- Select any number of skills to include.
    - **MCPs** -- Select any number of MCP servers to include.
    - **CLAUDE.md** -- Optionally select one CLAUDE.md file (only non-global files are available; global files are excluded since they are already active system-wide).
+   - **Rules** -- Select any number of Rule files to include. All non-global Rules are available; multi-select since Rules are designed to compose.
 5. Click "Create" to save the scene.
 
 **Editing a Scene:**
@@ -104,10 +105,11 @@ When you click "Sync" on a project, Ensemble performs the following:
 1. **Skills deployment** -- Creates `<project>/.claude/skills/` and places symlinks pointing to each skill's source in `~/.ensemble/skills/`. Existing symlinks are cleaned before re-creating.
 2. **MCP configuration** -- Writes a `.mcp.json` file in the project root (`<project>/.mcp.json`) containing the MCP server configurations from the associated Scene.
 3. **CLAUDE.md distribution** -- If the Scene includes a CLAUDE.md file, it is written to the project at the configured distribution path (see Settings). Existing files are backed up before overwriting.
+4. **Rules distribution** -- If the Scene includes Rules, each Rule is copied to `<project>/.claude/rules/<filename>.md`. Existing files at the same filename are backed up before overwriting.
 
 **Clearing Configuration:**
 
-Click "Clear Config" on a project to remove all deployed configuration: skill symlinks, `.mcp.json`, and any distributed CLAUDE.md files (from all three possible paths).
+Click "Clear Config" on a project to remove all deployed configuration: skill symlinks, `.mcp.json`, any distributed CLAUDE.md files (from all three possible paths), and the Rule `.md` files in `<project>/.claude/rules/` whose filenames match Ensemble-managed Rules. User-authored Rule files in the same directory are never touched.
 
 **Changing Scenes:**
 
@@ -158,9 +160,45 @@ CLAUDE.md files can be distributed to projects in two ways:
 - Click on a CLAUDE.md file to view and edit its content, name, description, category, tags, and icon.
 - Content changes are saved to the managed copy in `~/.ensemble/claude-md/`.
 
+### Rules
+
+Rules are modular `.md` instruction files under `.claude/rules/` that Claude Code loads to scope behaviour -- coding conventions, review checklists, project-specific guardrails. A single project may have a dozen Rule files, each addressing one topic.
+
+- **Storage**: Imported files are stored in `~/.ensemble/rules/{id}/<filename>.md`. The original filename is preserved since Claude Code indexes Rules by filename; the displayed `name` can be renamed independently.
+- **Source scopes** (detected during scan):
+  - `user` -- Found at `~/.claude/rules/**/*.md`
+  - `project` -- Found at `<project>/.claude/rules/**/*.md` under default project directories
+
+**Scanning:**
+
+1. Navigate to **Rules** in the sidebar.
+2. Click "Scan" to discover Rule files on your system.
+3. Review the scan results and import selected files into Ensemble's managed storage.
+
+**Setting a Rule as Global:**
+
+- Toggle the global switch on any Rule to write its content to `~/.claude/rules/<filename>.md`, making it active for all Claude Code sessions.
+- Multiple Rules can be global at the same time -- the global state is per-Rule.
+- If an unmanaged `~/.claude/rules/<filename>.md` already exists, it is backed up and imported as "Original" before being replaced.
+- Editing the content of a global Rule mirrors the changes to `~/.claude/rules/<filename>.md` immediately; no re-toggle required.
+
+**Distribution to Projects:**
+
+Rules can be distributed to projects in two ways:
+
+1. **Via Scenes** -- Include Rules in a Scene; they are written when the associated Project is synced.
+2. **Direct distribution** -- Use the "Distribute" action on a Rule to send it to a specific project at `<project>/.claude/rules/<filename>.md`.
+
+The distribution path is fixed -- Claude Code only scans `.claude/rules/` for project Rules.
+
+**Editing:**
+
+- Click on a Rule to view and edit its content, name, description, category, tags, and icon.
+- The `filename` field is immutable after import; the displayed `name` is independent and can be renamed freely.
+
 ### Categories and Tags
 
-Ensemble supports organizing Skills, MCPs, and CLAUDE.md files with categories and tags.
+Ensemble supports organizing Skills, MCPs, CLAUDE.md files, and Rules with categories and tags.
 
 - **Categories** -- Each item can belong to one category. Categories have names and colors, and can be nested one level deep (subcategories appear indented under a parent). Navigate to a category in the sidebar to view all items in that category and its subcategories.
 - **Tags** -- Each item can have multiple tags. Tags are single lowercase words. Navigate to a tag in the sidebar to view all items with that tag.
@@ -262,13 +300,13 @@ Ensemble supports launching Claude Code in multiple terminal applications:
 
 ## Trash and Recovery
 
-Deleted Skills, MCPs, and CLAUDE.md files are moved to a trash directory within `~/.ensemble/` and can be recovered.
+Deleted Skills, MCPs, CLAUDE.md files, and Rules are moved to a trash directory within `~/.ensemble/` and can be recovered.
 
 **Accessing Trash:**
 
 1. Go to **Settings** > **Storage**.
 2. Click "Recover" next to "Deleted Items".
-3. The Trash Recovery modal shows all deleted items grouped by type (Skills, MCPs, CLAUDE.md files).
+3. The Trash Recovery modal shows all deleted items grouped by type (Skills, MCPs, CLAUDE.md files, Rules).
 4. Click "Restore" on any item to recover it back to the active collection.
 
 After restoring items, the Skills, MCPs, and CLAUDE.md lists are automatically refreshed.

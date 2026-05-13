@@ -4,11 +4,11 @@
 [![Release](https://img.shields.io/github/v/release/O0000-code/Ensemble)](https://github.com/O0000-code/Ensemble/releases)
 [![macOS](https://img.shields.io/badge/macOS-12.0%2B-black?logo=apple)](https://github.com/O0000-code/Ensemble/releases)
 
-A macOS desktop application for managing [Claude Code](https://docs.anthropic.com/en/docs/claude-code) configurations -- Skills, MCP Servers, and CLAUDE.md files -- with visual organization, one-click project deployment, and Finder integration.
+A macOS desktop application for managing [Claude Code](https://docs.anthropic.com/en/docs/claude-code) configurations -- Skills, MCP Servers, CLAUDE.md files, and Rules -- with visual organization, one-click project deployment, and Finder integration.
 
 ## Overview
 
-As your collection of Claude Code Skills, MCP Servers, and CLAUDE.md context files grows, managing them through manual file editing becomes tedious and error-prone. Ensemble provides a native macOS interface to organize, bundle, and deploy these configurations to your projects.
+As your collection of Claude Code Skills, MCP Servers, CLAUDE.md context files, and Rule instruction files grows, managing them through manual file editing becomes tedious and error-prone. Ensemble provides a native macOS interface to organize, bundle, and deploy these configurations to your projects.
 
 Core workflow:
 
@@ -47,6 +47,13 @@ Core workflow:
 - Distribute CLAUDE.md files to project directories
 - Configurable distribution path: `.claude/CLAUDE.md`, `CLAUDE.md`, or `CLAUDE.local.md`
 
+### Rules Management
+- Scan `~/.claude/rules/` and project `.claude/rules/` directories for `.md` rule files
+- Import and centrally manage Rule files; original filename is preserved (Claude Code indexes Rules by filename)
+- Mark any number of Rules as global (`~/.claude/rules/<filename>.md`); edits propagate to the global copy immediately
+- Distribute Rules to project directories at `<project>/.claude/rules/<filename>.md`
+- Add multiple Rules to a Scene for batch deployment alongside Skills, MCPs, and CLAUDE.md
+
 ### Marketplace
 - Browse and install Skills from the community Skills catalog (skills.sh)
 - Browse and install MCP Servers from the MCP Registry (registry.modelcontextprotocol.io)
@@ -54,7 +61,7 @@ Core workflow:
 - README previews, GitHub stars, and AI summaries in the detail panel
 
 ### Scenes
-- Bundle multiple Skills, MCP Servers, and CLAUDE.md files into reusable configuration sets
+- Bundle multiple Skills, MCP Servers, CLAUDE.md files, and Rules into reusable configuration sets
 - One-click deployment to projects
 - Scenes serve as templates for consistent project setup
 
@@ -64,7 +71,7 @@ Core workflow:
 - Clear and re-sync configurations as needed
 
 ### Organization
-- Categories and tags for Skills, MCP Servers, and CLAUDE.md files
+- Categories and tags for Skills, MCP Servers, CLAUDE.md files, and Rules
 - Categories can be nested one level deep (subcategories indent under a parent in the sidebar)
 - Drag to reorder categories and tags in the sidebar
 - AI-powered auto-classification using the Claude CLI (`claude` command); choose between Opus, Sonnet, and Haiku
@@ -78,7 +85,7 @@ Core workflow:
 - Customizable launch command
 
 ### Trash and Recovery
-- Deleted Skills, MCPs, and CLAUDE.md files are moved to trash
+- Deleted Skills, MCPs, CLAUDE.md files, and Rules are moved to trash
 - Recover deleted items from Settings
 
 ## Installation
@@ -115,7 +122,7 @@ npm run tauri build
 
 1. **Launch Ensemble** -- on first launch, it detects existing Skills and MCPs and offers to import them
 2. **Organize** -- add categories and tags, or use Auto Classify
-3. **Create a Scene** -- bundle related Skills, MCPs, and CLAUDE.md files
+3. **Create a Scene** -- bundle related Skills, MCPs, CLAUDE.md files, and Rules
 4. **Add a Project** -- select a folder and assign a Scene
 5. **Sync** -- deploy the Scene's configuration to the project
 
@@ -124,16 +131,18 @@ npm run tauri build
 Ensemble stores its data in `~/.ensemble/`:
 ```
 ~/.ensemble/
-├── data.json           # Application data (skills, MCPs, scenes, projects, categories, tags)
+├── data.json           # Application data (skills, MCPs, scenes, projects, categories, tags, rules)
 ├── settings.json       # User preferences
 ├── skills/             # Managed skill directories
 ├── mcps/               # MCP configuration files (.json)
 ├── claude-md/          # CLAUDE.md files (each in its own subdirectory)
+├── rules/              # Rule files (each in its own subdirectory)
 ├── backups/            # Timestamped backups from import operations
 └── trash/              # Deleted items (recoverable)
     ├── skills/
     ├── mcps/
-    └── claude-md/
+    ├── claude-md/
+    └── rules/
 ```
 
 ## Tech Stack

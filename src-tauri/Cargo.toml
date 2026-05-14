@@ -1,6 +1,6 @@
 [package]
 name = "ensemble"
-version = "2.1.1"
+version = "2.1.2"
 description = "Manage Claude Code Skills, MCP Servers, CLAUDE.md, and Rule files"
 authors = ["O0000-code"]
 license = "MIT"

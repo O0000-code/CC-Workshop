@@ -91,6 +91,7 @@ function ViewModePanel({
   const skillsCount = scene?.skillIds?.length || 0;
   const mcpsCount = scene?.mcpIds?.length || 0;
   const claudeMdCount = scene?.claudeMdIds?.length || 0;
+  const rulesCount = scene?.ruleIds?.length || 0;
   const isSynced = !!project.lastSynced;
 
   // Scene dropdown options
@@ -145,6 +146,7 @@ function ViewModePanel({
               <span className="text-[12px] font-normal text-[#71717A]">
                 {skillsCount} Skills · {mcpsCount} MCPs
                 {claudeMdCount > 0 ? ` · ${claudeMdCount} Docs` : ''}
+                {rulesCount > 0 ? ` · ${rulesCount} Rules` : ''}
               </span>
             )}
           </div>
@@ -193,6 +195,20 @@ function ViewModePanel({
               path=".claude/CLAUDE.md"
               count={claudeMdCount}
               isSynced={isSynced && claudeMdCount > 0}
+            />
+          )}
+
+          {/* Rules Card — opt-in like CLAUDE.md (most projects don't bundle
+              Rules, so showing an empty card every time would be noise).
+              When present, Project Sync writes each rule to
+              `<project>/.claude/rules/<filename>.md` via
+              `distribute_scene_rules` (rules.rs). */}
+          {rulesCount > 0 && (
+            <ConfigCard
+              title="Rules"
+              path=".claude/rules/"
+              count={rulesCount}
+              isSynced={isSynced && rulesCount > 0}
             />
           )}
         </div>

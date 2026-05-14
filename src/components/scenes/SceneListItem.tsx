@@ -12,6 +12,7 @@ import {
   Trash2,
   Sparkles,
   Plug,
+  ScrollText,
 } from 'lucide-react';
 import { Scene } from '@/types';
 
@@ -134,7 +135,9 @@ export const SceneListItem: React.FC<SceneListItemProps> = ({
       }}
     >
       {/* Left Section - align to start in compact mode */}
-      <div className={`flex min-w-0 flex-1 overflow-hidden gap-3.5 ${compact ? 'items-start' : 'items-center'}`}>
+      <div
+        className={`flex min-w-0 flex-1 overflow-hidden gap-3.5 ${compact ? 'items-start' : 'items-center'}`}
+      >
         {/* Icon Container */}
         <div
           ref={iconRef}
@@ -263,6 +266,23 @@ export const SceneListItem: React.FC<SceneListItemProps> = ({
                 </span>
               </div>
             )}
+
+            {/* Rules Count - only show if > 0 */}
+            {(scene.ruleIds?.length ?? 0) > 0 && (
+              <div
+                className="flex items-center overflow-hidden whitespace-nowrap"
+                style={{
+                  gap: compact ? 0 : '6px',
+                  maxWidth: compact ? 0 : '120px',
+                  transition: `gap ${TRANSITION_BASE}, max-width ${TRANSITION_BASE}`,
+                }}
+              >
+                <ScrollText className="h-3 w-3 text-[#A1A1AA] shrink-0" />
+                <span className="text-[11px] font-normal text-[#71717A]">
+                  {scene.ruleIds?.length} Rules
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Active Badge */}
@@ -281,29 +301,26 @@ export const SceneListItem: React.FC<SceneListItemProps> = ({
         </div>
 
         {/* More Button with Dropdown Menu - Always visible */}
-        <div
-          ref={menuRef}
-          className="relative shrink-0 ml-4"
-        >
-        <button
-          onClick={handleMoreClick}
-          className="flex h-7 w-7 items-center justify-center rounded transition-colors hover:bg-[#F4F4F5]"
-        >
-          <MoreHorizontal className="h-4 w-4 text-[#A1A1AA]" />
-        </button>
+        <div ref={menuRef} className="relative shrink-0 ml-4">
+          <button
+            onClick={handleMoreClick}
+            className="flex h-7 w-7 items-center justify-center rounded transition-colors hover:bg-[#F4F4F5]"
+          >
+            <MoreHorizontal className="h-4 w-4 text-[#A1A1AA]" />
+          </button>
 
-        {showMenu && (
-          <div className="absolute right-0 top-full mt-1 w-32 bg-white rounded-lg border border-[#E5E5E5] shadow-lg z-50 p-1">
-            <button
-              onClick={handleDelete}
-              className="w-full px-3 py-2 text-left text-sm text-[#DC2626] hover:bg-[#FEF2F2] flex items-center gap-2 transition-colors rounded"
-            >
-              <Trash2 className="w-4 h-4" />
-              Delete
-            </button>
-          </div>
-        )}
-      </div>
+          {showMenu && (
+            <div className="absolute right-0 top-full mt-1 w-32 bg-white rounded-lg border border-[#E5E5E5] shadow-lg z-50 p-1">
+              <button
+                onClick={handleDelete}
+                className="w-full px-3 py-2 text-left text-sm text-[#DC2626] hover:bg-[#FEF2F2] flex items-center gap-2 transition-colors rounded"
+              >
+                <Trash2 className="w-4 h-4" />
+                Delete
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

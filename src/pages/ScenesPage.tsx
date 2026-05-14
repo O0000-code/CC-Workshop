@@ -20,6 +20,7 @@ import {
   Zap,
   FileCode,
   Sparkles,
+  ScrollText,
   Trash2,
 } from 'lucide-react';
 import { PageHeader } from '@/components/layout/PageHeader';
@@ -33,6 +34,8 @@ import { CreateSceneModal } from '@/components/scenes/CreateSceneModal';
 import { useScenesStore } from '@/stores/scenesStore';
 import { useSkillsStore } from '@/stores/skillsStore';
 import { useMcpsStore } from '@/stores/mcpsStore';
+import { useClaudeMdStore } from '@/stores/claudeMdStore';
+import { useRulesStore } from '@/stores/rulesStore';
 import { useSortPreferencesStore } from '@/stores/sortPreferencesStore';
 
 // ============================================================================
@@ -69,6 +72,8 @@ function applyScenesSort(items: Scene[], sortBy: string): Scene[] {
 }
 import { useProjectsStore } from '@/stores/projectsStore';
 import type { Skill, McpServer } from '@/types';
+import type { ClaudeMdFile } from '@/types/claudeMd';
+import type { Rule } from '@/types/rule';
 
 // ============================================================================
 // Types & Constants
@@ -178,6 +183,8 @@ export const ScenesPage: React.FC = () => {
   const setFilter = useScenesStore((state) => state.setFilter);
   const skills = useSkillsStore((state) => state.skills);
   const mcpServers = useMcpsStore((state) => state.mcpServers);
+  const claudeMdFiles = useClaudeMdStore((state) => state.files);
+  const rules = useRulesStore((state) => state.rules);
   const projects = useProjectsStore((state) => state.projects);
 
   // Local state - selected scene for detail panel
@@ -234,6 +241,18 @@ export const ScenesPage: React.FC = () => {
     if (!selectedScene) return [];
     return mcpServers.filter((m) => selectedScene.mcpIds.includes(m.id));
   }, [selectedScene, mcpServers]);
+
+  const includedClaudeMds = useMemo((): ClaudeMdFile[] => {
+    if (!selectedScene) return [];
+    const ids = selectedScene.claudeMdIds ?? [];
+    return claudeMdFiles.filter((c) => ids.includes(c.id));
+  }, [selectedScene, claudeMdFiles]);
+
+  const includedRules = useMemo((): Rule[] => {
+    if (!selectedScene) return [];
+    const ids = selectedScene.ruleIds ?? [];
+    return rules.filter((r) => ids.includes(r.id));
+  }, [selectedScene, rules]);
 
   // Get projects using this scene
   const usingProjects = useMemo(() => {
@@ -538,7 +557,7 @@ export const ScenesPage: React.FC = () => {
           <div className="flex flex-col gap-7">
             {/* Info Section */}
             <div className="flex flex-col gap-4">
-              <div className="grid grid-cols-4 gap-8">
+              <div className="grid grid-cols-5 gap-8">
                 {/* Created */}
                 <div className="flex flex-col gap-1">
                   <span className="text-[11px] font-medium text-[#71717A]">Created</span>
@@ -569,6 +588,16 @@ export const ScenesPage: React.FC = () => {
                     <span className="text-[11px] font-medium text-[#71717A]">CLAUDE.md</span>
                     <span className="text-[13px] font-medium text-[#18181B]">
                       {selectedScene.claudeMdIds?.length} docs
+                    </span>
+                  </div>
+                )}
+
+                {/* Rules Count - only show if > 0 */}
+                {(selectedScene.ruleIds?.length ?? 0) > 0 && (
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[11px] font-medium text-[#71717A]">Rules</span>
+                    <span className="text-[13px] font-medium text-[#18181B]">
+                      {selectedScene.ruleIds?.length} rules
                     </span>
                   </div>
                 )}
@@ -642,6 +671,51 @@ export const ScenesPage: React.FC = () => {
                 </div>
               )}
             </div>
+
+            {/* Included CLAUDE.md Section — only render when the Scene
+                binds at least one CLAUDE.md (otherwise the section would
+                always show "No CLAUDE.md included" which is just noise
+                for Scenes that don't use them). */}
+            {includedClaudeMds.length > 0 && (
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-[#18181B]">Included CLAUDE.md</h3>
+                  <Badge variant="count">{includedClaudeMds.length}</Badge>
+                </div>
+                <div className="overflow-hidden rounded-lg border border-[#E5E5E5]">
+                  {includedClaudeMds.map((file, index) => (
+                    <IncludedItem
+                      key={file.id}
+                      icon={<FileText className="h-3.5 w-3.5 text-[#52525B]" />}
+                      name={file.name}
+                      description={file.description}
+                      isLast={index === includedClaudeMds.length - 1}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Included Rules Section — same opt-in pattern as CLAUDE.md. */}
+            {includedRules.length > 0 && (
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-[#18181B]">Included Rules</h3>
+                  <Badge variant="count">{includedRules.length}</Badge>
+                </div>
+                <div className="overflow-hidden rounded-lg border border-[#E5E5E5]">
+                  {includedRules.map((rule, index) => (
+                    <IncludedItem
+                      key={rule.id}
+                      icon={<ScrollText className="h-3.5 w-3.5 text-[#52525B]" />}
+                      name={rule.name}
+                      description={rule.description}
+                      isLast={index === includedRules.length - 1}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Used by Projects Section */}
             <div className="flex flex-col gap-3">

@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Ensemble",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "identifier": "io.github.o0000-code.ensemble",
   "build": {
     "frontendDist": "../dist",

@@ -1,5 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Folder, MoreHorizontal, Trash2, Layers, Sparkles, Plug, FileText } from 'lucide-react';
+import {
+  Folder,
+  MoreHorizontal,
+  Trash2,
+  Layers,
+  Sparkles,
+  Plug,
+  FileText,
+  ScrollText,
+} from 'lucide-react';
 import type { Project, Scene } from '../../types';
 
 // ============================================================================
@@ -102,13 +111,17 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
       {/* Left Section */}
       <div className="flex items-center gap-3.5 min-w-0 flex-1">
         {/* Icon Wrap */}
-        <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg ${selected ? 'bg-[#F4F4F5]' : 'bg-[#FAFAFA]'}`}>
+        <div
+          className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg ${selected ? 'bg-[#F4F4F5]' : 'bg-[#FAFAFA]'}`}
+        >
           <Folder className={`h-5 w-5 ${selected ? 'text-[#18181B]' : 'text-[#52525B]'}`} />
         </div>
 
         {/* Info */}
         <div className="flex flex-col gap-1 min-w-0">
-          <span className={`text-sm text-[#18181B] truncate ${selected ? 'font-semibold' : 'font-medium'}`}>
+          <span
+            className={`text-sm text-[#18181B] truncate ${selected ? 'font-semibold' : 'font-medium'}`}
+          >
             {project.name}
           </span>
           <span className="text-xs font-normal text-[#71717A] truncate">
@@ -127,7 +140,8 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
               opacity: compact ? 0 : 1,
               maxWidth: compact ? 0 : '400px',
               gap: compact ? 0 : '20px',
-              transition: 'opacity 250ms cubic-bezier(0.4, 0, 0.2, 1), max-width 250ms cubic-bezier(0.4, 0, 0.2, 1), gap 250ms cubic-bezier(0.4, 0, 0.2, 1)',
+              transition:
+                'opacity 250ms cubic-bezier(0.4, 0, 0.2, 1), max-width 250ms cubic-bezier(0.4, 0, 0.2, 1), gap 250ms cubic-bezier(0.4, 0, 0.2, 1)',
             }}
           >
             {/* Scene */}
@@ -139,9 +153,7 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
               }}
             >
               <Layers className="h-3 w-3 text-[#A1A1AA] shrink-0" />
-              <span className="text-[11px] font-normal text-[#71717A]">
-                {scene.name}
-              </span>
+              <span className="text-[11px] font-normal text-[#71717A]">{scene.name}</span>
             </div>
 
             {/* Skills Count */}
@@ -187,14 +199,27 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
                 </span>
               </div>
             )}
+
+            {/* Rules Count - only show if > 0 */}
+            {(scene.ruleIds?.length ?? 0) > 0 && (
+              <div
+                className="flex items-center overflow-hidden whitespace-nowrap"
+                style={{
+                  gap: compact ? 0 : '6px',
+                  transition: 'gap 250ms cubic-bezier(0.4, 0, 0.2, 1)',
+                }}
+              >
+                <ScrollText className="h-3 w-3 text-[#A1A1AA] shrink-0" />
+                <span className="text-[11px] font-normal text-[#71717A]">
+                  {scene.ruleIds?.length} Rules
+                </span>
+              </div>
+            )}
           </div>
         )}
 
         {/* Action Button - Always visible */}
-        <div
-          ref={menuRef}
-          className="shrink-0 ml-4 relative"
-        >
+        <div ref={menuRef} className="shrink-0 ml-4 relative">
           <button
             onClick={handleMoreClick}
             className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-[#F4F4F5] transition-colors"

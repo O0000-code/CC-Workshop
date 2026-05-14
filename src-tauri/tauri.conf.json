@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Ensemble",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "identifier": "io.github.o0000-code.ensemble",
   "build": {
     "frontendDist": "../dist",
@@ -24,7 +24,7 @@
         "hiddenTitle": true,
         "trafficLightPosition": {
           "x": 24,
-          "y": 25
+          "y": 29
         }
       }
     ],

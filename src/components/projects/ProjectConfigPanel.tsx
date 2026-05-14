@@ -180,10 +180,14 @@ function ViewModePanel({
             isSynced={isSynced && skillsCount > 0}
           />
 
-          {/* MCP Servers Card */}
+          {/* MCP Servers Card — Claude Code reads project-level MCP config
+              from `<project>/.mcp.json` (NOT `.claude/mcp_servers.json`).
+              The actual write target lives in src-tauri/src/commands/config.rs
+              (`project_dir.join(".mcp.json")`). Keep this string in sync with
+              that path. */}
           <ConfigCard
             title="MCP Servers"
-            path=".claude/mcp_servers.json"
+            path=".mcp.json"
             count={mcpsCount}
             isSynced={isSynced && mcpsCount > 0}
           />

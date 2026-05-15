@@ -194,6 +194,17 @@ interface AppState {
   stopEditingTag: () => void;
   startAddingTag: () => void;
   stopAddingTag: () => void;
+
+  // Error surfacing (R7 F7-11 / R7 F7-6 fix — A9 + A10).
+  // `setError` / `clearError` are consumed by the global error banner in
+  // `MainLayout`, which subscribes to `useAppStore((s) => s.error)`. Existing
+  // store actions (e.g. `moveCategoryToParent`) already write to `error`
+  // directly via `set({ error })`; these helpers exist so handler-layer
+  // callers (e.g. duplicate-name guards in `MainLayout.handleCategorySave`
+  // / `ScenesPage.handleCreateScene`) can surface validation messages
+  // without touching internal state shape.
+  setError: (message: string) => void;
+  clearError: () => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -916,4 +927,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   stopAddingTag: () => set({ isAddingTag: false }),
+
+  // R7 F7-11 / F7-6 fix (A9 + A10): expose explicit setters for the
+  // `error` field so handler-layer dedup checks can surface user-facing
+  // validation messages (e.g. "A category named 'Dev' already exists").
+  // The global banner in `MainLayout` reads `error` and offers Dismiss.
+  setError: (message: string) => set({ error: message }),
+  clearError: () => set({ error: null }),
 }));

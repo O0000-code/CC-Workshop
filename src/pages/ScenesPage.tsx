@@ -37,6 +37,7 @@ import { useMcpsStore } from '@/stores/mcpsStore';
 import { useClaudeMdStore } from '@/stores/claudeMdStore';
 import { useRulesStore } from '@/stores/rulesStore';
 import { useSortPreferencesStore } from '@/stores/sortPreferencesStore';
+import { useAppStore } from '@/stores/appStore';
 
 // ============================================================================
 // Sort options (no Group — Scenes have no category/tags fields).
@@ -279,12 +280,24 @@ export const ScenesPage: React.FC = () => {
     claudeMdIds?: string[];
     ruleIds?: string[];
   }) => {
+    // R7 F7-6 fix (A9): duplicate-name guard, case-insensitive + trimmed.
+    // On conflict, surface a message via appStore.error (shown by the
+    // global banner in MainLayout) and keep the Create modal open so the
+    // user can correct the name.
+    const trimmedName = sceneData.name.trim();
+    const lowered = trimmedName.toLowerCase();
+    const conflict = scenes.find((s) => s.name.trim().toLowerCase() === lowered);
+    if (conflict) {
+      useAppStore.getState().setError(`A scene named "${conflict.name}" already exists.`);
+      return;
+    }
+
     try {
       // Directly call Tauri backend. `claudeMdIds` and `ruleIds` are both
       // forwarded so the new Scene captures every type the user selected in
       // the Create modal.
       const newScene = await safeInvoke<Scene>('add_scene', {
-        name: sceneData.name.trim(),
+        name: trimmedName,
         description: sceneData.description.trim(),
         icon: 'layers',
         skillIds: sceneData.skillIds,
@@ -318,10 +331,21 @@ export const ScenesPage: React.FC = () => {
       ruleIds?: string[];
     },
   ) => {
+    // R7 F7-6 fix (A9): duplicate-name guard scoped to other scenes (the
+    // edited scene's own name is excluded so "rename to itself" stays a
+    // no-op rather than a conflict).
+    const trimmedName = sceneData.name.trim();
+    const lowered = trimmedName.toLowerCase();
+    const conflict = scenes.find((s) => s.id !== id && s.name.trim().toLowerCase() === lowered);
+    if (conflict) {
+      useAppStore.getState().setError(`A scene named "${conflict.name}" already exists.`);
+      return;
+    }
+
     try {
       await safeInvoke('update_scene', {
         id,
-        name: sceneData.name.trim(),
+        name: trimmedName,
         description: sceneData.description.trim(),
         skillIds: sceneData.skillIds,
         mcpIds: sceneData.mcpIds,

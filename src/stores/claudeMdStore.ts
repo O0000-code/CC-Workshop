@@ -254,15 +254,24 @@ export const useClaudeMdStore = create<ClaudeMdState>((set, get) => ({
     }));
 
     try {
-      await safeInvoke('update_claude_md', {
-        id,
-        content: updates.content,
-        name: updates.name,
-        description: updates.description,
-        categoryId: updates.categoryId,
-        tagIds: updates.tagIds,
-        icon: updates.icon,
-      });
+      // `categoryId` is three-state on the backend (`Option<Option<String>>`):
+      //   - key omitted              → "do not modify"
+      //   - key with literal `null`  → "clear (Uncategorized)"
+      //   - key with string id       → "set"
+      // Detect intent by whether the caller's `updates` object carries the
+      // key at all. Mirror behaviour of `rulesStore.updateRule` and the
+      // skills/mcps update commands. Bug Audit 2026-05-15 finding A8.
+      const payload: Record<string, unknown> = { id };
+      if ('content' in updates) payload.content = updates.content;
+      if ('name' in updates) payload.name = updates.name;
+      if ('description' in updates) payload.description = updates.description;
+      if ('categoryId' in updates) {
+        payload.categoryId = updates.categoryId === undefined ? null : updates.categoryId;
+      }
+      if ('tagIds' in updates) payload.tagIds = updates.tagIds;
+      if ('icon' in updates) payload.icon = updates.icon;
+
+      await safeInvoke('update_claude_md', payload);
     } catch (error) {
       // Rollback on error
       const message = typeof error === 'string' ? error : String(error);

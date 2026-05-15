@@ -81,6 +81,14 @@ export default function MainLayout() {
     moveCategoryToParentAtPosition,
   } = useAppStore();
 
+  // R7 F7-11 fix (A10): subscribe to appStore.error so the global banner
+  // below the sidebar can surface sidebar reorder / hierarchy / dedup
+  // failures (circular references, depth limit, duplicate-name guard).
+  // Existing page-level banners (SkillsPage etc.) continue to consume
+  // their own store's error field; these channels are independent.
+  const appError = useAppStore((s) => s.error);
+  const clearAppError = useAppStore((s) => s.clearError);
+
   const { loadSettings, hasCompletedImport } = useSettingsStore();
   const { skills, loadSkills, setFilter: setSkillsFilter } = useSkillsStore();
   const { mcpServers, loadMcps, setFilter: setMcpsFilter } = useMcpsStore();
@@ -452,13 +460,35 @@ export default function MainLayout() {
   };
 
   const handleCategorySave = async (id: string | null, name: string) => {
+    // R7 F7-6 fix (A9): duplicate-name guard. The DnD-supported sidebar
+    // shows two same-name categories as visually identical rows; before
+    // this guard the user could silently create them (UI accepts, backend
+    // pushes). Compare case-insensitively + trimmed, scoped to the same
+    // parent. In edit mode skip the check when the name is unchanged.
+    const trimmed = name.trim();
+    const lowered = trimmed.toLowerCase();
+    const currentCategory = id ? categories.find((c) => c.id === id) : null;
+    const parentScope = currentCategory?.parentId ?? null;
+    const conflict = categories.find(
+      (c) =>
+        c.id !== id &&
+        (c.parentId ?? null) === parentScope &&
+        c.name.trim().toLowerCase() === lowered,
+    );
+    if (conflict) {
+      useAppStore
+        .getState()
+        .setError(`A category named "${conflict.name}" already exists at this level.`);
+      return;
+    }
+
     try {
       if (id) {
         // Edit mode
-        await updateCategory(id, name);
+        await updateCategory(id, trimmed);
       } else {
         // Add mode - use default color
-        await addCategory(name, '#A1A1AA');
+        await addCategory(trimmed, '#A1A1AA');
       }
       stopEditingCategory();
       stopAddingCategory();
@@ -570,13 +600,25 @@ export default function MainLayout() {
   };
 
   const handleTagSave = async (id: string | null, name: string) => {
+    // R7 F7-6 fix (A9): duplicate-name guard, case-insensitive + trimmed.
+    // Tags have no parent concept — a flat namespace. Edit mode skips the
+    // check when the name is unchanged so renaming "foo" → "foo" stays a
+    // no-op rather than a "duplicate" rejection.
+    const trimmed = name.trim();
+    const lowered = trimmed.toLowerCase();
+    const conflict = tags.find((t) => t.id !== id && t.name.trim().toLowerCase() === lowered);
+    if (conflict) {
+      useAppStore.getState().setError(`A tag named "${conflict.name}" already exists.`);
+      return;
+    }
+
     try {
       if (id) {
         // Edit mode
-        await updateTag(id, name);
+        await updateTag(id, trimmed);
       } else {
         // Add mode
-        await addTag(name);
+        await addTag(trimmed);
       }
       stopEditingTag();
       stopAddingTag();
@@ -767,6 +809,33 @@ export default function MainLayout() {
 
         {/* Main Content */}
         <main className="flex-1 overflow-hidden flex flex-col">
+          {/* R7 F7-11 fix (A10): global error banner driven by
+              `appStore.error`. Surfaces sidebar reorder / hierarchy and
+              duplicate-name guard failures that previously wrote to
+              `error` with no consumer. Uses the documented status tokens
+              (`--color-error` / `--color-error-bg`) per design-language
+              Rule rather than Tailwind `red-*` arbitrary palette. */}
+          {appError && (
+            <div
+              role="alert"
+              className="mx-7 mt-4 flex items-center justify-between rounded-md border px-4 py-3"
+              style={{
+                backgroundColor: 'var(--color-error-bg)',
+                borderColor: 'var(--color-error)',
+              }}
+            >
+              <p className="text-[13px] font-medium" style={{ color: 'var(--color-error)' }}>
+                {appError}
+              </p>
+              <button
+                onClick={clearAppError}
+                className="text-[13px] font-medium hover:opacity-80"
+                style={{ color: 'var(--color-error)' }}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
           <ErrorBoundary>
             <Outlet />
           </ErrorBoundary>

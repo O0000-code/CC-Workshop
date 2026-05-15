@@ -46,7 +46,7 @@ import { useScenesStore } from '@/stores/scenesStore';
 import { usePluginsStore } from '@/stores/pluginsStore';
 import { useSortPreferencesStore } from '@/stores/sortPreferencesStore';
 import { safeInvoke } from '@/utils/tauri';
-import type { Category, Skill, Tag } from '@/types';
+import type { Category, Skill, SkillUsage, Tag } from '@/types';
 
 // ============================================================================
 // Sort + Group options
@@ -68,26 +68,40 @@ const SKILLS_GROUP_OPTIONS: ViewOption[] = [
   { value: 'tags', label: 'Tags' },
 ];
 
-function applySkillsSort(items: Skill[], sortBy: string): Skill[] {
+function applySkillsSort(
+  items: Skill[],
+  sortBy: string,
+  usageStats: Record<string, SkillUsage>,
+): Skill[] {
   const pluginSink = (cmp: (a: Skill, b: Skill) => number) => (a: Skill, b: Skill) => {
     const aP = a.installSource === 'plugin';
     const bP = b.installSource === 'plugin';
     if (aP !== bP) return aP ? 1 : -1;
     return cmp(a, b);
   };
+  // `usage.rs` keys UsageStats by the SKILL.md frontmatter `name` (which is
+  // also what shows up in transcript `tool_use.input.skill`). Detail panels
+  // already lookup with `id || name`; sort mirrors that.
+  const lookupUsage = (s: Skill): SkillUsage | undefined => usageStats[s.id] || usageStats[s.name];
   const sorted = [...items];
   switch (sortBy) {
     case 'name':
       sorted.sort(pluginSink((a, b) => a.name.localeCompare(b.name)));
       break;
-    case 'recent':
-      sorted.sort(pluginSink((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '')));
+    case 'recent': {
+      // Anchor on `installedAt` (OS directory creation time, persistent across
+      // scans) and fall back to `createdAt` only when the backend couldn't
+      // read it. `createdAt` alone re-derives on every scan and would collapse
+      // into the `read_dir` physical order.
+      const key = (s: Skill) => s.installedAt ?? s.createdAt ?? '';
+      sorted.sort(pluginSink((a, b) => key(b).localeCompare(key(a))));
       break;
+    }
     case 'used':
       sorted.sort(
         pluginSink((a, b) => {
-          const ax = a.lastUsed ?? '';
-          const bx = b.lastUsed ?? '';
+          const ax = lookupUsage(a)?.last_used ?? '';
+          const bx = lookupUsage(b)?.last_used ?? '';
           if (ax && !bx) return -1;
           if (!ax && bx) return 1;
           return bx.localeCompare(ax);
@@ -95,7 +109,9 @@ function applySkillsSort(items: Skill[], sortBy: string): Skill[] {
       );
       break;
     case 'most-used':
-      sorted.sort(pluginSink((a, b) => (b.usageCount ?? 0) - (a.usageCount ?? 0)));
+      sorted.sort(
+        pluginSink((a, b) => (lookupUsage(b)?.call_count ?? 0) - (lookupUsage(a)?.call_count ?? 0)),
+      );
       break;
     default:
       sorted.sort(pluginSink((a, b) => a.name.localeCompare(b.name)));
@@ -381,8 +397,8 @@ export function SkillsPage() {
 
   const baseFiltered = getFilteredSkills();
   const filteredSkills = useMemo(
-    () => applySkillsSort(baseFiltered, sortBy),
-    [baseFiltered, sortBy],
+    () => applySkillsSort(baseFiltered, sortBy, usageStats),
+    [baseFiltered, sortBy, usageStats],
   );
 
   const groupedSkills = useMemo(
@@ -519,6 +535,15 @@ export function SkillsPage() {
   };
 
   const handleDelete = (skillId: string) => {
+    // R7 F7-1 fix (A11): explicitly clear the page-local `selectedSkillId`
+    // when deleting the currently-selected skill so the SlidePanel closes
+    // synchronously. `skillsStore.deleteSkill` already resets the store's
+    // own selectedSkillId (skillsStore.ts:152), but the page maintains a
+    // separate `useState` and the two were decoupled — leaving the panel
+    // open over a `selectedSkill === null` useMemo (empty 800-px column).
+    if (selectedSkillId === skillId) {
+      setSelectedSkillId(null);
+    }
     deleteSkill(skillId);
   };
 
@@ -1063,8 +1088,14 @@ export function SkillsPage() {
       </div>
 
       {/* Slide Panel for Detail View */}
+      {/* R7 F7-1 fix (A11): drive isOpen from `selectedSkill` (data) rather
+          than `selectedSkillId` (local id). When the selected skill is
+          deleted, `selectedSkill = useMemo(skills.find(...))` becomes null,
+          so the panel closes automatically even if the id-clear in
+          `handleDelete` is bypassed. Two-layer safety against the
+          empty-panel state. */}
       <SlidePanel
-        isOpen={!!selectedSkillId}
+        isOpen={!!selectedSkill}
         onClose={handleCloseDetail}
         width={800}
         header={detailHeader}

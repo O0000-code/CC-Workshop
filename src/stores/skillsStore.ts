@@ -107,11 +107,15 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
       return;
     }
 
-    const { skillSourceDir } = useSettingsStore.getState();
+    const { skillSourceDir, claudeConfigDir } = useSettingsStore.getState();
     set({ isLoading: true, error: null });
     try {
+      // claudeConfigDir is passed so the backend can derive each Skill's
+      // scope by checking `<claudeConfigDir>/skills/<name>` existence —
+      // see commands/skills.rs::derive_skill_scope.
       const skills = await safeInvoke<Skill[]>('scan_skills', {
         sourceDir: skillSourceDir,
+        claudeConfigDir,
       });
       set({ skills: skills || [], isLoading: false });
     } catch (error) {
@@ -304,6 +308,13 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
         ensembleDir: skillSourceDir.replace('/skills', ''),
         claudeConfigDir,
       });
+      // Re-scan so the displayed scope reflects derived filesystem state
+      // rather than just the optimistic value. Without this, a switch
+      // that hit a backend edge case (e.g. ~/.claude/skills/<name>
+      // already exists as a non-symlink directory — see import.rs
+      // "Target path exists and is not a symlink") would show success
+      // in the UI while the filesystem disagrees on the next scan.
+      await get().loadSkills();
     } catch (error) {
       // Rollback on error
       const message = typeof error === 'string' ? error : String(error);

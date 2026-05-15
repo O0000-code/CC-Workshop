@@ -391,8 +391,14 @@ export const useImportStore = create<ImportState>((set, get) => ({
       return null;
     }
 
-    const { claudeConfigDir, skillSourceDir } = useSettingsStore.getState();
-    const ensembleDir = skillSourceDir.replace('/skills', '');
+    // R7 F7-5 fix (A7): use mcpSourceDir, not skillSourceDir, so a user
+    // who customised `mcpSourceDir` to a non-default path (e.g. an external
+    // volume) gets the imported MCP JSON files written under their chosen
+    // directory. Backend `import_existing_config` derives `mcps_dest =
+    // ensembleDir/mcps` (`src-tauri/src/commands/import.rs:537`), so the
+    // strip mirrors that contract.
+    const { claudeConfigDir, mcpSourceDir } = useSettingsStore.getState();
+    const ensembleDir = mcpSourceDir.replace('/mcps', '');
 
     set({ isImporting: true, error: null });
 

@@ -43,7 +43,7 @@ import { useScenesStore } from '@/stores/scenesStore';
 import { usePluginsStore } from '@/stores/pluginsStore';
 import { useSortPreferencesStore } from '@/stores/sortPreferencesStore';
 import { safeInvoke } from '@/utils/tauri';
-import type { Category, McpServer, Tag, Tool } from '@/types';
+import type { Category, McpServer, McpUsage, Tag, Tool } from '@/types';
 
 // ============================================================================
 // Sort + Group options
@@ -150,7 +150,11 @@ function groupMcps(
   return [{ group: null, items }];
 }
 
-function applyMcpsSort(items: McpServer[], sortBy: string): McpServer[] {
+function applyMcpsSort(
+  items: McpServer[],
+  sortBy: string,
+  usageStats: Record<string, McpUsage>,
+): McpServer[] {
   const pluginSink =
     (cmp: (a: McpServer, b: McpServer) => number) => (a: McpServer, b: McpServer) => {
       const aP = a.installSource === 'plugin';
@@ -158,19 +162,29 @@ function applyMcpsSort(items: McpServer[], sortBy: string): McpServer[] {
       if (aP !== bP) return aP ? 1 : -1;
       return cmp(a, b);
     };
+  // UsageStats is keyed by the `mcp__<server_name>__*` server segment (see
+  // `usage.rs:process_mcp_tool`). Detail panel already does `id || name`
+  // lookup; sort mirrors that.
+  const lookupUsage = (m: McpServer): McpUsage | undefined =>
+    usageStats[m.id] || usageStats[m.name];
   const sorted = [...items];
   switch (sortBy) {
     case 'name':
       sorted.sort(pluginSink((a, b) => a.name.localeCompare(b.name)));
       break;
-    case 'recent':
-      sorted.sort(pluginSink((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '')));
+    case 'recent': {
+      // Anchor on `installedAt` (OS file creation time) and only fall back to
+      // `createdAt` when the platform doesn't expose it. See skills sort for
+      // the rationale — `createdAt` alone gets refreshed every scan.
+      const key = (m: McpServer) => m.installedAt ?? m.createdAt ?? '';
+      sorted.sort(pluginSink((a, b) => key(b).localeCompare(key(a))));
       break;
+    }
     case 'used':
       sorted.sort(
         pluginSink((a, b) => {
-          const ax = a.lastUsed ?? '';
-          const bx = b.lastUsed ?? '';
+          const ax = lookupUsage(a)?.last_used ?? '';
+          const bx = lookupUsage(b)?.last_used ?? '';
           if (ax && !bx) return -1;
           if (!ax && bx) return 1;
           return bx.localeCompare(ax);
@@ -178,7 +192,11 @@ function applyMcpsSort(items: McpServer[], sortBy: string): McpServer[] {
       );
       break;
     case 'most-used':
-      sorted.sort(pluginSink((a, b) => (b.usageCount ?? 0) - (a.usageCount ?? 0)));
+      sorted.sort(
+        pluginSink(
+          (a, b) => (lookupUsage(b)?.total_calls ?? 0) - (lookupUsage(a)?.total_calls ?? 0),
+        ),
+      );
       break;
     default:
       sorted.sort(pluginSink((a, b) => a.name.localeCompare(b.name)));
@@ -355,8 +373,8 @@ export const McpServersPage: React.FC = () => {
 
   const baseFilteredMcps = getFilteredMcps();
   const filteredMcps = useMemo(
-    () => applyMcpsSort(baseFilteredMcps, sortBy),
-    [baseFilteredMcps, sortBy],
+    () => applyMcpsSort(baseFilteredMcps, sortBy, usageStats),
+    [baseFilteredMcps, sortBy, usageStats],
   );
 
   const groupedMcps = useMemo(
@@ -463,6 +481,15 @@ export const McpServersPage: React.FC = () => {
   };
 
   const handleDelete = (id: string) => {
+    // R7 F7-1 fix (A11): mirror SkillsPage — clear the page-local
+    // `selectedMcpId` when deleting the currently-selected MCP so the
+    // SlidePanel closes synchronously. `mcpsStore.deleteMcp` resets the
+    // store's own selectedMcpId but the page maintains a separate
+    // `useState`; without this reset the panel stayed open over an empty
+    // `selectedMcp` memo.
+    if (selectedMcpId === id) {
+      setSelectedMcpId(null);
+    }
     deleteMcp(id);
   };
 
@@ -1092,8 +1119,12 @@ export const McpServersPage: React.FC = () => {
       </div>
 
       {/* Slide Panel for Detail View */}
+      {/* R7 F7-1 fix (A11): isOpen driven by `selectedMcp` (data) rather
+          than `selectedMcpId` (local id). Two-layer safety against the
+          empty-panel state when the selected MCP is deleted via list-
+          item dropdown. */}
       <SlidePanel
-        isOpen={!!selectedMcpId}
+        isOpen={!!selectedMcp}
         onClose={handleCloseDetail}
         width={800}
         header={detailHeader}

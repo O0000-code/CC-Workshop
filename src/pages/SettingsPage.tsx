@@ -4,8 +4,16 @@ import { Github, BookOpen, FileText, ChevronDown, Check } from 'lucide-react';
 import { TrashRecoveryModal } from '@/components/modals';
 import { PageHeader } from '@/components/layout/PageHeader';
 import Toggle from '@/components/common/Toggle';
-import { useSettingsStore, useSkillsStore, useMcpsStore, useAppStore } from '@/stores';
+import {
+  useSettingsStore,
+  useSkillsStore,
+  useMcpsStore,
+  useAppStore,
+  useScenesStore,
+  useProjectsStore,
+} from '@/stores';
 import { useClaudeMdStore } from '@/stores/claudeMdStore';
+import { useRulesStore } from '@/stores/rulesStore';
 import Modal from '@/components/common/Modal';
 import { safeInvoke } from '@/utils/tauri';
 import type { ClassifyModel } from '@/types';
@@ -274,15 +282,30 @@ export function SettingsPage() {
   const { loadMcps, mcpServers } = useMcpsStore();
   const { loadFiles: loadClaudeMdFiles, files: claudeMdFiles } = useClaudeMdStore();
   const { loadCategories, loadTags, categories, tags } = useAppStore();
+  // V2 (bug-audit B-5): TrashRecoveryModal can now restore Rules / Scenes /
+  // Projects (A4 + A5). Without these reload functions, restoring a Scene
+  // would leave the user with stale ScenesPage state until the next session.
+  const { loadRules } = useRulesStore();
+  const { loadScenes } = useScenesStore();
+  const { loadProjects } = useProjectsStore();
   const supportsOpenMode = terminalApp === 'Warp' || terminalApp === 'Ghostty';
   const terminalOpenModeLabel = terminalApp === 'Ghostty' ? 'Ghostty Open Mode' : 'Warp Open Mode';
 
   // Callback to refresh all data after trash recovery
   const handleRestoreComplete = useCallback(async () => {
-    // Reload all data stores in parallel for better performance
-    // This ensures sidebar counts and lists update without page refresh
-    await Promise.all([loadSkills(), loadMcps(), loadClaudeMdFiles()]);
-  }, [loadSkills, loadMcps, loadClaudeMdFiles]);
+    // Reload all data stores in parallel for better performance.
+    // This ensures sidebar counts and lists update without page refresh.
+    // Rules / Scenes / Projects are included because TrashRecoveryModal
+    // now restores them too (A4 + A5).
+    await Promise.all([
+      loadSkills(),
+      loadMcps(),
+      loadClaudeMdFiles(),
+      loadRules(),
+      loadScenes(),
+      loadProjects(),
+    ]);
+  }, [loadSkills, loadMcps, loadClaudeMdFiles, loadRules, loadScenes, loadProjects]);
 
   // Reset every auto-classify-produced classification (categories, tags,
   // and all item ↔ classification links). Items themselves stay; their

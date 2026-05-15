@@ -9,7 +9,12 @@ import { ChevronDown, Check, Loader2 } from 'lucide-react';
 export type Scope = 'global' | 'project';
 
 export interface ScopeSelectorProps {
-  value: Scope | 'user' | undefined;  // 'user' from backend maps to 'global'
+  // Backend now derives scope from filesystem state at scan time, so the
+  // value is always one of `"global" | "project"` (never `"user"` — that
+  // earlier hardcoded backend value, plus the UI hack that normalised it
+  // to "global", was removed when scope became derived).
+  // `undefined` falls back to "project" defensively.
+  value: Scope | undefined;
   onChange: (scope: Scope) => Promise<void>;
   disabled?: boolean;
   className?: string;
@@ -53,10 +58,11 @@ export function ScopeSelector({
   const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0 });
   const triggerRef = useRef<HTMLButtonElement>(null);
 
-  // Normalize scope value: 'user' from backend maps to 'global' in UI
-  // Default to 'project' if value is undefined or unknown
-  const normalizedValue: Scope =
-    value === 'global' || value === 'user' ? 'global' : 'project';
+  // Default to 'project' if value is undefined or unknown.
+  // Backend always returns 'global' | 'project' now (derived from
+  // filesystem at scan time — see commands/skills.rs::derive_skill_scope
+  // and commands/mcps.rs::derive_mcp_scope).
+  const normalizedValue: Scope = value === 'global' ? 'global' : 'project';
 
   const currentScope = scopeConfig[normalizedValue];
 
@@ -104,75 +110,69 @@ export function ScopeSelector({
         )}
         <span className="text-[13px] font-medium text-[#18181B]">{currentScope.label}</span>
         {!disabled && !isUpdating && (
-          <ChevronDown className={`w-3.5 h-3.5 text-[#A1A1AA] transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+          <ChevronDown
+            className={`w-3.5 h-3.5 text-[#A1A1AA] transition-transform ${isOpen ? 'rotate-180' : ''}`}
+          />
         )}
       </button>
 
       {/* Dropdown Menu - Rendered via Portal to avoid clipping */}
-      {isOpen && createPortal(
-        <>
-          {/* Backdrop */}
-          <div
-            className="fixed inset-0 z-[100]"
-            onClick={() => setIsOpen(false)}
-          />
+      {isOpen &&
+        createPortal(
+          <>
+            {/* Backdrop */}
+            <div className="fixed inset-0 z-[100]" onClick={() => setIsOpen(false)} />
 
-          {/* Menu */}
-          <div
-            className="fixed w-[220px] bg-white rounded-lg border border-[#E5E5E5] shadow-[0_4px_12px_rgba(0,0,0,0.06)] z-[101]"
-            style={{
-              top: dropdownPosition.top,
-              left: dropdownPosition.left,
-            }}
-          >
-            {(Object.keys(scopeConfig) as Scope[]).map((scope, index) => {
-              const config = scopeConfig[scope];
-              const isSelected = scope === normalizedValue;
-              const isFirst = index === 0;
-              const isLast = index === Object.keys(scopeConfig).length - 1;
+            {/* Menu */}
+            <div
+              className="fixed w-[220px] bg-white rounded-lg border border-[#E5E5E5] shadow-[0_4px_12px_rgba(0,0,0,0.06)] z-[101]"
+              style={{
+                top: dropdownPosition.top,
+                left: dropdownPosition.left,
+              }}
+            >
+              {(Object.keys(scopeConfig) as Scope[]).map((scope, index) => {
+                const config = scopeConfig[scope];
+                const isSelected = scope === normalizedValue;
+                const isFirst = index === 0;
+                const isLast = index === Object.keys(scopeConfig).length - 1;
 
-              // Determine border radius based on position
-              const roundedClass = isFirst
-                ? 'rounded-t-md'
-                : isLast
-                ? 'rounded-b-md'
-                : '';
+                // Determine border radius based on position
+                const roundedClass = isFirst ? 'rounded-t-md' : isLast ? 'rounded-b-md' : '';
 
-              return (
-                <button
-                  key={scope}
-                  onClick={() => handleSelect(scope)}
-                  className={`
+                return (
+                  <button
+                    key={scope}
+                    onClick={() => handleSelect(scope)}
+                    className={`
                     w-full flex items-center gap-2.5 py-3 px-[14px] text-left
                     transition-colors cursor-pointer
                     ${roundedClass}
                     ${isSelected ? 'bg-[#F4F4F5]' : 'hover:bg-[#FAFAFA]'}
                   `}
-                >
-                  {/* Dot */}
-                  <div className={`w-2 h-2 rounded-full ${config.dotColor}`} />
+                  >
+                    {/* Dot */}
+                    <div className={`w-2 h-2 rounded-full ${config.dotColor}`} />
 
-                  {/* Info */}
-                  <div className="flex flex-col gap-0.5 flex-1 min-w-0">
-                    <span className={`text-[13px] text-[#18181B] ${isSelected ? 'font-semibold' : 'font-medium'}`}>
-                      {config.label}
-                    </span>
-                    <span className="text-[11px] text-[#71717A]">
-                      {config.description}
-                    </span>
-                  </div>
+                    {/* Info */}
+                    <div className="flex flex-col gap-0.5 flex-1 min-w-0">
+                      <span
+                        className={`text-[13px] text-[#18181B] ${isSelected ? 'font-semibold' : 'font-medium'}`}
+                      >
+                        {config.label}
+                      </span>
+                      <span className="text-[11px] text-[#71717A]">{config.description}</span>
+                    </div>
 
-                  {/* Check icon for selected */}
-                  {isSelected && (
-                    <Check className="w-3.5 h-3.5 text-[#18181B]" />
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </>,
-        document.body
-      )}
+                    {/* Check icon for selected */}
+                    {isSelected && <Check className="w-3.5 h-3.5 text-[#18181B]" />}
+                  </button>
+                );
+              })}
+            </div>
+          </>,
+          document.body,
+        )}
     </div>
   );
 }

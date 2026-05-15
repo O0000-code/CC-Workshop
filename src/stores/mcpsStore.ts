@@ -266,6 +266,11 @@ export const useMcpsStore = create<McpsState>((set, get) => ({
         ensembleDir: mcpSourceDir.replace('/mcps', ''),
         claudeConfigDir,
       });
+      // Re-scan so the displayed scope reflects derived state from
+      // ~/.claude.json rather than just the optimistic value.
+      // commands/mcps.rs::derive_mcp_scope reads ~/.claude.json once
+      // per scan, so this is cheap.
+      await get().loadMcps();
     } catch (error) {
       // Rollback on error
       const message = typeof error === 'string' ? error : String(error);

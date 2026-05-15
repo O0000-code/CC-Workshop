@@ -849,30 +849,10 @@ pub fn update_skill_scope(
         }
     }
 
-    // Update scope field in metadata
-    update_skill_scope_in_metadata(&skill_id, &scope)?;
-
-    Ok(())
-}
-
-/// Update skill scope in metadata file
-///
-/// **DATA_MUTEX**: Acquired at the outermost scope (T1f closure of the
-/// pre-existing gap surfaced by the `read_app_data|write_app_data` grep
-/// re-enumeration). Concurrent `update_skill_scope` + `update_skill_metadata`
-/// + `reorder_categories` are now serialised; lost-update window eliminated.
-fn update_skill_scope_in_metadata(skill_id: &str, scope: &str) -> Result<(), String> {
-    let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
-    let mut app_data = read_app_data()?;
-
-    let metadata = app_data
-        .skill_metadata
-        .entry(skill_id.to_string())
-        .or_insert_with(SkillMetadata::default);
-
-    metadata.scope = scope.to_string();
-
-    write_app_data(app_data)?;
+    // Scope is derived at scan time from `<claude_config_dir>/skills/<name>`
+    // existence (see `mcps.rs` / `skills.rs` `derive_*_scope`), so we no
+    // longer mirror it into `SkillMetadata.scope`. The metadata field
+    // remains in `data.json` for backward compat but is not read.
     Ok(())
 }
 
@@ -939,30 +919,10 @@ pub fn update_mcp_scope(
     // Write back ~/.claude.json
     write_claude_json(&claude_json)?;
 
-    // Update scope field in metadata
-    update_mcp_scope_in_metadata(&mcp_id, &scope)?;
-
-    Ok(())
-}
-
-/// Update MCP scope in metadata file
-///
-/// **DATA_MUTEX**: Acquired at the outermost scope (T1f closure of the
-/// pre-existing gap surfaced by the `read_app_data|write_app_data` grep
-/// re-enumeration). Concurrent `update_mcp_scope` + `update_mcp_metadata`
-/// + `reorder_categories` are now serialised; lost-update window eliminated.
-fn update_mcp_scope_in_metadata(mcp_id: &str, scope: &str) -> Result<(), String> {
-    let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
-    let mut app_data = read_app_data()?;
-
-    let metadata = app_data
-        .mcp_metadata
-        .entry(mcp_id.to_string())
-        .or_insert_with(McpMetadata::default);
-
-    metadata.scope = scope.to_string();
-
-    write_app_data(app_data)?;
+    // Scope is derived at scan time from `~/.claude.json::mcpServers`
+    // membership (see `mcps.rs::derive_mcp_scope`), so we no longer mirror
+    // it into `McpMetadata.scope`. The metadata field remains in
+    // `data.json` for backward compat but is not read.
     Ok(())
 }
 
@@ -1494,16 +1454,32 @@ pub async fn launch_claude_for_folder(
 
     match terminal_app.as_str() {
         "iTerm" => {
-            // Use iTerm2's native AppleScript command execution (no keystroke)
-            // Escape for AppleScript string
-            let escaped_path = folder_path_str.replace('\\', "\\\\").replace('"', "\\\"");
-            let escaped_cmd = claude_command.replace('\\', "\\\\").replace('"', "\\\"");
+            // Use iTerm2's native AppleScript command execution (no keystroke).
+            //
+            // Audit 2026-05-15 (R4 D1 / master P0-4): the previous escape only
+            // replaced `\\` and `"` for AppleScript literal safety, but the
+            // **inner** string was still interpreted by zsh. Double-quoted shell
+            // strings still expand `$(...)`, backticks, and `${VAR}` — so a
+            // folder named `Demo $(say hacked)` would execute arbitrary code.
+            //
+            // Fix: build the shell command via `folder_launch_command`, which
+            // single-quotes the folder path through `shell_quote` (POSIX
+            // `'...'` does not expand metachars). The resulting shell string
+            // is then wrapped once with `applescript_quote` for the outer
+            // AppleScript literal. `claude_command` flows through unmodified
+            // because it is user-configured Settings input that legitimately
+            // contains spaces (e.g. `claude --model opus`); shell-quoting it
+            // wholesale would collapse it into a single token. Same trust
+            // boundary already used by the Ghostty path
+            // (`build_ghostty_keyboard_automation_applescript`, line ~1310).
+            let inner = folder_launch_command(&folder_path_str, &claude_command);
+            let quoted = applescript_quote(&inner);
             let applescript = format!(
                 r#"tell application "iTerm2"
     activate
-    create window with default profile command "cd \"{}\" && {}"
+    create window with default profile command {}
 end tell"#,
-                escaped_path, escaped_cmd
+                quoted
             );
 
             std::process::Command::new("osascript")
@@ -1643,15 +1619,20 @@ windows:
             }
         }
         _ => {
-            // Default to Terminal.app using native 'do script' command (no keystroke)
-            let escaped_path = folder_path_str.replace('\\', "\\\\").replace('"', "\\\"");
-            let escaped_cmd = claude_command.replace('\\', "\\\\").replace('"', "\\\"");
+            // Default to Terminal.app using native 'do script' command (no keystroke).
+            //
+            // Audit 2026-05-15 (R4 D1 / master P0-4): same shell-injection issue
+            // as the iTerm branch above — the old AppleScript-only escape did
+            // not protect against zsh `$()` / backtick / `${VAR}` expansion of
+            // the inner command. See the iTerm branch for the full rationale.
+            let inner = folder_launch_command(&folder_path_str, &claude_command);
+            let quoted = applescript_quote(&inner);
             let applescript = format!(
                 r#"tell application "Terminal"
     activate
-    do script "cd \"{}\" && {}"
+    do script {}
 end tell"#,
-                escaped_path, escaped_cmd
+                quoted
             );
 
             std::process::Command::new("osascript")

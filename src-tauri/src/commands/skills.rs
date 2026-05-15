@@ -5,9 +5,15 @@ use std::fs;
 
 /// Scan skills directory and return list of skills
 ///
-/// Supports both regular directories and symlinked skill directories
+/// Supports both regular directories and symlinked skill directories.
+///
+/// `claude_config_dir` (e.g. `~/.claude`) is used to derive each Skill's
+/// `scope` field by checking whether `<claude_config_dir>/skills/<name>`
+/// exists — see `derive_skill_scope`. The field is settings-driven (not
+/// hardcoded) so a user who customises `claudeConfigDir` in Settings still
+/// gets correct scope reporting.
 #[tauri::command]
-pub fn scan_skills(source_dir: String) -> Result<Vec<Skill>, String> {
+pub fn scan_skills(source_dir: String, claude_config_dir: String) -> Result<Vec<Skill>, String> {
     let path = expand_path(&source_dir);
 
     if !path.exists() {
@@ -16,6 +22,7 @@ pub fn scan_skills(source_dir: String) -> Result<Vec<Skill>, String> {
 
     let mut skills = Vec::new();
     let metadata_map = load_skill_metadata();
+    let claude_skills_dir = expand_path(&claude_config_dir).join("skills");
 
     // Use fs::read_dir to properly handle symlinks and avoid duplicates
     // WalkDir with max_depth(2) would process both the directory and SKILL.md file,
@@ -40,7 +47,7 @@ pub fn scan_skills(source_dir: String) -> Result<Vec<Skill>, String> {
             // Check for SKILL.md in the directory
             let skill_md_path = entry_path.join("SKILL.md");
             if skill_md_path.exists() {
-                if let Ok(skill) = parse_skill_file(&skill_md_path, &metadata_map) {
+                if let Ok(skill) = parse_skill_file(&skill_md_path, &metadata_map, &claude_skills_dir) {
                     skills.push(skill);
                 }
             }
@@ -52,9 +59,26 @@ pub fn scan_skills(source_dir: String) -> Result<Vec<Skill>, String> {
 
 /// Get a single skill by ID
 #[tauri::command]
-pub fn get_skill(source_dir: String, skill_id: String) -> Result<Option<Skill>, String> {
-    let skills = scan_skills(source_dir)?;
+pub fn get_skill(source_dir: String, claude_config_dir: String, skill_id: String) -> Result<Option<Skill>, String> {
+    let skills = scan_skills(source_dir, claude_config_dir)?;
     Ok(skills.into_iter().find(|s| s.id == skill_id))
+}
+
+/// Derive a Skill's scope from filesystem state.
+///
+/// Returns "global" when `<claude_skills_dir>/<skill_name>` is present
+/// (symlink, real dir, or even a broken symlink — `symlink_metadata` does
+/// not follow). Claude Code reads `~/.claude/skills/` directly, so its
+/// view of "global" matches this check. Returns "project" otherwise —
+/// meaning the Skill is only inside `~/.ensemble/` and deployment relies
+/// on Scene → Project sync.
+fn derive_skill_scope(skill_name: &std::ffi::OsStr, claude_skills_dir: &std::path::Path) -> String {
+    let candidate = claude_skills_dir.join(skill_name);
+    if candidate.symlink_metadata().is_ok() {
+        "global".to_string()
+    } else {
+        "project".to_string()
+    }
 }
 
 /// Update skill metadata (category, tags, enabled status, icon, category_id).
@@ -171,6 +195,7 @@ fn is_plugin_enabled(plugin_id: &str) -> bool {
 fn parse_skill_file(
     skill_md_path: &std::path::Path,
     metadata_map: &std::collections::HashMap<String, SkillMetadata>,
+    claude_skills_dir: &std::path::Path,
 ) -> Result<Skill, String> {
     let content = fs::read_to_string(skill_md_path).map_err(|e| e.to_string())?;
     let (frontmatter, instructions) = parse_skill_md(&content);
@@ -254,11 +279,28 @@ fn parse_skill_file(
         tags: metadata.map(|m| m.tags.clone()).unwrap_or_default(),
         enabled: metadata.map(|m| m.enabled).unwrap_or(true),
         source_path: skill_dir.to_string_lossy().to_string(),
-        scope: "user".to_string(),
+        // Scope is DERIVED from the filesystem at scan time:
+        // "global" when `<claude_config_dir>/skills/<name>` exists,
+        // "project" otherwise. `SkillMetadata.scope` still exists in
+        // `data.json` for backward compat but is no longer read — the
+        // filesystem is source of truth. See V1 fix plan
+        // `/Users/bo/.claude/plans/hazy-percolating-forest.md`.
+        scope: derive_skill_scope(
+            skill_dir.file_name().unwrap_or(std::ffi::OsStr::new("")),
+            claude_skills_dir,
+        ),
         invocation,
         allowed_tools: frontmatter.allowed_tools,
         instructions,
-        created_at: chrono::Utc::now().to_rfc3339(),
+        // `createdAt` drives the Skills page "Recently added" sort. We prefer
+        // the OS directory creation time (the moment the skill landed on disk
+        // — either via marketplace install, local import, or symlink target),
+        // so the order tracks real install history instead of getting reset to
+        // `now()` on every `scan_skills` call. Fallback is `now()` only when
+        // the platform doesn't expose `created()` (rare on macOS APFS).
+        created_at: installed_at
+            .clone()
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
         last_used: metadata.and_then(|m| m.last_used.clone()),
         usage_count: metadata.map(|m| m.usage_count).unwrap_or(0),
         icon: metadata.and_then(|m| m.icon.clone()),

@@ -114,8 +114,23 @@ use tauri::{AppHandle, Emitter};
 // Constants
 // ============================================================================
 
-/// HTTP client timeout for upstream catalog requests.
+/// HTTP client timeout for upstream catalog requests (skills.sh JSON API,
+/// raw.githubusercontent.com README fetches, etc.). These are small responses
+/// and a hung upstream should not block the IPC; 15 s is generous.
 const HTTP_TIMEOUT_SECS: u64 = 15;
+
+/// Per-request timeout for codeload tarball downloads. Tarballs are several
+/// MB even for "small" curated repos (microsoft/azure-skills is ~3.3 MB,
+/// github/awesome-copilot is much larger) and codeload's transfer rate from
+/// consumer connections has been observed to push past the 15 s global
+/// budget — verified 2026-05-15 by the broad-sample probe test, where
+/// awesome-copilot and pbakaus/impeccable both hit `bytes()` at exactly
+/// 15001-15013 ms surfaced as `Kind::Decode`. 120 s comfortably accommodates
+/// multi-MB downloads on a 1-2 Mbps link without making a stalled connection
+/// hang the install indefinitely. Applied per-request via `.timeout(...)`
+/// rather than a second global client to keep the JSON-API path on its
+/// shorter budget.
+const CODELOAD_TIMEOUT_SECS: u64 = 120;
 
 /// In-memory README cache TTL (5 minutes). Skill detail panels can fan out
 /// repeated `get_marketplace_skill_readme` calls when the user clicks
@@ -508,7 +523,12 @@ fn mcp_snapshot_path_for(mcp_path: &std::path::Path) -> std::path::PathBuf {
 /// has already been renamed back from trash to the live location). Returns
 /// `Some(metadata)` on success; `None` when the file is missing or cannot
 /// be parsed (the latter logged but not surfaced — best effort).
-fn consume_skill_metadata_snapshot(live_dir: &std::path::Path) -> Option<SkillMetadata> {
+///
+/// `pub(crate)` so the trash UI restore path (`trash.rs::restore_skill`)
+/// can recover the same snapshot the marketplace finalize path already
+/// consumes — A3 / R2 F6 / R5 F5. Without this, UI-triggered restore
+/// silently drops the user's category / tags / icon / usage_count.
+pub(crate) fn consume_skill_metadata_snapshot(live_dir: &std::path::Path) -> Option<SkillMetadata> {
     let snapshot_path = live_dir.join(SKILL_METADATA_SNAPSHOT_FILE);
     if !snapshot_path.exists() {
         return None;
@@ -534,7 +554,11 @@ fn consume_skill_metadata_snapshot(live_dir: &std::path::Path) -> Option<SkillMe
 
 /// Read and remove an MCP metadata snapshot whose sibling lives alongside
 /// `live_path` (which has already been renamed back from trash to live).
-fn consume_mcp_metadata_snapshot(live_path: &std::path::Path) -> Option<McpMetadata> {
+///
+/// `pub(crate)` so `trash.rs::restore_mcp` can re-use the marketplace
+/// finalize path's recovery logic — see the `consume_skill_metadata_snapshot`
+/// docstring for the broader rationale.
+pub(crate) fn consume_mcp_metadata_snapshot(live_path: &std::path::Path) -> Option<McpMetadata> {
     let snapshot_path = mcp_snapshot_path_for(live_path);
     if !snapshot_path.exists() {
         return None;
@@ -1311,16 +1335,14 @@ fn derive_stdio_command(
             ("docker".to_string(), args)
         }
         _ => {
-            // Unknown registry type — use the identifier as the command
-            // and the extra args verbatim. Better than `node` + empty
-            // args (the V0 fallback) since at least the binary name maps
-            // to something the user can find / fix.
-            let command = if identifier.is_empty() {
-                "node".to_string()
-            } else {
-                identifier.to_string()
-            };
-            (command, extra_args.to_vec())
+            // Audit 2026-05-15 (R4 F2 / master P0-6): unknown registry types
+            // are filtered out upstream in `envelope_to_item` before they
+            // reach this function. If this arm is ever hit (e.g. future
+            // direct callers), return a safe sentinel rather than spawning
+            // an upstream-controlled `identifier` as a binary. `node` with
+            // empty args yields a clear "not configured" error in
+            // `fetch_mcp_tools` instead of executing arbitrary code.
+            (String::from("node"), Vec::new())
         }
     }
 }
@@ -1384,6 +1406,17 @@ fn envelope_to_item(
             .as_deref()
             .unwrap_or("")
             .to_ascii_lowercase();
+        // Audit 2026-05-15 (R4 F2 / master P0-6): reject envelopes carrying an
+        // unknown `registryType` at ingestion. Without this gate,
+        // `derive_stdio_command`'s `_` fallback would treat the upstream-
+        // controlled `identifier` (e.g. `"/usr/bin/curl"`) as a binary path
+        // and `fetch_mcp_tools` would spawn it. The three known ecosystems
+        // (npm / pypi / oci) are the entire allowlist; extending it requires
+        // a matching arm in `derive_stdio_command`, so updating one without
+        // the other is statically prevented by this check.
+        if !matches!(registry_type.as_str(), "npm" | "pypi" | "oci") {
+            return None;
+        }
         let identifier = pkg.identifier.clone().unwrap_or_default();
         let extra_args: Vec<String> = pkg
             .package_arguments
@@ -2475,6 +2508,43 @@ pub async fn refresh_marketplace_cache(app: AppHandle, source: String) -> Result
 // IPC: install_marketplace_skill (spec §3.3)
 // ============================================================================
 
+/// Render a `reqwest::Error` as `kind=<X> "<display>" | source: ... | source: ...`.
+/// reqwest's own `Display` writes only the kind label (`"error decoding response
+/// body"` / `"error sending request"` / etc.) and never walks `source()`, so the
+/// real cause (timeout, hyper IncompleteMessage, gzip CRC mismatch, etc.) is
+/// invisible to a user-facing error. Verified in
+/// `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/reqwest-0.12.28/src/error.rs:227-273`
+/// (Display impl matches on `Kind::*` and writes a fixed string per kind).
+fn describe_reqwest_error(err: &reqwest::Error) -> String {
+    let kind = if err.is_timeout() {
+        "Timeout"
+    } else if err.is_connect() {
+        "Connect"
+    } else if err.is_decode() {
+        "Decode"
+    } else if err.is_body() {
+        "Body"
+    } else if err.is_status() {
+        "Status"
+    } else if err.is_redirect() {
+        "Redirect"
+    } else if err.is_request() {
+        "Request"
+    } else if err.is_builder() {
+        "Builder"
+    } else {
+        "Other"
+    };
+    let mut out = format!("kind={} \"{}\"", kind, err);
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(err);
+    while let Some(s) = cur {
+        out.push_str(" | source: ");
+        out.push_str(&s.to_string());
+        cur = s.source();
+    }
+    out
+}
+
 /// Download a skill from a public GitHub repo via `codeload.github.com`'s
 /// tarball endpoint, extract the requested sub-tree into `dest_dir`.
 ///
@@ -2513,19 +2583,45 @@ async fn install_skill_via_codeload(
     dest_dir: &std::path::Path,
 ) -> Result<String, String> {
     let url = format!("https://codeload.github.com/{}/{}/tar.gz/HEAD", owner, repo);
-    let resp = marketplace_http()
+    let started = std::time::Instant::now();
+    let mut resp = marketplace_http()
         .get(&url)
+        // Per-request override of the 15 s global timeout. See
+        // CODELOAD_TIMEOUT_SECS for rationale.
+        .timeout(Duration::from_secs(CODELOAD_TIMEOUT_SECS))
         .send()
         .await
-        .map_err(|e| format!("codeload network error: {}", e))?;
+        .map_err(|e| {
+            format!(
+                "codeload network error after {} ms: {}",
+                started.elapsed().as_millis(),
+                describe_reqwest_error(&e),
+            )
+        })?;
     if !resp.status().is_success() {
         return Err(format!("codeload HTTP {}", resp.status()));
     }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("codeload read error: {}", e))?
-        .to_vec();
+
+    // Stream chunk-by-chunk so a partial download can report bytes-so-far
+    // when the tail of the body errors out. `bytes()` would buffer the
+    // entire body in one call and any transport hiccup surfaces as a bare
+    // `Kind::Decode` ("error decoding response body") with no indication
+    // of how much was actually received — see `03_findings.md`.
+    let mut bytes: Vec<u8> = Vec::with_capacity(4 * 1024 * 1024);
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => bytes.extend_from_slice(&chunk),
+            Ok(None) => break,
+            Err(e) => {
+                return Err(format!(
+                    "codeload read error after {} ms, {} bytes downloaded: {}",
+                    started.elapsed().as_millis(),
+                    bytes.len(),
+                    describe_reqwest_error(&e),
+                ));
+            }
+        }
+    }
 
     // codeload's `/HEAD` ref produces a top-level `<repo>-HEAD/` prefix
     // (verified 2026-05-11 across anthropics/skills, microsoft/azure-skills,
@@ -2813,8 +2909,8 @@ pub async fn install_marketplace_skill(
     }
 
     // -- Download path (None and Replace both reach here once the path is clear)
-    let (owner, repo, skill_path) = derive_install_triple(&item);
-    if owner.is_empty() || repo.is_empty() {
+    let (owner_raw, repo_raw, skill_path) = derive_install_triple(&item);
+    if owner_raw.is_empty() || repo_raw.is_empty() {
         return Ok(InstallOutcome::Failed {
             reason: format!(
                 "Cannot derive owner/repo from item.source={:?}, item.owner={:?}, item.repo={:?}",
@@ -2822,6 +2918,30 @@ pub async fn install_marketplace_skill(
             ),
         });
     }
+    // Audit 2026-05-15 (R4 F1 / master P0-5): sanitize the owner / repo
+    // segments before any URL construction. Without this, an upstream catalog
+    // entry containing `..` or other URL metacharacters would survive RFC 3986
+    // §5.2.4 dot-segment normalization inside `reqwest`/`url` and silently
+    // redirect the codeload tarball fetch to a different repository. Three
+    // sibling callsites in this file already sanitize (`get_marketplace_repo_stars`
+    // line ~1893, `fetch_skill_summary_github` line ~2005,
+    // `fetch_mcp_readme_github` line ~2100) — this was the last hole.
+    let owner = match sanitize_resource_name(&owner_raw) {
+        Ok(o) => o,
+        Err(e) => {
+            return Ok(InstallOutcome::Failed {
+                reason: format!("Invalid owner segment: {}", e),
+            });
+        }
+    };
+    let repo = match sanitize_resource_name(&repo_raw) {
+        Ok(r) => r,
+        Err(e) => {
+            return Ok(InstallOutcome::Failed {
+                reason: format!("Invalid repo segment: {}", e),
+            });
+        }
+    };
     // skills.sh's `skillId` is the skill's short name, not its full path in
     // the repo. Most curated skills.sh repos house their skills under a
     // top-level `skills/` directory (anthropics/skills, vercel-labs/skills,
@@ -4279,5 +4399,198 @@ mod tests {
             "Live codeload install (plugin-nested): extracted from '{}'",
             subpath
         );
+    }
+
+    /// Regression coverage for the 2026-05-14 user-reported failure:
+    /// `azure-prepare` (in `microsoft/azure-skills`) failed with
+    /// `codeload read error: error decoding response body` while sibling
+    /// skills in the same repo (e.g. `entra-app-registration`) succeeded.
+    /// Both live at `skills/<id>/SKILL.md`. Explicit per-skill coverage
+    /// so any future regression on the bug-specific case is caught
+    /// without depending on the broad sample test.
+    #[test]
+    #[ignore = "requires network access to codeload.github.com"]
+    fn live_codeload_install_azure_prepare() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dest = tmp.path().join("azure-prepare");
+        let candidates = vec![
+            "skills/azure-prepare".to_string(),
+            "azure-prepare".to_string(),
+        ];
+        let subpath = rt
+            .block_on(install_skill_via_codeload(
+                "microsoft",
+                "azure-skills",
+                &candidates,
+                "azure-prepare",
+                &dest,
+            ))
+            .expect("codeload install should succeed for microsoft/azure-skills:azure-prepare");
+        assert_eq!(subpath, "skills/azure-prepare");
+        assert!(
+            dest.join("SKILL.md").exists(),
+            "SKILL.md missing under {:?}",
+            dest
+        );
+    }
+
+    /// Broad live sample across diverse skills.sh repos / layouts /
+    /// tarball sizes. Records timing + success per entry and emits a
+    /// Markdown table so `03_findings.md` / `04_validation.md` can paste
+    /// the output verbatim. Marked `#[ignore]` — run manually:
+    ///
+    ///   cargo test --lib -- --ignored live_codeload_broad_install_sample --nocapture
+    ///
+    /// Curated sample (32 entries) — fixed list rather than scraped from
+    /// the live API so the test is reproducible and the list itself can
+    /// be reviewed. Selection rationale documented in
+    /// `.dev/codeload-install-fix/02_subagent_brief.md`.
+    #[test]
+    #[ignore = "requires network access to codeload.github.com (~2-3 min total)"]
+    fn live_codeload_broad_install_sample() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+
+        // (owner, repo, skill_id) — `skill_id` is the bare short name as
+        // it appears in skills.sh's `/api/skills/...` response. The test
+        // builds the same candidate list `install_marketplace_skill`
+        // builds (`skills/<id>` then `<id>`).
+        let sample: Vec<(&str, &str, &str)> = vec![
+            // microsoft/azure-skills (canonical layout)
+            ("microsoft", "azure-skills", "azure-prepare"),
+            ("microsoft", "azure-skills", "entra-app-registration"),
+            ("microsoft", "azure-skills", "azure-ai"),
+            ("microsoft", "azure-skills", "azure-deploy"),
+            ("microsoft", "azure-skills", "azure-storage"),
+            ("microsoft", "azure-skills", "azure-validate"),
+            ("microsoft", "azure-skills", "azure-cost"),
+            ("microsoft", "azure-skills", "azure-observability"),
+            ("microsoft", "azure-skills", "azure-kusto"),
+            // microsoft/azure-skills (plugin-nested layout — fallback path)
+            ("microsoft", "azure-skills", "microsoft-foundry"),
+            // anthropics/skills (canonical)
+            ("anthropics", "skills", "frontend-design"),
+            ("anthropics", "skills", "webapp-testing"),
+            ("anthropics", "skills", "skill-creator"),
+            // vercel-labs/skills + agent-skills (canonical)
+            ("vercel-labs", "skills", "find-skills"),
+            ("vercel-labs", "agent-skills", "vercel-react-best-practices"),
+            ("vercel-labs", "agent-skills", "web-design-guidelines"),
+            // obra/superpowers (canonical, large repo)
+            ("obra", "superpowers", "brainstorming"),
+            // wshobson/agents (canonical)
+            ("wshobson", "agents", "python-performance-optimization"),
+            ("wshobson", "agents", "python-testing-patterns"),
+            ("wshobson", "agents", "python-design-patterns"),
+            // github/awesome-copilot (canonical, very large repo)
+            ("github", "awesome-copilot", "python-mcp-server-generator"),
+            ("github", "awesome-copilot", "dataverse-python-quickstart"),
+            // agentspace-so/runcomfy-agent-skills (canonical)
+            ("agentspace-so", "runcomfy-agent-skills", "image-edit"),
+            ("agentspace-so", "runcomfy-agent-skills", "seedance-v2"),
+            ("agentspace-so", "runcomfy-agent-skills", "video-inpainting"),
+            // mattpocock/skills (canonical)
+            ("mattpocock", "skills", "to-prd"),
+            // pbakaus/impeccable (canonical, small repo)
+            ("pbakaus", "impeccable", "critique"),
+            ("pbakaus", "impeccable", "quieter"),
+            ("pbakaus", "impeccable", "normalize"),
+            // supabase/agent-skills (canonical)
+            ("supabase", "agent-skills", "supabase-postgres-best-practices"),
+            // xixu-me/skills (canonical, individual user repo)
+            ("xixu-me", "skills", "openclaw-secure-linux-cloud"),
+            ("xixu-me", "skills", "opensource-guide-coach"),
+        ];
+
+        struct Row {
+            owner: String,
+            repo: String,
+            skill_id: String,
+            outcome: String,
+            elapsed_ms: u128,
+            extracted_files: Option<usize>,
+        }
+
+        let mut rows: Vec<Row> = Vec::with_capacity(sample.len());
+        for (owner, repo, skill_id) in sample {
+            let tmp = tempfile::tempdir().expect("create tempdir");
+            let dest = tmp.path().join(skill_id);
+            let candidates = vec![
+                format!("skills/{}", skill_id),
+                skill_id.to_string(),
+            ];
+            let started = std::time::Instant::now();
+            let result = rt.block_on(install_skill_via_codeload(
+                owner, repo, &candidates, skill_id, &dest,
+            ));
+            let elapsed_ms = started.elapsed().as_millis();
+
+            let (outcome, extracted_files) = match result {
+                Ok(subpath) => {
+                    // Count files actually written so the report can spot
+                    // partial extractions (success-but-empty would be a
+                    // separate bug class).
+                    let count = walkdir::WalkDir::new(&dest)
+                        .into_iter()
+                        .filter_map(|e| e.ok())
+                        .filter(|e| e.file_type().is_file())
+                        .count();
+                    (format!("OK `{}`", subpath), Some(count))
+                }
+                Err(e) => (format!("FAIL `{}`", e), None),
+            };
+
+            rows.push(Row {
+                owner: owner.to_string(),
+                repo: repo.to_string(),
+                skill_id: skill_id.to_string(),
+                outcome,
+                elapsed_ms,
+                extracted_files,
+            });
+        }
+
+        eprintln!();
+        eprintln!("| owner | repo | skill_id | elapsed_ms | files | outcome |");
+        eprintln!("|---|---|---|---:|---:|---|");
+        let mut ok = 0usize;
+        let mut total_ms = 0u128;
+        for r in &rows {
+            eprintln!(
+                "| {} | {} | {} | {} | {} | {} |",
+                r.owner,
+                r.repo,
+                r.skill_id,
+                r.elapsed_ms,
+                r.extracted_files
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                r.outcome,
+            );
+            if r.outcome.starts_with("OK") {
+                ok += 1;
+            }
+            total_ms += r.elapsed_ms;
+        }
+        eprintln!();
+        eprintln!(
+            "Summary: {}/{} succeeded; total {} ms; mean {} ms/skill",
+            ok,
+            rows.len(),
+            total_ms,
+            total_ms / rows.len() as u128
+        );
+
+        // The test itself does NOT fail when individual skills fail —
+        // the broad probe's purpose is to record the failure pattern,
+        // not gate CI. The two explicit per-skill regression tests
+        // (azure-prepare + entra-app-registration) cover the
+        // ground-truth contract.
     }
 }

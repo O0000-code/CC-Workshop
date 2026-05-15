@@ -4,7 +4,9 @@ use crate::types::{
 };
 use crate::utils::{ensure_dir, get_app_data_dir, get_data_file_path, get_settings_file_path};
 use std::fs;
+use std::io::Write;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 /// Global mutex protecting all read-modify-write operations on `data.json`.
@@ -238,32 +240,129 @@ pub fn validate_hierarchy(
     Ok(())
 }
 
-/// Read application data
+/// Read application data.
+///
+/// On a clean install (`data.json` missing) returns `AppData::default()`.
+/// On I/O error reading the file (permission denied, hardware fault) the
+/// error propagates — recovering from a backup we likely also cannot read
+/// would just mask the underlying issue.
+///
+/// On **parse failure** (truncated / corrupt JSON — typically caused by an
+/// interrupted previous write, hand-editing accidents, or partial file
+/// sync), `read_app_data` performs a one-step recovery:
+///   1. Try `data.json.bak` (the 1-slot rolling backup written by
+///      `write_app_data`). If it parses, return it.
+///   2. Otherwise, rename the corrupt `data.json` to
+///      `data.json.corrupt.<unix_ts>` so the next launch does not loop on
+///      the same parse failure and so the user (or a support session) can
+///      inspect the bytes. Return `AppData::default()`.
+///
+/// This recovery contract is what makes the app survive `F14`+`F15`
+/// (R5 / R6): a power loss or disk-full event during write can no longer
+/// brick the app into a permanent "every IPC fails" state.
 #[tauri::command]
 pub fn read_app_data() -> Result<AppData, String> {
     let data_path = get_data_file_path();
 
-    if data_path.exists() {
-        let content = fs::read_to_string(&data_path).map_err(|e| e.to_string())?;
-        let data: AppData = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-        Ok(data)
-    } else {
-        Ok(AppData::default())
+    if !data_path.exists() {
+        return Ok(AppData::default());
+    }
+
+    let content = fs::read_to_string(&data_path).map_err(|e| e.to_string())?;
+    match serde_json::from_str::<AppData>(&content) {
+        Ok(data) => Ok(data),
+        Err(parse_err) => {
+            // V2 (bug-audit B-12): surface the recovery path to stderr so
+            // a future support investigation can find this in Console.app.
+            // Silent fallback to default would otherwise look like "user
+            // lost their data for no reason".
+            eprintln!(
+                "[read_app_data] data.json parse failed ({}); attempting .bak recovery",
+                parse_err
+            );
+
+            // Step 1: try the 1-slot rolling backup.
+            let bak_path = data_path.with_extension("json.bak");
+            if let Ok(bak_content) = fs::read_to_string(&bak_path) {
+                if let Ok(bak_data) = serde_json::from_str::<AppData>(&bak_content) {
+                    eprintln!("[read_app_data] recovered from data.json.bak");
+                    return Ok(bak_data);
+                }
+            }
+
+            // Step 2: quarantine the corrupt main file so the next launch
+            // does not re-enter the same recovery loop. Best-effort: any
+            // failure here still falls through to returning a default
+            // AppData — we never want to leave the user stuck.
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs().to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+            let stamped =
+                data_path.with_file_name(format!("data.json.corrupt.{ts}"));
+            let _ = fs::rename(&data_path, &stamped);
+            eprintln!(
+                "[read_app_data] .bak also unusable; quarantined corrupt file to {:?}, returning empty AppData",
+                stamped
+            );
+
+            Ok(AppData::default())
+        }
     }
 }
 
-/// Write application data
+/// Write application data atomically, preserving a single rolling backup.
+///
+/// Sequence:
+///   1. Serialize `data` to JSON. If serialization fails, return Err
+///      immediately — no disk side-effect has occurred.
+///   2. Ensure parent directory exists.
+///   3. **Best-effort backup**: copy current `data.json` → `data.json.bak`.
+///      Failures (disk full, etc.) are intentionally swallowed; a backup
+///      failure must not block the primary write that the user requested.
+///   4. **Atomic primary write**:
+///        - Write the full JSON to `data.json.tmp` in the same directory.
+///        - `sync_all()` to force fsync — POSIX `rename` is atomic on the
+///          directory entry, but only an fsync guarantees the bytes are on
+///          stable storage before the rename swap.
+///        - `fs::rename("data.json.tmp", "data.json")` — atomic on the
+///          same filesystem (which is always the case here because the
+///          tmp file is in the same directory).
+///
+/// Signature (`fn(AppData) -> Result<(), String>`) is unchanged from prior
+/// revisions — all ~70 callsites across `data.rs`, `skills.rs`, `mcps.rs`,
+/// `rules.rs`, `claude_md.rs`, `marketplace.rs`, `import.rs`, `trash.rs`
+/// continue to work without modification.
 #[tauri::command]
 pub fn write_app_data(data: AppData) -> Result<(), String> {
     let data_path = get_data_file_path();
 
-    // Ensure directory exists
+    // (1) Serialize first — if this fails, no disk side-effect happens.
+    let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
+
+    // (2) Ensure directory exists.
     if let Some(parent) = data_path.parent() {
         ensure_dir(parent).map_err(|e| e.to_string())?;
     }
 
-    let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
-    fs::write(&data_path, json).map_err(|e| e.to_string())?;
+    // (3) Best-effort backup of the current `data.json`. Errors are
+    // intentionally swallowed: backup failure must not block the primary
+    // write. If `data.json` does not yet exist (first write), there's
+    // nothing to back up — `fs::copy` returns Err which we ignore.
+    let bak_path = data_path.with_extension("json.bak");
+    let _ = fs::copy(&data_path, &bak_path);
+
+    // (4) Atomic primary write: tmp + fsync + rename. The tmp path sits in
+    // the same directory as the target so POSIX rename atomicity holds.
+    let tmp_path = data_path.with_extension("json.tmp");
+    {
+        let mut file = fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
+        file.write_all(json.as_bytes())
+            .map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+    } // file dropped/closed here so rename can proceed on Windows-like fs
+
+    fs::rename(&tmp_path, &data_path).map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -610,6 +709,18 @@ pub fn delete_category(id: String) -> Result<(), String> {
             file.category_id = None;
         }
     }
+    // Cascade Rules in the same pattern as claude_md_files. The Rule entity
+    // was added after the original cascade block was written; without this
+    // loop a deleted-category id remained as a dangling reference on
+    // `Rule.category_id`, leaving the rule in a "ghost" state — invisible
+    // under every sidebar Category page (the referenced category no longer
+    // exists) and also not surfaced under Uncategorized.
+    // Bug Audit 2026-05-15 finding A6 (R1::A4 / R3::F2).
+    for rule in data.rules.iter_mut() {
+        if rule.category_id.as_deref() == Some(&id) {
+            rule.category_id = None;
+        }
+    }
 
     write_app_data(data)?;
     Ok(())
@@ -881,6 +992,14 @@ pub fn delete_tag(id: String) -> Result<(), String> {
     for file in data.claude_md_files.iter_mut() {
         file.tag_ids.retain(|t| t != &id);
     }
+    // Cascade Rules.tag_ids — same rationale as the category cascade above.
+    // Without this, a deleted tag id persists in `Rule.tag_ids`, the rule's
+    // tag pill links to a no-longer-existing Tag, and a later `add_tag` with
+    // the same name would re-attach the orphan reference silently.
+    // Bug Audit 2026-05-15 finding A6 (R1::A4 / R3::F2).
+    for rule in data.rules.iter_mut() {
+        rule.tag_ids.retain(|t| t != &id);
+    }
 
     write_app_data(data)?;
     Ok(())
@@ -923,6 +1042,12 @@ pub fn reset_auto_classify_data() -> Result<(), String> {
     for file in data.claude_md_files.iter_mut() {
         file.category_id = None;
         file.tag_ids.clear();
+    }
+    // V2 (bug-audit A6-2): Rules are first-class entities; reset must
+    // cascade to them too, mirroring delete_category / delete_tag cascade.
+    for rule in data.rules.iter_mut() {
+        rule.category_id = None;
+        rule.tag_ids.clear();
     }
 
     write_app_data(data)?;

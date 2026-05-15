@@ -29,7 +29,11 @@ pub struct Skill {
     pub tags: Vec<String>,
     pub enabled: bool,
     pub source_path: String,
-    pub scope: String, // "user" | "project"
+    /// "global" | "project". DERIVED at scan time from
+    /// `<claude_config_dir>/skills/<name>` existence (see
+    /// `commands::skills::derive_skill_scope`). Not persisted —
+    /// `SkillMetadata.scope` exists for backward compat only.
+    pub scope: String,
     pub invocation: Option<String>,
     pub allowed_tools: Option<Vec<String>>,
     pub instructions: String,
@@ -82,7 +86,11 @@ pub struct McpServer {
     pub tags: Vec<String>,
     pub enabled: bool,
     pub source_path: String,
-    pub scope: String, // "global" | "project"
+    /// "global" | "project". DERIVED at scan time from
+    /// `~/.claude.json::mcpServers` membership (see
+    /// `commands::mcps::derive_mcp_scope`). Not persisted —
+    /// `McpMetadata.scope` exists for backward compat only.
+    pub scope: String,
     pub command: String,
     pub args: Vec<String>,
     pub env: Option<HashMap<String, String>>,
@@ -292,7 +300,12 @@ pub struct SkillMetadata {
     pub usage_count: u32,
     pub last_used: Option<String>,
     pub icon: Option<String>,
-    pub scope: String, // "global" | "project"
+    /// DEPRECATED — scope is derived from filesystem at scan time
+    /// (`<claude_config_dir>/skills/<name>` existence). Old values in
+    /// `data.json` are still deserialised for backward compat but are
+    /// never read by `parse_skill_file`. The field is retained so existing
+    /// `data.json` files don't fail to load.
+    pub scope: String,
     /// Persisted install source. `None` for legacy entries (which fall back to
     /// runtime symlink detection in `scan_skills`); `Some("local"|"plugin"|"marketplace")`
     /// for entries written by the new IPCs that capture provenance.
@@ -320,7 +333,11 @@ pub struct McpMetadata {
     pub enabled: bool,
     pub usage_count: u32,
     pub last_used: Option<String>,
-    pub scope: String, // "global" | "project"
+    /// DEPRECATED — scope is derived from `~/.claude.json::mcpServers`
+    /// membership at scan time. Old values in `data.json` are still
+    /// deserialised for backward compat but are never read by
+    /// `parse_mcp_file`. Retained so existing `data.json` loads.
+    pub scope: String,
     /// Persisted install source mirror of [`SkillMetadata::install_source`]. The
     /// existing `McpConfigFile.install_source` JSON field already carries this
     /// for MCPs at the file level; mirroring it here keeps the SSoT helper code
@@ -1301,6 +1318,16 @@ pub struct TrashedItems {
     pub claude_md_files: Vec<TrashedClaudeMd>,
     #[serde(default)]
     pub rules: Vec<TrashedRule>,
+    /// V2.2 / A5 — Scene records moved into trash by `delete_scene`. Lives in
+    /// `AppData::trashed_scenes`; surfaced here so the Trash Recovery UI can
+    /// display + restore deleted Scenes. `#[serde(default)]` keeps older
+    /// payloads (or clients) deserialising cleanly.
+    #[serde(default)]
+    pub scenes: Vec<TrashedScene>,
+    /// V2.2 / A5 — Project records moved into trash by `delete_project`. Same
+    /// rationale as `scenes`.
+    #[serde(default)]
+    pub projects: Vec<TrashedProject>,
 }
 
 // ============================================================================
@@ -1859,7 +1886,13 @@ mod tests {
             tags: vec!["a".to_string()],
             enabled: true,
             source_path: "/x".to_string(),
-            scope: "user".to_string(),
+            // Scope is derived at scan time from filesystem state
+            // ("global" | "project"). Roundtrip fixtures use "global"
+            // to match the new derivation contract. The legacy-compat
+            // test below still uses the older "user" string to prove
+            // arbitrary String values from older `data.json` files
+            // continue to deserialise without error.
+            scope: "global".to_string(),
             invocation: None,
             allowed_tools: None,
             instructions: String::new(),

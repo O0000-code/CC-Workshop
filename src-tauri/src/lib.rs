@@ -181,6 +181,9 @@ pub fn run() {
             trash::restore_mcp,
             trash::restore_claude_md,
             trash::restore_rule,
+            // A5: Scene / Project trash exposure (V2.2 bug-audit-2026-05-15)
+            trash::restore_scene,
+            trash::restore_project,
             // Marketplace commands
             marketplace::list_marketplace_skills,
             marketplace::search_marketplace_skills,

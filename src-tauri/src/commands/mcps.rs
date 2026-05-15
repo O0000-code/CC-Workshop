@@ -1,7 +1,7 @@
 use crate::commands::data::{read_app_data, write_app_data, DATA_MUTEX};
-use crate::types::{FetchMcpToolsResult, McpConfigFile, McpMetadata, McpServer, McpServerRuntimeInfo, McpToolInfo};
+use crate::types::{ClaudeJson, FetchMcpToolsResult, McpConfigFile, McpMetadata, McpServer, McpServerRuntimeInfo, McpToolInfo};
 use crate::utils::{expand_path, get_data_file_path};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -20,6 +20,12 @@ pub fn scan_mcps(source_dir: String) -> Result<Vec<McpServer>, String> {
 
     let mut mcps = Vec::new();
     let metadata_map = load_mcp_metadata();
+    // Single-shot read of ~/.claude.json::mcpServers keys — `parse_mcp_file`
+    // derives each MCP's scope by checking this set, so reading once per
+    // scan beats reading once per MCP. Failure (missing / unparseable
+    // ~/.claude.json) yields an empty set, which means every MCP derives
+    // to "project" — the safe default.
+    let global_mcp_names = load_global_mcp_names();
 
     for entry in WalkDir::new(&path)
         .min_depth(1)
@@ -28,10 +34,10 @@ pub fn scan_mcps(source_dir: String) -> Result<Vec<McpServer>, String> {
         .filter_map(|e| e.ok())
     {
         let file_path = entry.path();
-        
+
         // Look for JSON files (MCP config files)
         if file_path.extension().map_or(false, |ext| ext == "json") {
-            if let Ok(mcp) = parse_mcp_file(file_path, &metadata_map) {
+            if let Ok(mcp) = parse_mcp_file(file_path, &metadata_map, &global_mcp_names) {
                 mcps.push(mcp);
             }
         }
@@ -45,6 +51,44 @@ pub fn scan_mcps(source_dir: String) -> Result<Vec<McpServer>, String> {
 pub fn get_mcp(source_dir: String, mcp_id: String) -> Result<Option<McpServer>, String> {
     let mcps = scan_mcps(source_dir)?;
     Ok(mcps.into_iter().find(|m| m.id == mcp_id))
+}
+
+/// Read `~/.claude.json::mcpServers` keys as a HashSet.
+///
+/// `~/.claude.json` is the source of truth for whether an MCP is registered
+/// at user (global) scope in Claude Code. We don't reuse `import::read_claude_json`
+/// to keep this module self-contained — and we only need the key set, not the
+/// full config. On any failure (missing file, parse error) returns an empty
+/// set so every MCP derives to "project" (safe default; matches the
+/// pre-derivation behavior when metadata.scope was empty).
+fn load_global_mcp_names() -> HashSet<String> {
+    let Some(home) = dirs::home_dir() else {
+        return HashSet::new();
+    };
+    let path = home.join(".claude.json");
+    let Ok(content) = fs::read_to_string(&path) else {
+        return HashSet::new();
+    };
+    let Ok(claude_json) = serde_json::from_str::<ClaudeJson>(&content) else {
+        return HashSet::new();
+    };
+    claude_json.mcp_servers.into_keys().collect()
+}
+
+/// Derive an MCP's scope from filesystem state.
+///
+/// `mcp_name` is the MCP config file's `name` field (which `update_mcp_scope`
+/// uses as the `~/.claude.json::mcpServers` key — see `import.rs:884`+). If the
+/// name appears in the global set, scope is "global"; otherwise "project".
+///
+/// Caller passes a pre-loaded `HashSet` from `load_global_mcp_names` so that
+/// scanning N MCPs does not perform N IO operations.
+fn derive_mcp_scope(mcp_name: &str, global_mcp_names: &HashSet<String>) -> String {
+    if global_mcp_names.contains(mcp_name) {
+        "global".to_string()
+    } else {
+        "project".to_string()
+    }
 }
 
 /// Update MCP metadata (category, tags, enabled status, category_id).
@@ -126,6 +170,7 @@ fn is_plugin_enabled(plugin_id: &str) -> bool {
 fn parse_mcp_file(
     file_path: &std::path::Path,
     metadata_map: &std::collections::HashMap<String, McpMetadata>,
+    global_mcp_names: &HashSet<String>,
 ) -> Result<McpServer, String> {
     let content = fs::read_to_string(file_path).map_err(|e| e.to_string())?;
     let config: McpConfigFile = serde_json::from_str(&content).map_err(|e| e.to_string())?;
@@ -166,6 +211,15 @@ fn parse_mcp_file(
     // "Missing required env vars" hints without rehydrating the catalog.
     let required_env_vars = metadata.and_then(|m| m.required_env_vars.clone());
 
+    // Scope is DERIVED from `~/.claude.json::mcpServers` at scan time
+    // (not read from `McpMetadata.scope`). The metadata field still
+    // exists for `data.json` backward compat but is no longer the
+    // source of truth — `~/.claude.json` is. See V1 fix plan
+    // `/Users/bo/.claude/plans/hazy-percolating-forest.md`. Computed
+    // before the struct literal so `config.name` can still be moved
+    // into the `name:` field without an extra clone.
+    let derived_scope = derive_mcp_scope(&config.name, global_mcp_names);
+
     let mcp = McpServer {
         id: id.clone(),
         name: config.name,
@@ -175,12 +229,17 @@ fn parse_mcp_file(
         tags: metadata.map(|m| m.tags.clone()).unwrap_or_default(),
         enabled: metadata.map(|m| m.enabled).unwrap_or(true),
         source_path: file_path.to_string_lossy().to_string(),
-        scope: metadata.map(|m| m.scope.clone()).unwrap_or_else(|| "project".to_string()),
+        scope: derived_scope,
         command: config.command,
         args: config.args.unwrap_or_default(),
         env: config.env,
         provided_tools: config.provided_tools.unwrap_or_default(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        // Mirror skills.rs:261 — anchor `createdAt` to the OS file creation
+        // time so the MCP Servers page "Recently added" sort tracks real
+        // install history instead of getting reset to `now()` on every scan.
+        created_at: installed_at
+            .clone()
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
         last_used: metadata.and_then(|m| m.last_used.clone()),
         usage_count: metadata.map(|m| m.usage_count).unwrap_or(0),
         installed_at,

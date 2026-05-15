@@ -293,13 +293,18 @@ fn scan_single_file(
     })
 }
 
-/// Check if directory should be excluded
+/// Check if directory should be excluded.
+///
+/// `.claude` is explicitly allowed (project-side `<project>/.claude/CLAUDE.md`
+/// is the most common managed location and must appear in scan results).
+/// Mirrors the rules.rs equivalent so both Rule and CLAUDE.md scans share
+/// the same descent rules.
 fn is_excluded_dir(entry: &walkdir::DirEntry) -> bool {
     entry.file_type().is_dir()
         && entry
             .file_name()
             .to_str()
-            .map(|name| EXCLUDED_DIRS.contains(&name) || name.starts_with('.'))
+            .map(|name| EXCLUDED_DIRS.contains(&name) || (name.starts_with('.') && name != ".claude"))
             .unwrap_or(false)
 }
 
@@ -494,16 +499,25 @@ pub fn get_claude_md_files() -> Result<Vec<ClaudeMdFile>, String> {
 /// * `content` - New content (optional)
 /// * `name` - New name (optional)
 /// * `description` - New description (optional)
-/// * `category_id` - New category (optional)
+/// * `categoryId` - New category, three-state `Option<Option<String>>`:
+///   - outer `None` (JS omit / `undefined`) → do not modify
+///   - outer `Some(None)` (JS `null`) → clear (Uncategorized)
+///   - outer `Some(Some(id))` (JS string) → set
 /// * `tag_ids` - New tag list (optional)
 /// * `icon` - New icon (optional)
+///
+/// Bug Audit 2026-05-15 finding A8 (R3::C6): previously `category_id:
+/// Option<String>`, which silently dropped a clear-to-Uncategorized request
+/// from the detail panel. Aligned with `update_skill_metadata` /
+/// `update_mcp_metadata` / `update_rule`.
 #[tauri::command]
+#[allow(non_snake_case)]
 pub fn update_claude_md(
     id: String,
     content: Option<String>,
     name: Option<String>,
     description: Option<String>,
-    category_id: Option<String>,
+    categoryId: Option<Option<String>>,
     tag_ids: Option<Vec<String>>,
     icon: Option<String>,
 ) -> Result<ClaudeMdFile, String> {
@@ -538,8 +552,8 @@ pub fn update_claude_md(
     if let Some(d) = description {
         file.description = d;
     }
-    if let Some(cid) = category_id {
-        file.category_id = Some(cid);
+    if let Some(new_category_id_opt) = categoryId {
+        file.category_id = new_category_id_opt;
     }
     if let Some(tids) = tag_ids {
         file.tag_ids = tids;

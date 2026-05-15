@@ -485,13 +485,29 @@ pub fn get_rules() -> Result<Vec<Rule>, String> {
 /// Update Rule metadata and/or content. Note: `filename` is NOT updatable
 /// even if a caller mistakenly passes one — Claude Code indexes Rules by
 /// filename, so changing the name would break global / project deployment.
+///
+/// `categoryId` uses the three-state `Option<Option<String>>` pattern, mirroring
+/// `update_skill_metadata` / `update_mcp_metadata` (V2 [P1-6]):
+/// - **outer `None`** (JS payload omits the key OR sends `undefined`)
+///   → "do not modify the `category_id`"
+/// - **outer `Some(None)`** (JS payload sends `null`)
+///   → "clear the `category_id` (Uncategorized)"
+/// - **outer `Some(Some(id))`** (JS payload sends `{ categoryId: "id" }`)
+///   → "set `category_id` to the given id"
+///
+/// Bug Audit 2026-05-15 finding A8 (R3::C6): previously a plain
+/// `Option<String>` — there was no way to clear the category, only set or
+/// no-op. The Rule entity post-dated the skills/mcps refactor and never got
+/// the tri-state upgrade. CLAUDE.md's `update_claude_md` carried the same
+/// shape and is fixed in parallel.
 #[tauri::command]
+#[allow(non_snake_case)]
 pub fn update_rule(
     id: String,
     content: Option<String>,
     name: Option<String>,
     description: Option<String>,
-    category_id: Option<String>,
+    categoryId: Option<Option<String>>,
     tag_ids: Option<Vec<String>>,
     icon: Option<String>,
 ) -> Result<Rule, String> {
@@ -544,8 +560,8 @@ pub fn update_rule(
     if let Some(d) = description {
         rule.description = d;
     }
-    if let Some(cid) = category_id {
-        rule.category_id = Some(cid);
+    if let Some(new_category_id_opt) = categoryId {
+        rule.category_id = new_category_id_opt;
     }
     if let Some(tids) = tag_ids {
         rule.tag_ids = tids;

@@ -35,6 +35,39 @@ pub fn run() {
                 // Don't fail startup on migration error, just log it
             }
 
+            // R2-1 (Round 2): one-time NFC normalisation of skill_metadata /
+            // mcp_metadata keys. Runs once per install (gated by
+            // `AppData::has_completed_unicode_normalization`). Failure is
+            // non-fatal — the migration is best-effort; if it fails the
+            // flag stays false and the next launch retries. Logging here
+            // mirrors the CLAUDE.md migration pattern above.
+            //
+            // Ordering: runs BEFORE the frontend issues its first
+            // `scan_skills` / `scan_mcps` (which happens after the React
+            // tree mounts and `MainLayout::initApp` resolves). On a fresh
+            // install, `init_app_data` sets the flag to `true` so this
+            // call is an O(1) no-op.
+            match data::migrate_unicode_normalization() {
+                Ok(report) => {
+                    if report.renormalized_skills > 0
+                        || report.renormalized_mcps > 0
+                        || report.merged_skill_collisions > 0
+                        || report.merged_mcp_collisions > 0
+                    {
+                        eprintln!(
+                            "[Migration] unicode-normalization: renormalized {} skills + {} mcps; collisions: {} skill + {} mcp",
+                            report.renormalized_skills,
+                            report.renormalized_mcps,
+                            report.merged_skill_collisions,
+                            report.merged_mcp_collisions,
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[Migration] Failed to NFC-normalise metadata keys: {}", e);
+                }
+            }
+
             // V2 (2026-05-11): MCP marketplace switched from "full GET + 24h cache" to
             // realtime mirror. Best-effort delete of the legacy cache file so it
             // does not linger on user disks. Failure is silent — the new IPCs
@@ -107,6 +140,11 @@ pub fn run() {
             data::reorder_categories,
             data::set_category_parent,
             data::migrate_category_id_for_skills_mcps,
+            // R2-1 (Round 2): one-time NFC normalisation of skill_metadata /
+            // mcp_metadata keys so the same CJK / accented path stored as
+            // NFC (git) vs. NFD (Finder) collapses to a single key. See
+            // `data::migrate_unicode_normalization` and finding R6 F5.
+            data::migrate_unicode_normalization,
             // Tags
             data::get_tags,
             data::add_tag,
@@ -142,6 +180,11 @@ pub fn run() {
             import::remove_imported_mcps,
             import::install_quick_action,
             import::launch_claude_for_folder,
+            // R2-8 (bug-audit-2026-05-15): pre-flight check for the
+            // user-selected terminal app so SettingsPage can flag a
+            // missing install and LauncherModal can return a friendly
+            // error instead of an OS-level "No such file or directory".
+            import::validate_terminal_app,
             import::get_launch_args,
             import::open_accessibility_settings,
             // Usage stats commands
@@ -153,6 +196,9 @@ pub fn run() {
             plugins::import_plugin_skills,
             plugins::import_plugin_mcps,
             plugins::check_plugins_enabled,
+            // R2-10 (bug-audit-2026-05-15): clean up orphan markers for
+            // plugins uninstalled outside Ensemble
+            plugins::cleanup_orphan_plugin_imports,
             // CLAUDE.md commands
             claude_md::scan_claude_md_files,
             claude_md::import_claude_md,
@@ -184,6 +230,11 @@ pub fn run() {
             // A5: Scene / Project trash exposure (V2.2 bug-audit-2026-05-15)
             trash::restore_scene,
             trash::restore_project,
+            // R2-9 (bug-audit-2026-05-15 round 2): permanent delete + empty
+            // trash. Both gated behind a frontend confirm modal — backend
+            // commits immediately on call.
+            trash::delete_trashed_item_permanently,
+            trash::empty_trash,
             // Marketplace commands
             marketplace::list_marketplace_skills,
             marketplace::search_marketplace_skills,

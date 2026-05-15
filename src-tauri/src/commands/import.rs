@@ -926,11 +926,36 @@ pub fn update_mcp_scope(
     Ok(())
 }
 
+/// XML-escape a string for safe inclusion in a plist `<string>` body.
+///
+/// R2-8c: the Quick Action workflow embeds the running binary's path in
+/// shell text inside a plist `<string>` element. Most install paths
+/// (`/Applications/...` or `~/Applications/...`) need zero escaping but
+/// paths that contain `<`, `>`, `&`, `'`, or `"` would corrupt the XML
+/// document. `&` must be escaped first to avoid double-escaping the
+/// substitutions of the other entities.
+fn xml_escape_for_plist(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\'', "&apos;")
+        .replace('"', "&quot;")
+}
+
 /// Install Finder Quick Action
 #[tauri::command]
 pub fn install_quick_action() -> Result<String, String> {
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;
     let services_dir = home.join("Library/Services");
+
+    // R2-8c: resolve the running binary at install time rather than
+    // hardcoding `/Applications/Ensemble.app/...`. Users who install
+    // Ensemble.app to `~/Applications/` (no admin rights on work
+    // machines) previously got a silently broken Quick Action.
+    let current_exe = std::env::current_exe()
+        .map_err(|e| format!("Failed to resolve Ensemble binary path: {}", e))?;
+    let binary_path_str = current_exe.to_string_lossy().to_string();
+    let escaped_binary_path = xml_escape_for_plist(&binary_path_str);
 
     // Ensure Services directory exists
     fs::create_dir_all(&services_dir).map_err(|e| e.to_string())?;
@@ -1047,7 +1072,7 @@ pub fn install_quick_action() -> Result<String, String> {
 					<key>COMMAND_STRING</key>
 					<string>for f in "$@"
 do
-    "/Applications/Ensemble.app/Contents/MacOS/Ensemble" --launch "$f"
+    "__ENSEMBLE_BINARY_PATH__" --launch "$f"
 done</string>
 					<key>CheckedForUserDefaultShell</key>
 					<true/>
@@ -1201,6 +1226,12 @@ done</string>
 </dict>
 </plist>"#;
 
+    // R2-8c: substitute the resolved binary path into the workflow's
+    // COMMAND_STRING. `replace` is used rather than `format!` so the
+    // surrounding plist (with its many `{` / `}` braces in XML
+    // attribute / element names) does not need format-string escaping.
+    let document_wflow =
+        document_wflow.replace("__ENSEMBLE_BINARY_PATH__", &escaped_binary_path);
     fs::write(contents_dir.join("document.wflow"), document_wflow).map_err(|e| e.to_string())?;
 
     // Refresh services cache
@@ -1390,19 +1421,73 @@ fn run_ghostty_keyboard_automation(applescript: &str) -> Result<(), String> {
 }
 
 fn installed_ghostty_version() -> Option<String> {
-    let output = std::process::Command::new("/usr/libexec/PlistBuddy")
-        .arg("-c")
-        .arg("Print :CFBundleShortVersionString")
-        .arg("/Applications/Ghostty.app/Contents/Info.plist")
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
+    // R2-8b: probe in order, falling through on miss:
+    //   1. /Applications/Ghostty.app  (admin install)
+    //   2. ~/Applications/Ghostty.app (no-admin install — work machines)
+    //   3. `ghostty --version` on PATH (Homebrew non-cask install)
+    //
+    // The earlier implementation hardcoded /Applications/...; users with
+    // Ghostty in their home Applications folder got `None`, then the
+    // caller defaulted to "native AppleScript supported" via
+    // `unwrap_or(true)`, which then failed at runtime because the older
+    // build does NOT expose the AppleScript dictionary.
+    let mut candidate_plists: Vec<PathBuf> = vec![
+        PathBuf::from("/Applications/Ghostty.app/Contents/Info.plist"),
+    ];
+    if let Some(home) = dirs::home_dir() {
+        candidate_plists.push(home.join("Applications/Ghostty.app/Contents/Info.plist"));
     }
 
-    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!version.is_empty()).then_some(version)
+    for plist in &candidate_plists {
+        if !plist.exists() {
+            continue;
+        }
+        let output = std::process::Command::new("/usr/libexec/PlistBuddy")
+            .arg("-c")
+            .arg("Print :CFBundleShortVersionString")
+            .arg(plist)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            continue;
+        }
+        let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !version.is_empty() {
+            return Some(version);
+        }
+    }
+
+    // PATH fallback: `which ghostty` then `ghostty --version`. Brew's
+    // non-cask formula installs only the CLI binary.
+    let which = std::process::Command::new("which")
+        .arg("ghostty")
+        .output()
+        .ok()?;
+    if !which.status.success() {
+        return None;
+    }
+    let binary = String::from_utf8_lossy(&which.stdout).trim().to_string();
+    if binary.is_empty() {
+        return None;
+    }
+    let version_output = std::process::Command::new(&binary)
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !version_output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&version_output.stdout);
+    // `ghostty --version` prints lines like "Ghostty 1.3.2"; extract the
+    // first dotted version token.
+    for token in raw.split_whitespace() {
+        if token.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
+            && token.contains('.')
+        {
+            return Some(token.to_string());
+        }
+    }
+    None
 }
 
 fn ghostty_version_tuple(version: &str) -> Option<(u64, u64, u64)> {
@@ -1433,6 +1518,73 @@ fn ghostty_supports_native_applescript(version: &str) -> bool {
         .unwrap_or(false)
 }
 
+// ============================================================================
+// R2-8: Terminal app installation probe
+// ============================================================================
+//
+// Round 2 audit R2-8 surfaces three related failures:
+//   - User picks Alacritty / Warp / Ghostty in SettingsPage but the app
+//     isn't installed → launch silently fails or surfaces a raw
+//     "No such file or directory" Rust error.
+//   - Ghostty hardcoded `/Applications/Ghostty.app` path (handled in
+//     `installed_ghostty_version` above).
+//   - install_quick_action hardcoded `/Applications/Ensemble.app` path
+//     (handled in `install_quick_action`).
+//
+// `validate_terminal_app` is the new pre-flight: SettingsPage calls it
+// on dropdown change to flag missing apps with a status dot, and
+// `launch_claude_for_folder` calls it before dispatching so the user
+// gets an actionable "<App> doesn't appear to be installed" instead of
+// the underlying OS error.
+
+fn app_bundle_exists(bundle_name: &str) -> bool {
+    if Path::new(&format!("/Applications/{}", bundle_name)).exists() {
+        return true;
+    }
+    if let Some(home) = dirs::home_dir() {
+        if home.join("Applications").join(bundle_name).exists() {
+            return true;
+        }
+    }
+    false
+}
+
+fn binary_on_path(binary_name: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(binary_name)
+        .output()
+        .map(|o| o.status.success() && !o.stdout.is_empty())
+        .unwrap_or(false)
+}
+
+/// Verify that a user-selected terminal application is reachable on
+/// this machine. Returns `Ok(true)` when present, `Ok(false)` when not
+/// installed, and `Err(...)` only for unknown terminal names.
+///
+/// The probe order mirrors how each app is actually launched:
+///   - Terminal: macOS system Terminal.app (always-present on stock
+///     installs; we still confirm to keep the check honest).
+///   - iTerm / Warp: `.app` bundle in /Applications or ~/Applications.
+///   - Ghostty: `.app` bundle in the same two locations OR a `ghostty`
+///     binary on PATH (Homebrew non-cask install).
+///   - Alacritty: `alacritty` binary on PATH (Brew default) OR a
+///     `.app` bundle (rare custom packaging).
+#[tauri::command]
+pub fn validate_terminal_app(name: String) -> Result<bool, String> {
+    match name.as_str() {
+        "Terminal" => Ok(
+            Path::new("/System/Applications/Utilities/Terminal.app").exists()
+                || Path::new("/Applications/Utilities/Terminal.app").exists()
+                || Path::new("/Applications/Terminal.app").exists(),
+        ),
+        "iTerm" => Ok(app_bundle_exists("iTerm.app")),
+        "Warp" => Ok(app_bundle_exists("Warp.app")),
+        "Ghostty" => Ok(app_bundle_exists("Ghostty.app") || binary_on_path("ghostty")),
+        "Alacritty" => Ok(binary_on_path("alacritty") || app_bundle_exists("Alacritty.app")),
+        other => Err(format!("Unknown terminal app: {}", other)),
+    }
+}
+
 /// Launch Claude Code for a folder
 ///
 /// Uses native CLI methods for each terminal to avoid keystroke simulation
@@ -1448,6 +1600,26 @@ pub async fn launch_claude_for_folder(
 
     if !folder.exists() {
         return Err(format!("Folder does not exist: {}", folder_path));
+    }
+
+    // R2-8d: pre-flight installation check. Return a structured error
+    // `TerminalNotInstalled:<name>` so the frontend (LauncherModal /
+    // MainLayout) can show a user-friendly modal instead of the raw
+    // OS-level "No such file or directory". Round 1's shell-injection
+    // fixes in the iTerm and Terminal.app branches below are preserved
+    // verbatim — this pre-flight only guards the dispatch, it does NOT
+    // modify the per-terminal launch logic.
+    match validate_terminal_app(terminal_app.clone()) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(format!("TerminalNotInstalled:{}", terminal_app));
+        }
+        Err(reason) => {
+            return Err(format!(
+                "Unknown terminal app '{}' in launch settings: {}",
+                terminal_app, reason
+            ));
+        }
     }
 
     let folder_path_str = folder.display().to_string();

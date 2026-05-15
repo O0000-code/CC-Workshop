@@ -1,6 +1,6 @@
 use crate::commands::data::{read_app_data, write_app_data, DATA_MUTEX};
 use crate::types::{Skill, SkillMetadata};
-use crate::utils::{expand_path, get_data_file_path, parse_skill_md};
+use crate::utils::{expand_path, get_data_file_path, normalize_nfc, parse_skill_md};
 use std::fs;
 
 /// Scan skills directory and return list of skills
@@ -208,8 +208,15 @@ fn parse_skill_file(
         .unwrap_or("unknown")
         .to_string();
 
-    // Generate ID from path
-    let id = skill_dir.to_string_lossy().to_string();
+    // Generate ID from path. R2-1: NFC-normalise so the same skill cloned
+    // from git (NFC by default) vs. renamed in Finder (may produce NFD)
+    // collapses to a single metadata key. macOS APFS is normalisation-
+    // insensitive, so `Path::new(nfc_id).exists()` and downstream
+    // `fs::read_to_string(nfc_id)` continue to work against an on-disk
+    // NFD file. Migration in `data.rs::migrate_unicode_normalization`
+    // collapses any pre-existing NFD keys in `data.json` so this lookup
+    // finds them on first launch after upgrade.
+    let id = normalize_nfc(&skill_dir.to_string_lossy());
 
     // Get metadata if exists
     let metadata = metadata_map.get(&id);
@@ -278,7 +285,11 @@ fn parse_skill_file(
         category_id: metadata.and_then(|m| m.category_id.clone()),
         tags: metadata.map(|m| m.tags.clone()).unwrap_or_default(),
         enabled: metadata.map(|m| m.enabled).unwrap_or(true),
-        source_path: skill_dir.to_string_lossy().to_string(),
+        // R2-1: preserve the `id == source_path` invariant — both fields
+        // must carry the SAME byte sequence so downstream lookups by
+        // either field hit the same `metadata_map` slot. Reuse the
+        // already-normalised `id` rather than re-running normalisation.
+        source_path: id.clone(),
         // Scope is DERIVED from the filesystem at scan time:
         // "global" when `<claude_config_dir>/skills/<name>` exists,
         // "project" otherwise. `SkillMetadata.scope` still exists in

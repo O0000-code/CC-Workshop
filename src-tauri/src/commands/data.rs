@@ -451,6 +451,11 @@ pub fn init_app_data() -> Result<(), String> {
             global_claude_md_id: None,
             rules: vec![],
             has_completed_category_id_migration: false,
+            // R2-1 (Round 2): a brand-new install has no legacy NFD keys
+            // to migrate, so the flag is logically already satisfied. We
+            // still set it to `true` here so the startup migration loop
+            // exits in O(1) instead of doing a no-op pass.
+            has_completed_unicode_normalization: true,
             last_edited_scene_id: None,
             imported_marketplace_skills: vec![],
         };
@@ -461,6 +466,43 @@ pub fn init_app_data() -> Result<(), String> {
     let settings_path = get_settings_file_path();
     if !settings_path.exists() {
         write_settings(AppSettings::default())?;
+    }
+
+    // R2-2 (Round 2): owner / write-permission self-check. If the app data
+    // directory is unwritable for the current process, surface a
+    // structured, actionable error instead of letting downstream IPCs
+    // fail individually with bare "Permission denied (os error 13)".
+    //
+    // Common trigger: user once ran `sudo open /Applications/Ensemble.app`
+    // (often after a Gatekeeper warning), which flips `~/.ensemble/` to
+    // `root:wheel`; on the next normal launch every `write_app_data` fails
+    // and the UI shows a blank sidebar with no diagnostic.
+    //
+    // The error prefix `EnsembleDirUnwritable:` is matched by the
+    // frontend (`MainLayout.tsx`) to render a dedicated remediation pane
+    // with the chown command the user must run. The hint text contains
+    // the actual directory path so a user with `ENSEMBLE_DATA_DIR` set to
+    // a non-standard location still sees the correct command.
+    {
+        let probe = app_dir.join(".health-check");
+        match fs::write(&probe, env!("CARGO_PKG_VERSION")) {
+            Ok(_) => {
+                // Best-effort cleanup; a leftover probe file is harmless.
+                let _ = fs::remove_file(&probe);
+            }
+            Err(e) => {
+                return Err(format!(
+                    "EnsembleDirUnwritable: cannot write to {}. \
+                     Hint: if you ever opened Ensemble via `sudo`, the \
+                     directory may now be owned by root. Run: \
+                     `sudo chown -R $(whoami) {}` in Terminal, then \
+                     restart Ensemble. (Underlying error: {})",
+                    app_dir.display(),
+                    app_dir.display(),
+                    e
+                ));
+            }
+        }
     }
 
     Ok(())
@@ -915,6 +957,235 @@ pub fn migrate_category_id_for_skills_mcps() -> Result<MigrationReport, String> 
     data.has_completed_category_id_migration = true;
     write_app_data(data)?;
     Ok(report)
+}
+
+// ============================================================================
+// R2-1 (Round 2): Unicode NFC normalisation of skill_metadata / mcp_metadata
+// ============================================================================
+
+/// Heuristic score for "this metadata entry carries user-curated value".
+///
+/// Used by [`migrate_unicode_normalization`] when two legacy keys collapse
+/// to the same NFC form: keep whichever entry has higher information
+/// content. The score sums weighted contributions from every field a user
+/// can plausibly have edited, plus a constant for marketplace-provenance
+/// records (which we never want to drop in favour of an empty local entry).
+fn skill_metadata_populatedness(m: &crate::types::SkillMetadata) -> u32 {
+    let mut score = 0u32;
+    if !m.category.is_empty() {
+        score += 4;
+    }
+    if m.category_id.is_some() {
+        score += 4;
+    }
+    score += m.tags.len() as u32;
+    if m.icon.is_some() {
+        score += 2;
+    }
+    if m.last_used.is_some() {
+        score += 1;
+    }
+    score += m.usage_count.min(1024); // cap so a single high-usage entry doesn't dwarf real signal
+    if m.install_source.is_some() {
+        score += 2;
+    }
+    if m.marketplace_source.is_some() {
+        score += 4;
+    }
+    if !m.scope.is_empty() {
+        score += 1;
+    }
+    score
+}
+
+fn mcp_metadata_populatedness(m: &crate::types::McpMetadata) -> u32 {
+    let mut score = 0u32;
+    if !m.category.is_empty() {
+        score += 4;
+    }
+    if m.category_id.is_some() {
+        score += 4;
+    }
+    score += m.tags.len() as u32;
+    if m.last_used.is_some() {
+        score += 1;
+    }
+    score += m.usage_count.min(1024);
+    if m.install_source.is_some() {
+        score += 2;
+    }
+    if m.marketplace_source.is_some() {
+        score += 4;
+    }
+    if !m.scope.is_empty() {
+        score += 1;
+    }
+    if m.required_env_vars.is_some() {
+        score += 2;
+    }
+    score
+}
+
+/// One-time migration: NFC-normalise every key in `skill_metadata` and
+/// `mcp_metadata`. On macOS, the same path can be persisted as NFC
+/// (git default) or NFD (Finder rename); a `HashMap<String, _>` keyed by
+/// raw byte sequences treats the two forms as distinct entries even
+/// though APFS resolves them to the same file. The result before this
+/// migration: a user opens Ensemble after copying a CJK-named skill from
+/// git, sets its category, and every subsequent restart silently reverts
+/// the category to Uncategorized because `parse_skill_file` produced a
+/// fresh NFC key that did not match the on-disk NFD key.
+///
+/// **Idempotence**:
+/// - **AppData flag**: `data.has_completed_unicode_normalization == true`
+///   → return immediately, zero work.
+/// - **Per-entry guard**: when `normalize_nfc(key) == key`, the entry is
+///   already canonical; the migration is a no-op for that key.
+///
+/// **Collision policy**: if two pre-migration keys collapse to the same
+/// NFC form (the user managed to accumulate one NFC and one NFD copy of
+/// the same skill metadata), keep whichever entry has higher
+/// `*_populatedness` score. Ties are broken in favour of the entry seen
+/// later in iteration (effectively arbitrary but deterministic for a
+/// given run).
+///
+/// **Concurrency**: held under `DATA_MUTEX` for the entire
+/// read → mutate → write window so concurrent reorders cannot interleave.
+///
+/// **Failure model**: `write_app_data` propagates errors; in-memory
+/// mutation is discarded; flag stays `false`; next launch retries. This
+/// matches the `migrate_category_id_for_skills_mcps` contract.
+#[tauri::command]
+pub fn migrate_unicode_normalization() -> Result<UnicodeMigrationReport, String> {
+    use crate::utils::normalize_nfc;
+    use std::collections::HashMap;
+
+    let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
+
+    // V2 round-2 BLOCKING fix (V1r2 + V2r2 cross-confirmed): on a fresh
+    // install `data.json` does not yet exist. The migration runs from
+    // Tauri `setup` (lib.rs) *before* the frontend calls `init_app_data`
+    // to seed the default Categories ("Development" / "Writing" /
+    // "Analysis"). Without this early return, `read_app_data` returns
+    // an empty `AppData::default()`, the unconditional `write_app_data`
+    // at the end creates an empty `data.json`, then `init_app_data`
+    // sees the file exists and skips the default-seed block — leaving
+    // fresh users staring at an empty sidebar. Returning early when no
+    // data file exists keeps the migration read-only for first-launch
+    // users. Pattern mirrors `migrate_claude_md_storage`'s
+    // `if migrated { write }` guard.
+    if !get_data_file_path().exists() {
+        return Ok(UnicodeMigrationReport::default());
+    }
+
+    let mut data = read_app_data()?;
+
+    if data.has_completed_unicode_normalization {
+        return Ok(UnicodeMigrationReport::default());
+    }
+
+    let mut report = UnicodeMigrationReport::default();
+
+    // ---- skill_metadata pass ----
+    {
+        // Drain to a Vec so we can re-insert under NFC keys without
+        // mutating the map we are iterating.
+        let drained: Vec<(String, crate::types::SkillMetadata)> =
+            data.skill_metadata.drain().collect();
+        let mut rebuilt: HashMap<String, crate::types::SkillMetadata> = HashMap::new();
+        for (key, value) in drained {
+            let nfc_key = normalize_nfc(&key);
+            let was_renormalized = nfc_key != key;
+            match rebuilt.get_mut(&nfc_key) {
+                None => {
+                    rebuilt.insert(nfc_key, value);
+                    if was_renormalized {
+                        report.renormalized_skills += 1;
+                    }
+                }
+                Some(existing) => {
+                    // Collision: pick the more-populated record. Ties keep
+                    // the existing entry (first-seen wins on equal score).
+                    let existing_score = skill_metadata_populatedness(existing);
+                    let incoming_score = skill_metadata_populatedness(&value);
+                    if incoming_score > existing_score {
+                        eprintln!(
+                            "[migrate_unicode_normalization] skill key collision under '{}': replacing existing (score {}) with incoming (score {})",
+                            nfc_key, existing_score, incoming_score
+                        );
+                        *existing = value;
+                    } else {
+                        eprintln!(
+                            "[migrate_unicode_normalization] skill key collision under '{}': keeping existing (score {}), dropping incoming (score {})",
+                            nfc_key, existing_score, incoming_score
+                        );
+                    }
+                    report.merged_skill_collisions += 1;
+                }
+            }
+        }
+        data.skill_metadata = rebuilt;
+    }
+
+    // ---- mcp_metadata pass ----
+    {
+        let drained: Vec<(String, crate::types::McpMetadata)> =
+            data.mcp_metadata.drain().collect();
+        let mut rebuilt: HashMap<String, crate::types::McpMetadata> = HashMap::new();
+        for (key, value) in drained {
+            let nfc_key = normalize_nfc(&key);
+            let was_renormalized = nfc_key != key;
+            match rebuilt.get_mut(&nfc_key) {
+                None => {
+                    rebuilt.insert(nfc_key, value);
+                    if was_renormalized {
+                        report.renormalized_mcps += 1;
+                    }
+                }
+                Some(existing) => {
+                    let existing_score = mcp_metadata_populatedness(existing);
+                    let incoming_score = mcp_metadata_populatedness(&value);
+                    if incoming_score > existing_score {
+                        eprintln!(
+                            "[migrate_unicode_normalization] mcp key collision under '{}': replacing existing (score {}) with incoming (score {})",
+                            nfc_key, existing_score, incoming_score
+                        );
+                        *existing = value;
+                    } else {
+                        eprintln!(
+                            "[migrate_unicode_normalization] mcp key collision under '{}': keeping existing (score {}), dropping incoming (score {})",
+                            nfc_key, existing_score, incoming_score
+                        );
+                    }
+                    report.merged_mcp_collisions += 1;
+                }
+            }
+        }
+        data.mcp_metadata = rebuilt;
+    }
+
+    data.has_completed_unicode_normalization = true;
+    write_app_data(data)?;
+    Ok(report)
+}
+
+/// Result of running [`migrate_unicode_normalization`]. Returned to the
+/// frontend for logging; not currently surfaced in UI.
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnicodeMigrationReport {
+    /// Skill metadata entries whose key changed (NFD or other non-NFC form
+    /// → NFC). Excludes collisions (counted separately).
+    pub renormalized_skills: u32,
+    /// MCP metadata entries whose key changed (NFD or other non-NFC form
+    /// → NFC). Excludes collisions (counted separately).
+    pub renormalized_mcps: u32,
+    /// Pairs of skill_metadata keys that collapsed to the same NFC form.
+    /// The collision-merge picked the more-populated record; the dropped
+    /// record's information is reported via stderr.
+    pub merged_skill_collisions: u32,
+    /// Pairs of mcp_metadata keys that collapsed to the same NFC form.
+    pub merged_mcp_collisions: u32,
 }
 
 // ============ Tags ============
@@ -2568,6 +2839,215 @@ mod migrate_category_id_tests {
             .category_id
             .is_none());
         assert_eq!(reloaded.skill_metadata["skill-uncat"].category, "");
+    }
+}
+
+#[cfg(test)]
+mod unicode_normalization_migration_tests {
+    //! Integration tests for [`migrate_unicode_normalization`] (R2-1).
+    //!
+    //! Each test seeds an isolated `AppData` in a temporary `ENSEMBLE_DATA_DIR`,
+    //! invokes the migration, and asserts both the report value and the
+    //! post-write state.
+    //!
+    //! Coverage:
+    //! - `idempotent_when_flag_already_set` — flag already true → no work.
+    //! - `renormalises_nfd_skill_key` — NFD key collapses to NFC.
+    //! - `renormalises_nfd_mcp_key` — same for MCPs.
+    //! - `collision_keeps_more_populated_skill` — picks the richer entry.
+    //! - `ascii_only_passes_through` — pure-ASCII keys aren't reshuffled.
+    //! - `flag_advances_after_run` — second invocation is the fast path.
+    //!
+    //! NFC = "\u{00E9}" (precomposed é, single codepoint).
+    //! NFD = "\u{0065}\u{0301}" (e + combining acute, two codepoints).
+
+    use super::*;
+    use crate::types::{McpMetadata, SkillMetadata};
+    use crate::utils::path::ENV_TEST_LOCK;
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    struct ScopedDataDir {
+        _tempdir: TempDir,
+        prior: Option<String>,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ScopedDataDir {
+        fn new() -> Self {
+            let guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prior = std::env::var("ENSEMBLE_DATA_DIR").ok();
+            let tempdir = TempDir::new().expect("create tempdir");
+            std::env::set_var("ENSEMBLE_DATA_DIR", tempdir.path());
+            Self {
+                _tempdir: tempdir,
+                prior,
+                _guard: guard,
+            }
+        }
+    }
+
+    impl Drop for ScopedDataDir {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(v) => std::env::set_var("ENSEMBLE_DATA_DIR", v),
+                None => std::env::remove_var("ENSEMBLE_DATA_DIR"),
+            }
+        }
+    }
+
+    fn empty_skill_meta() -> SkillMetadata {
+        SkillMetadata::default()
+    }
+
+    fn rich_skill_meta(category: &str) -> SkillMetadata {
+        SkillMetadata {
+            category: category.to_string(),
+            category_id: Some("cat-abc".into()),
+            tags: vec!["a".into(), "b".into()],
+            enabled: true,
+            usage_count: 7,
+            last_used: Some("2026-01-01T00:00:00Z".into()),
+            icon: Some("🚀".into()),
+            scope: "global".into(),
+            install_source: Some("local".into()),
+            marketplace_source: None,
+        }
+    }
+
+    fn seed(skill_metadata: HashMap<String, SkillMetadata>, mcp_metadata: HashMap<String, McpMetadata>, flag: bool) {
+        let data = AppData {
+            skill_metadata,
+            mcp_metadata,
+            has_completed_unicode_normalization: flag,
+            ..AppData::default()
+        };
+        write_app_data(data).expect("seed write_app_data");
+    }
+
+    #[test]
+    fn idempotent_when_flag_already_set() {
+        let _scope = ScopedDataDir::new();
+        // Even a NFD key is left untouched if the flag is already true —
+        // we trust the prior migration to have already canonicalised.
+        let mut skills = HashMap::new();
+        let nfd_key = "/skills/caf\u{0065}\u{0301}";
+        skills.insert(nfd_key.to_string(), rich_skill_meta("Foo"));
+        seed(skills, HashMap::new(), true);
+
+        let report = migrate_unicode_normalization().expect("migrate");
+        assert_eq!(report.renormalized_skills, 0);
+        assert_eq!(report.renormalized_mcps, 0);
+        let reloaded = read_app_data().expect("read");
+        assert!(reloaded.skill_metadata.contains_key(nfd_key));
+    }
+
+    #[test]
+    fn renormalises_nfd_skill_key() {
+        let _scope = ScopedDataDir::new();
+        let nfc = "/skills/caf\u{00E9}";
+        let nfd = "/skills/caf\u{0065}\u{0301}";
+        // Confirm test fixture: the two strings are byte-distinct.
+        assert_ne!(nfc.as_bytes(), nfd.as_bytes());
+
+        let mut skills = HashMap::new();
+        skills.insert(nfd.to_string(), rich_skill_meta("Foo"));
+        seed(skills, HashMap::new(), false);
+
+        let report = migrate_unicode_normalization().expect("migrate");
+        assert_eq!(report.renormalized_skills, 1);
+        assert_eq!(report.merged_skill_collisions, 0);
+
+        let reloaded = read_app_data().expect("read");
+        // Old NFD key is gone; NFC key now owns the metadata.
+        assert!(!reloaded.skill_metadata.contains_key(nfd));
+        assert!(reloaded.skill_metadata.contains_key(nfc));
+        assert_eq!(reloaded.skill_metadata[nfc].category, "Foo");
+        assert!(reloaded.has_completed_unicode_normalization);
+    }
+
+    #[test]
+    fn renormalises_nfd_mcp_key() {
+        let _scope = ScopedDataDir::new();
+        let nfc = "/mcps/caf\u{00E9}.json";
+        let nfd = "/mcps/caf\u{0065}\u{0301}.json";
+
+        let mut mcps = HashMap::new();
+        mcps.insert(nfd.to_string(), McpMetadata {
+            category: "Bar".into(),
+            ..McpMetadata::default()
+        });
+        seed(HashMap::new(), mcps, false);
+
+        let report = migrate_unicode_normalization().expect("migrate");
+        assert_eq!(report.renormalized_mcps, 1);
+
+        let reloaded = read_app_data().expect("read");
+        assert!(!reloaded.mcp_metadata.contains_key(nfd));
+        assert!(reloaded.mcp_metadata.contains_key(nfc));
+        assert_eq!(reloaded.mcp_metadata[nfc].category, "Bar");
+    }
+
+    #[test]
+    fn collision_keeps_more_populated_skill() {
+        let _scope = ScopedDataDir::new();
+        let nfc = "/skills/caf\u{00E9}";
+        let nfd = "/skills/caf\u{0065}\u{0301}";
+
+        let mut skills = HashMap::new();
+        // NFC entry is empty (low score); NFD entry is fully populated (high score).
+        skills.insert(nfc.to_string(), empty_skill_meta());
+        skills.insert(nfd.to_string(), rich_skill_meta("KeepMe"));
+        seed(skills, HashMap::new(), false);
+
+        let report = migrate_unicode_normalization().expect("migrate");
+        // One collision recorded; at least one entry was renormalised
+        // (the NFD one — order of iteration is not deterministic, so we
+        // assert against the on-disk state instead of the exact counts).
+        assert_eq!(report.merged_skill_collisions, 1);
+
+        let reloaded = read_app_data().expect("read");
+        assert_eq!(reloaded.skill_metadata.len(), 1);
+        let merged = &reloaded.skill_metadata[nfc];
+        assert_eq!(merged.category, "KeepMe", "richer entry should win");
+        assert_eq!(merged.usage_count, 7);
+    }
+
+    #[test]
+    fn ascii_only_passes_through() {
+        let _scope = ScopedDataDir::new();
+        let mut skills = HashMap::new();
+        skills.insert("/skills/foo".into(), rich_skill_meta("Foo"));
+        skills.insert("/skills/bar".into(), rich_skill_meta("Bar"));
+        seed(skills, HashMap::new(), false);
+
+        let report = migrate_unicode_normalization().expect("migrate");
+        // ASCII is already NFC-canonical → no renormalisation, no collisions.
+        assert_eq!(report.renormalized_skills, 0);
+        assert_eq!(report.merged_skill_collisions, 0);
+
+        let reloaded = read_app_data().expect("read");
+        assert_eq!(reloaded.skill_metadata.len(), 2);
+        assert!(reloaded.skill_metadata.contains_key("/skills/foo"));
+        assert!(reloaded.skill_metadata.contains_key("/skills/bar"));
+        assert!(reloaded.has_completed_unicode_normalization);
+    }
+
+    #[test]
+    fn flag_advances_after_run() {
+        let _scope = ScopedDataDir::new();
+        seed(HashMap::new(), HashMap::new(), false);
+
+        let _ = migrate_unicode_normalization().expect("first run");
+        let after = read_app_data().expect("read");
+        assert!(after.has_completed_unicode_normalization);
+
+        // Second invocation is the fast path: zero work even on a fresh map.
+        let report2 = migrate_unicode_normalization().expect("second run");
+        assert_eq!(report2.renormalized_skills, 0);
+        assert_eq!(report2.renormalized_mcps, 0);
+        assert_eq!(report2.merged_skill_collisions, 0);
+        assert_eq!(report2.merged_mcp_collisions, 0);
     }
 }
 

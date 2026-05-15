@@ -1,11 +1,11 @@
 use crate::commands::data::{read_app_data, write_app_data, DATA_MUTEX};
 use crate::types::{ClaudeJson, FetchMcpToolsResult, McpConfigFile, McpMetadata, McpServer, McpServerRuntimeInfo, McpToolInfo};
-use crate::utils::{expand_path, get_data_file_path};
+use crate::utils::{expand_path, get_data_file_path, normalize_nfc};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command as TokioCommand;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{ChildStderr, Command as TokioCommand};
 use tokio::time::{timeout, Duration};
 use walkdir::WalkDir;
 
@@ -175,8 +175,12 @@ fn parse_mcp_file(
     let content = fs::read_to_string(file_path).map_err(|e| e.to_string())?;
     let config: McpConfigFile = serde_json::from_str(&content).map_err(|e| e.to_string())?;
 
-    // Generate ID from path
-    let id = file_path.to_string_lossy().to_string();
+    // Generate ID from path. R2-1: NFC-normalise so an MCP JSON whose
+    // filename contains CJK / accented characters gets the same metadata
+    // key regardless of whether the disk bytes are NFC (git origin) or
+    // NFD (Finder rename / iCloud). See `skills.rs:parse_skill_file` for
+    // the broader rationale.
+    let id = normalize_nfc(&file_path.to_string_lossy());
 
     // Get metadata if exists
     let metadata = metadata_map.get(&id);
@@ -228,7 +232,9 @@ fn parse_mcp_file(
         category_id: metadata.and_then(|m| m.category_id.clone()),
         tags: metadata.map(|m| m.tags.clone()).unwrap_or_default(),
         enabled: metadata.map(|m| m.enabled).unwrap_or(true),
-        source_path: file_path.to_string_lossy().to_string(),
+        // R2-1: preserve the `id == source_path` invariant in NFC form.
+        // See `skills.rs:parse_skill_file` for the rationale.
+        source_path: id.clone(),
         scope: derived_scope,
         command: config.command,
         args: config.args.unwrap_or_default(),
@@ -311,11 +317,17 @@ pub async fn fetch_mcp_tools(
     let timeout_duration = Duration::from_millis(timeout_ms.unwrap_or(15000));
 
     // Build the command
+    //
+    // R2-7: stderr is now piped (was Stdio::null()) so we can append a
+    // tail of it to the error string on failure paths. Previously the
+    // user got "No response from MCP server" with no clue why (e.g.
+    // `npx: command not found`, missing env var, wrong Node version);
+    // see `drain_mcp_stderr` for the bounded read.
     let mut cmd = TokioCommand::new(&command);
     cmd.args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .kill_on_drop(true); // Ensure process is terminated when dropped
 
     // Inherit current environment (PATH is fixed at app startup in main.rs)
@@ -364,6 +376,13 @@ pub async fn fetch_mcp_tools(
             });
         }
     };
+
+    // R2-7: take the stderr handle so we can drain it on failure paths.
+    // `take()` returns None only if stderr was not piped (we just piped
+    // it above), so this is effectively infallible — but handle the
+    // theoretical None by dropping the stderr capture rather than
+    // failing the whole IPC.
+    let stderr_handle = child.stderr.take();
 
     let mut stdin = stdin;
     let mut reader = BufReader::new(stdout).lines();
@@ -479,23 +498,78 @@ pub async fn fetch_mcp_tools(
     })
     .await;
 
-    // Ensure child process is terminated
+    // Ensure child process is terminated. We kill before draining stderr
+    // so a misbehaving server that never closes its pipes still terminates
+    // promptly; after kill, the OS closes the pipe and `read_to_end` sees
+    // EOF after any buffered bytes.
     let _ = child.kill().await;
 
     match result {
         Ok(Ok(result)) => Ok(result),
-        Ok(Err(e)) => Ok(FetchMcpToolsResult {
-            success: false,
-            tools: vec![],
-            error: Some(e),
-            server_info: None,
-        }),
-        Err(_) => Ok(FetchMcpToolsResult {
-            success: false,
-            tools: vec![],
-            error: Some(format!("Operation timed out after {}ms", timeout_ms.unwrap_or(15000))),
-            server_info: None,
-        }),
+        Ok(Err(e)) => {
+            // R2-7: enrich the error with whatever the MCP server wrote
+            // to stderr. Cap-bounded read (8 KB / 500 ms) so a flood
+            // cannot grow the IPC return indefinitely.
+            let tail = drain_mcp_stderr(stderr_handle).await;
+            Ok(FetchMcpToolsResult {
+                success: false,
+                tools: vec![],
+                error: Some(combine_error_with_stderr(e, tail)),
+                server_info: None,
+            })
+        }
+        Err(_) => {
+            let tail = drain_mcp_stderr(stderr_handle).await;
+            let base = format!("Operation timed out after {}ms", timeout_ms.unwrap_or(15000));
+            Ok(FetchMcpToolsResult {
+                success: false,
+                tools: vec![],
+                error: Some(combine_error_with_stderr(base, tail)),
+                server_info: None,
+            })
+        }
+    }
+}
+
+/// R2-7: bounded drain of an MCP server's stderr pipe.
+///
+/// Reads up to 8 KB or 500 ms, whichever happens first. Returns the
+/// trimmed text iff non-empty. The bound is essential: a misbehaving
+/// server could write megabytes of warnings and we must not balloon the
+/// IPC return value. Used exclusively on failure paths — successful
+/// `fetch_mcp_tools` calls discard stderr because servers often emit
+/// debug noise that would clutter the UI.
+async fn drain_mcp_stderr(handle: Option<ChildStderr>) -> Option<String> {
+    let stderr = handle?;
+    let mut buf = Vec::with_capacity(2048);
+    // Cap the read at 8 KB so a chatty server cannot grow the return
+    // string without bound, and cap the wait at 500 ms so a child whose
+    // stderr pipe is still open (because the child wasn't fully killed
+    // in time) cannot stall the IPC return.
+    let mut limited = stderr.take(8192);
+    let _ = timeout(
+        Duration::from_millis(500),
+        limited.read_to_end(&mut buf),
+    )
+    .await;
+    if buf.is_empty() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&buf).trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+/// Append the stderr tail (if any) to an existing error string in a
+/// stable, documented format. Keeping the formatting here means we
+/// don't repeat it across every failure branch.
+fn combine_error_with_stderr(base: String, tail: Option<String>) -> String {
+    match tail {
+        Some(t) => format!("{}\n\n--- MCP server stderr ---\n{}", base, t),
+        None => base,
     }
 }
 

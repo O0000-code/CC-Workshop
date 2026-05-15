@@ -223,6 +223,48 @@ fn sanitize_resource_name(name: &str) -> Result<String, String> {
 }
 
 // ============================================================================
+// HTTP MCP URL validation (R2-4)
+// ============================================================================
+//
+// Round 2 audit R2-4: HTTP MCP install / update could persist a `.mcp.json`
+// whose `url` field is empty or still contains a `{VAR}` placeholder (e.g.
+// the catalog template had `https://example.com/{TOKEN}` and the user did
+// not fill in `TOKEN`). The install / update would succeed, the MCP would
+// appear in the Ensemble UI, but Claude Code's runtime resolution of the
+// URL would fail silently. `validate_http_mcp_url` is the single chokepoint
+// every HTTP MCP write path now calls *before* `fs::write` so the failure
+// surfaces as a user-actionable error rather than a half-broken config.
+//
+// The substitution algorithm in `install_marketplace_mcp` and
+// `update_mcp_http_config` already uses the `{NAME}` pattern (see
+// `marketplace.rs:3204` and `marketplace.rs:2465`), so detecting any
+// `{...}` pair after substitution unambiguously indicates an unresolved
+// placeholder.
+fn validate_http_mcp_url(url: &str) -> Result<(), String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err(
+            "URL is empty. Please provide a valid HTTPS URL for this MCP.".to_string(),
+        );
+    }
+    if let Some(start) = trimmed.find('{') {
+        // Find the matching `}` after the `{`. We deliberately accept any
+        // non-empty name between the braces — the substitution code does
+        // the same thing.
+        if let Some(end_offset) = trimmed[start + 1..].find('}') {
+            let name = &trimmed[start + 1..start + 1 + end_offset];
+            if !name.is_empty() {
+                return Err(format!(
+                    "URL still contains the placeholder {{{}}}. Please fill in all URL variables before saving.",
+                    name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+// ============================================================================
 // HTTP client (D-Imp-10)
 // ============================================================================
 
@@ -2464,6 +2506,11 @@ pub fn update_mcp_http_config(
     for (name, value) in &url_variables {
         substituted = substituted.replace(&format!("{{{}}}", name), value);
     }
+    // R2-4: refuse to write a `.mcp.json` whose URL is empty or still
+    // contains a `{VAR}` placeholder. Failing here returns an `Err` to
+    // the frontend so the McpDetailPanel can surface the reason in its
+    // existing error toast.
+    validate_http_mcp_url(&substituted)?;
     cfg.url = Some(substituted);
     cfg.headers = if headers.is_empty() {
         None
@@ -3254,6 +3301,22 @@ pub async fn install_marketplace_mcp(
             )
         }
     };
+
+    // R2-4: Validate HTTP MCP URLs before writing. An empty or
+    // placeholder-laden URL would silently produce a `.mcp.json` Claude
+    // Code cannot consume — surface the problem now so the user can fix
+    // their url_variables input.
+    if mcp_type.as_deref() == Some("http") {
+        if let Some(u) = url.as_deref() {
+            if let Err(reason) = validate_http_mcp_url(u) {
+                return Ok(InstallOutcome::Failed { reason });
+            }
+        } else {
+            return Ok(InstallOutcome::Failed {
+                reason: "URL is missing for HTTP MCP install.".to_string(),
+            });
+        }
+    }
 
     let cfg = McpConfigFile {
         name: item.name.clone(),

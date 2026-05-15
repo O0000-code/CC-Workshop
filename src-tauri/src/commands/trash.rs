@@ -926,6 +926,196 @@ pub fn restore_project(id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// R2-9 — kind discriminator for `delete_trashed_item_permanently`. The
+/// frontend sends a stringly-typed `kind`; we centralise the parse here so
+/// every match expression in this module agrees on the spelling.
+fn parse_trash_kind(kind: &str) -> Result<TrashKind, String> {
+    match kind {
+        "skill" => Ok(TrashKind::Skill),
+        "mcp" => Ok(TrashKind::Mcp),
+        "claudeMd" => Ok(TrashKind::ClaudeMd),
+        "rule" => Ok(TrashKind::Rule),
+        "scene" => Ok(TrashKind::Scene),
+        "project" => Ok(TrashKind::Project),
+        other => Err(format!("Unknown trash kind: {}", other)),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TrashKind {
+    Skill,
+    Mcp,
+    ClaudeMd,
+    Rule,
+    Scene,
+    Project,
+}
+
+/// Permanently remove one trashed entry — file/dir trash kinds dispatch on
+/// `trash_path_or_id` as an on-disk path, data.json-backed kinds dispatch on
+/// it as the record id. Two-step confirmation lives on the frontend; this
+/// IPC commits the deletion immediately on call (R2-9).
+///
+/// Skill / CLAUDE.md / Rule = directory in `~/.ensemble/trash/<kind>/...`
+/// MCP                      = `.json` file in `~/.ensemble/trash/mcps/`
+/// Scene / Project          = record in `data.json::trashed_{scenes,projects}`
+///
+/// Removing an entry that does not exist returns Ok(()) — idempotent, so
+/// a rapid double-click in the UI does not flip into a confusing error.
+/// (The frontend reloads the trashed-items list right after this call,
+/// so the user-visible "row vanished" assertion still holds.)
+#[tauri::command]
+pub fn delete_trashed_item_permanently(
+    kind: String,
+    trash_path_or_id: String,
+) -> Result<(), String> {
+    let kind = parse_trash_kind(&kind)?;
+
+    match kind {
+        TrashKind::Skill | TrashKind::ClaudeMd | TrashKind::Rule => {
+            // Directory-shaped entry
+            let path = expand_path(&trash_path_or_id);
+            if !path.exists() {
+                return Ok(());
+            }
+            // Defensive: never accept a path that resolves outside the
+            // `trash/` subtree. The frontend always sends a path that
+            // came from a previous `list_trashed_items` response, so this
+            // branch is paranoia rather than load-bearing — but a Tauri
+            // command is a public API surface and we treat the arg as
+            // untrusted.
+            if !path.to_string_lossy().contains("/trash/") {
+                return Err(format!(
+                    "Refusing to permanently delete path outside trash: {}",
+                    path.display()
+                ));
+            }
+            if path.is_dir() {
+                fs::remove_dir_all(&path)
+                    .map_err(|e| format!("Failed to remove directory: {}", e))?;
+            } else {
+                // Unexpected (we only expect a directory here for these
+                // kinds), but fall back to file removal so we don't leave
+                // garbage behind.
+                fs::remove_file(&path).map_err(|e| format!("Failed to remove file: {}", e))?;
+            }
+            Ok(())
+        }
+        TrashKind::Mcp => {
+            // File-shaped entry (`.json` in `trash/mcps/`)
+            let path = expand_path(&trash_path_or_id);
+            if !path.exists() {
+                return Ok(());
+            }
+            if !path.to_string_lossy().contains("/trash/") {
+                return Err(format!(
+                    "Refusing to permanently delete path outside trash: {}",
+                    path.display()
+                ));
+            }
+            if path.is_file() {
+                fs::remove_file(&path).map_err(|e| format!("Failed to remove file: {}", e))?;
+            } else if path.is_dir() {
+                fs::remove_dir_all(&path)
+                    .map_err(|e| format!("Failed to remove directory: {}", e))?;
+            }
+            Ok(())
+        }
+        TrashKind::Scene => {
+            let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
+            let mut data = read_app_data()?;
+            let before = data.trashed_scenes.len();
+            data.trashed_scenes.retain(|t| t.id != trash_path_or_id);
+            if data.trashed_scenes.len() != before {
+                write_app_data(data)?;
+            }
+            Ok(())
+        }
+        TrashKind::Project => {
+            let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
+            let mut data = read_app_data()?;
+            let before = data.trashed_projects.len();
+            data.trashed_projects.retain(|t| t.id != trash_path_or_id);
+            if data.trashed_projects.len() != before {
+                write_app_data(data)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Empty all trash storage (R2-9). Best-effort: per-item failures are
+/// aggregated into the returned `Vec<String>` so the UI can surface them as
+/// "Emptied N items, M errors" without losing the user's progress on the
+/// items that did succeed.
+///
+/// Order of operations:
+///   1. Acquire `DATA_MUTEX`, clear `trashed_scenes` + `trashed_projects`
+///      in `data.json`, persist.
+///   2. Walk `<ensemble_dir>/trash/{skills,mcps,claude-md,rules}/` and
+///      remove every top-level entry.
+///
+/// The DATA_MUTEX is acquired ONLY for the data.json mutation; the
+/// fs walks afterwards do not touch app data. Releasing the lock before
+/// the fs walks keeps Empty Trash from blocking other DATA_MUTEX users
+/// (e.g. concurrent metadata writes) for the full duration of the walk.
+#[tauri::command]
+pub fn empty_trash(ensemble_dir: String) -> Result<Vec<String>, String> {
+    let mut errors: Vec<String> = Vec::new();
+
+    // Phase 1: data.json-backed trash (scenes + projects)
+    {
+        let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
+        let mut data = read_app_data()?;
+        if !data.trashed_scenes.is_empty() || !data.trashed_projects.is_empty() {
+            data.trashed_scenes.clear();
+            data.trashed_projects.clear();
+            if let Err(e) = write_app_data(data) {
+                // If we can't persist, the user's data.json scenes/projects
+                // remain — report as one aggregated error and continue with
+                // disk-side cleanup so the file-shaped trash still empties.
+                errors.push(format!("Failed to clear data.json trash: {}", e));
+            }
+        }
+    }
+
+    // Phase 2: disk-side trash dirs
+    let ensemble_path = expand_path(&ensemble_dir);
+    let trash_root = ensemble_path.join("trash");
+    for subdir in &["skills", "mcps", "claude-md", "rules"] {
+        let dir = trash_root.join(subdir);
+        if !dir.exists() {
+            continue;
+        }
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) => {
+                errors.push(format!("Failed to read {}: {}", dir.display(), e));
+                continue;
+            }
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let entry_path = entry.path();
+            let display_name = entry_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| entry_path.to_string_lossy().to_string());
+
+            let result = if entry_path.is_dir() {
+                fs::remove_dir_all(&entry_path)
+            } else {
+                fs::remove_file(&entry_path)
+            };
+
+            if let Err(e) = result {
+                errors.push(format!("Failed to remove '{}': {}", display_name, e));
+            }
+        }
+    }
+
+    Ok(errors)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -967,5 +1157,26 @@ mod tests {
         // The regex matches, but NaiveDateTime parsing fails, so no timestamp
         assert_eq!(name, "skill_20261301_999999");
         assert!(deleted_at.is_none());
+    }
+
+    #[test]
+    fn test_parse_trash_kind_accepts_all_six() {
+        // R2-9 — the IPC accepts stringly-typed kinds from the frontend.
+        // Lock down the spelling so a frontend typo (e.g. "claudemd"
+        // vs "claudeMd") fails loud rather than silently no-op'ing.
+        assert!(matches!(parse_trash_kind("skill"), Ok(TrashKind::Skill)));
+        assert!(matches!(parse_trash_kind("mcp"), Ok(TrashKind::Mcp)));
+        assert!(matches!(parse_trash_kind("claudeMd"), Ok(TrashKind::ClaudeMd)));
+        assert!(matches!(parse_trash_kind("rule"), Ok(TrashKind::Rule)));
+        assert!(matches!(parse_trash_kind("scene"), Ok(TrashKind::Scene)));
+        assert!(matches!(parse_trash_kind("project"), Ok(TrashKind::Project)));
+    }
+
+    #[test]
+    fn test_parse_trash_kind_rejects_typos() {
+        assert!(parse_trash_kind("claudemd").is_err());
+        assert!(parse_trash_kind("Skill").is_err());
+        assert!(parse_trash_kind("").is_err());
+        assert!(parse_trash_kind("random").is_err());
     }
 }

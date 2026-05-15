@@ -7,12 +7,14 @@
 
 #![allow(dead_code)]
 
+use crate::commands::data::{read_app_data, write_app_data, DATA_MUTEX};
 use crate::types::{
-    DetectedPluginMcp, DetectedPluginSkill, InstalledPlugin, McpConfigFile, PluginImportItem,
+    DetectedPluginMcp, DetectedPluginSkill, InstalledPlugin, McpConfigFile,
+    PluginImportCleanupResult, PluginImportError, PluginImportItem, PluginImportResult,
 };
 use crate::utils::path::expand_tilde;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -692,26 +694,38 @@ pub fn detect_plugin_mcps(imported_plugin_mcps: Vec<String>) -> Result<Vec<Detec
 
 /// Import plugin Skills to Ensemble (creates symlinks, does NOT delete source)
 ///
-/// Creates symlinks from dest_dir to the plugin skill directories
-/// Returns the list of imported plugin IDs
+/// Creates symlinks from dest_dir to the plugin skill directories. Returns
+/// a `PluginImportResult` with the import keys that succeeded *and* a
+/// per-item `errors` list (R2-6). Pre-fix the function returned only the
+/// success list and swallowed errors to `eprintln!`, so the frontend marked
+/// every selected item as imported even when some failed silently.
+///
+/// The function returns `Ok(...)` whenever at least bookkeeping completed
+/// (the destination directory creation can still fail with `Err`); per-item
+/// failures show up in `result.errors` and the modal layer is responsible
+/// for surfacing them to the user.
 #[tauri::command]
-pub fn import_plugin_skills(items: Vec<PluginImportItem>, dest_dir: String) -> Result<Vec<String>, String> {
+pub fn import_plugin_skills(
+    items: Vec<PluginImportItem>,
+    dest_dir: String,
+) -> Result<PluginImportResult, String> {
     let dest_path = expand_tilde(&dest_dir);
 
     // Ensure destination directory exists
     fs::create_dir_all(&dest_path).map_err(|e| format!("Failed to create destination directory: {}", e))?;
 
     let mut imported_plugin_ids = Vec::new();
-    let mut errors = Vec::new();
+    let mut errors: Vec<PluginImportError> = Vec::new();
 
     for item in items {
         let source_path = Path::new(&item.source_path);
 
         if !source_path.exists() {
-            errors.push(format!(
-                "Source path does not exist: {}",
-                item.source_path
-            ));
+            errors.push(PluginImportError {
+                plugin_id: item.plugin_id.clone(),
+                item_name: item.item_name.clone(),
+                error: format!("Source path does not exist: {}", item.source_path),
+            });
             continue;
         }
 
@@ -733,10 +747,11 @@ pub fn import_plugin_skills(items: Vec<PluginImportItem>, dest_dir: String) -> R
         #[cfg(unix)]
         {
             if let Err(e) = std::os::unix::fs::symlink(source_path, &dest_skill_path) {
-                errors.push(format!(
-                    "Failed to create symlink for '{}': {}",
-                    item.item_name, e
-                ));
+                errors.push(PluginImportError {
+                    plugin_id: item.plugin_id.clone(),
+                    item_name: item.item_name.clone(),
+                    error: format!("Failed to create symlink: {}", e),
+                });
                 continue;
             }
         }
@@ -744,10 +759,11 @@ pub fn import_plugin_skills(items: Vec<PluginImportItem>, dest_dir: String) -> R
         #[cfg(windows)]
         {
             if let Err(e) = std::os::windows::fs::symlink_dir(source_path, &dest_skill_path) {
-                errors.push(format!(
-                    "Failed to create symlink for '{}': {}",
-                    item.item_name, e
-                ));
+                errors.push(PluginImportError {
+                    plugin_id: item.plugin_id.clone(),
+                    item_name: item.item_name.clone(),
+                    error: format!("Failed to create symlink: {}", e),
+                });
                 continue;
             }
         }
@@ -759,36 +775,46 @@ pub fn import_plugin_skills(items: Vec<PluginImportItem>, dest_dir: String) -> R
         }
     }
 
+    // R2-6: still log to stderr for server-side debug, but no longer the
+    // sole error path — the structured `errors` field is the frontend
+    // signal.
     if !errors.is_empty() {
-        // Log errors but don't fail completely if some succeeded
-        eprintln!("Import errors: {:?}", errors);
+        eprintln!("[import_plugin_skills] {} item(s) failed", errors.len());
     }
 
-    Ok(imported_plugin_ids)
+    Ok(PluginImportResult {
+        imported: imported_plugin_ids,
+        errors,
+    })
 }
 
 /// Import plugin MCPs to Ensemble (extracts MCP config, does NOT delete source)
 ///
-/// Reads .mcp.json from plugins and creates standalone JSON files in dest_dir
-/// Returns the list of imported plugin IDs
+/// Reads .mcp.json from plugins and creates standalone JSON files in dest_dir.
+/// Returns a `PluginImportResult` with the import keys that succeeded *and*
+/// a per-item `errors` list (R2-6).
 #[tauri::command]
-pub fn import_plugin_mcps(items: Vec<PluginImportItem>, dest_dir: String) -> Result<Vec<String>, String> {
+pub fn import_plugin_mcps(
+    items: Vec<PluginImportItem>,
+    dest_dir: String,
+) -> Result<PluginImportResult, String> {
     let dest_path = expand_tilde(&dest_dir);
 
     // Ensure destination directory exists
     fs::create_dir_all(&dest_path).map_err(|e| format!("Failed to create destination directory: {}", e))?;
 
     let mut imported_plugin_ids = Vec::new();
-    let mut errors = Vec::new();
+    let mut errors: Vec<PluginImportError> = Vec::new();
 
     for item in items {
         let source_path = Path::new(&item.source_path);
 
         if !source_path.exists() {
-            errors.push(format!(
-                "Source path does not exist: {}",
-                item.source_path
-            ));
+            errors.push(PluginImportError {
+                plugin_id: item.plugin_id.clone(),
+                item_name: item.item_name.clone(),
+                error: format!("Source path does not exist: {}", item.source_path),
+            });
             continue;
         }
 
@@ -796,7 +822,11 @@ pub fn import_plugin_mcps(items: Vec<PluginImportItem>, dest_dir: String) -> Res
         let mcp_content = match fs::read_to_string(source_path) {
             Ok(c) => c,
             Err(e) => {
-                errors.push(format!("Failed to read .mcp.json: {}", e));
+                errors.push(PluginImportError {
+                    plugin_id: item.plugin_id.clone(),
+                    item_name: item.item_name.clone(),
+                    error: format!("Failed to read .mcp.json: {}", e),
+                });
                 continue;
             }
         };
@@ -804,7 +834,11 @@ pub fn import_plugin_mcps(items: Vec<PluginImportItem>, dest_dir: String) -> Res
         let mcp_file: McpJsonFile = match serde_json::from_str(&mcp_content) {
             Ok(f) => f,
             Err(e) => {
-                errors.push(format!("Failed to parse .mcp.json: {}", e));
+                errors.push(PluginImportError {
+                    plugin_id: item.plugin_id.clone(),
+                    item_name: item.item_name.clone(),
+                    error: format!("Failed to parse .mcp.json: {}", e),
+                });
                 continue;
             }
         };
@@ -813,7 +847,11 @@ pub fn import_plugin_mcps(items: Vec<PluginImportItem>, dest_dir: String) -> Res
         let mcp_config = match mcp_file.servers.get(&item.item_name) {
             Some(c) => c,
             None => {
-                errors.push(format!("MCP '{}' not found in .mcp.json", item.item_name));
+                errors.push(PluginImportError {
+                    plugin_id: item.plugin_id.clone(),
+                    item_name: item.item_name.clone(),
+                    error: format!("MCP '{}' not found in .mcp.json", item.item_name),
+                });
                 continue;
             }
         };
@@ -852,13 +890,21 @@ pub fn import_plugin_mcps(items: Vec<PluginImportItem>, dest_dir: String) -> Res
         let json = match serde_json::to_string_pretty(&mcp_config_file) {
             Ok(j) => j,
             Err(e) => {
-                errors.push(format!("Failed to serialize MCP config: {}", e));
+                errors.push(PluginImportError {
+                    plugin_id: item.plugin_id.clone(),
+                    item_name: item.item_name.clone(),
+                    error: format!("Failed to serialize MCP config: {}", e),
+                });
                 continue;
             }
         };
 
         if let Err(e) = fs::write(&dest_mcp_path, json) {
-            errors.push(format!("Failed to write MCP config file: {}", e));
+            errors.push(PluginImportError {
+                plugin_id: item.plugin_id.clone(),
+                item_name: item.item_name.clone(),
+                error: format!("Failed to write MCP config file: {}", e),
+            });
             continue;
         }
 
@@ -869,12 +915,17 @@ pub fn import_plugin_mcps(items: Vec<PluginImportItem>, dest_dir: String) -> Res
         }
     }
 
+    // R2-6: still log to stderr for server-side debug, but no longer the
+    // sole error path — the structured `errors` field is the frontend
+    // signal.
     if !errors.is_empty() {
-        // Log errors but don't fail completely if some succeeded
-        eprintln!("Import errors: {:?}", errors);
+        eprintln!("[import_plugin_mcps] {} item(s) failed", errors.len());
     }
 
-    Ok(imported_plugin_ids)
+    Ok(PluginImportResult {
+        imported: imported_plugin_ids,
+        errors,
+    })
 }
 
 /// Check if plugins are enabled in Claude Code settings
@@ -891,6 +942,109 @@ pub fn check_plugins_enabled(plugin_ids: Vec<String>) -> Result<HashMap<String, 
     }
 
     Ok(result)
+}
+
+/// Read the set of installed Claude Code plugin IDs by inspecting
+/// `~/.claude/plugins/installed_plugins.json`. Returns an empty set when the
+/// file is missing or fails to parse — orphan cleanup degrades to a no-op,
+/// which is strictly safer than silently dropping markers because we
+/// couldn't see the installed list.
+///
+/// Shared between `detect_installed_plugins` (used to build the live plugin
+/// list) and `cleanup_orphan_plugin_imports` (R2-10).
+fn read_installed_plugin_ids() -> HashSet<String> {
+    let plugins_dir = match get_claude_plugins_dir() {
+        Ok(p) => p,
+        Err(_) => return HashSet::new(),
+    };
+    let installed_plugins_path = plugins_dir.join("installed_plugins.json");
+    if !installed_plugins_path.exists() {
+        return HashSet::new();
+    }
+    let content = match fs::read_to_string(&installed_plugins_path) {
+        Ok(c) => c,
+        Err(_) => return HashSet::new(),
+    };
+    let parsed: InstalledPluginsFile = match serde_json::from_str(&content) {
+        Ok(p) => p,
+        Err(_) => return HashSet::new(),
+    };
+    parsed.plugins.keys().cloned().collect()
+}
+
+/// Remove orphan markers from `imported_plugin_skills` / `imported_plugin_mcps`
+/// pointing at plugins no longer installed (R2-10).
+///
+/// Background — when a user uninstalls a Claude Code plugin, the entries in
+/// these two `Vec<String>` markers (each shaped `"<plugin_id>|<item_name>"`)
+/// stay forever. On the *next* install of the same plugin, the
+/// Import-from-Plugins dialog reports every row as "Already imported" even
+/// though the `~/.ensemble/skills/<name>` symlinks went broken when the
+/// plugin cache directory disappeared, leaving the user with no way to
+/// re-import.
+///
+/// Behaviour:
+/// 1. Build the live installed-plugin-id set from
+///    `installed_plugins.json` (`read_installed_plugin_ids`).
+/// 2. For each marker, parse out the `plugin_id` prefix (split on the first
+///    `|`) and retain when it is still in the live set.
+/// 3. Malformed entries (no `|`) are retained — schema-evolution defensiveness.
+/// 4. Persist via `write_app_data` under `DATA_MUTEX`.
+///
+/// The cleanup is silent (no UI notification); the count return lets the
+/// caller log at debug level.
+#[tauri::command]
+pub fn cleanup_orphan_plugin_imports() -> Result<PluginImportCleanupResult, String> {
+    let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
+
+    let installed = read_installed_plugin_ids();
+
+    // R2-10 conservatism: when the installed set is empty (file missing or
+    // unreadable) we cannot tell apart "no plugins installed" from "we
+    // failed to read the index". Treat empty as "skip cleanup" rather than
+    // "every marker is an orphan" — silently nuking markers on the basis
+    // of an unreadable file would punish the user for an unrelated I/O
+    // hiccup. `detect_installed_plugins` returns Ok(Vec::new()) in the
+    // missing-file case, so this branch is the legitimate "user has zero
+    // plugins" case AND the "file unreadable" case — both should leave
+    // markers untouched.
+    if installed.is_empty() {
+        return Ok(PluginImportCleanupResult {
+            removed_skills: 0,
+            removed_mcps: 0,
+        });
+    }
+
+    let mut app_data = read_app_data()?;
+
+    let before_skills = app_data.imported_plugin_skills.len();
+    app_data.imported_plugin_skills.retain(|key| {
+        match key.split_once('|') {
+            Some((plugin_id, _)) => installed.contains(plugin_id),
+            // Malformed entry (no `|` delimiter): keep — never drop a user
+            // record we cannot confidently classify.
+            None => true,
+        }
+    });
+    let removed_skills = (before_skills - app_data.imported_plugin_skills.len()) as u32;
+
+    let before_mcps = app_data.imported_plugin_mcps.len();
+    app_data.imported_plugin_mcps.retain(|key| {
+        match key.split_once('|') {
+            Some((plugin_id, _)) => installed.contains(plugin_id),
+            None => true,
+        }
+    });
+    let removed_mcps = (before_mcps - app_data.imported_plugin_mcps.len()) as u32;
+
+    if removed_skills + removed_mcps > 0 {
+        write_app_data(app_data)?;
+    }
+
+    Ok(PluginImportCleanupResult {
+        removed_skills,
+        removed_mcps,
+    })
 }
 
 #[cfg(test)]

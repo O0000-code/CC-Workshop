@@ -270,6 +270,15 @@ pub struct AppData {
     /// next startup.
     #[serde(default)]
     pub has_completed_category_id_migration: bool,
+    /// Round 2 R2-1 migration state. Set to `true` by
+    /// `migrate_unicode_normalization` after one successful pass over
+    /// `skill_metadata` / `mcp_metadata`. Subsequent launches skip the
+    /// migration. Backward compat: `serde(default)` makes the absence of
+    /// this key in old `data.json` deserialise to `false`, triggering a
+    /// one-time migration on next startup. See
+    /// `.dev/bug-audit-2026-05-15/round2/G1_plan.md` and finding R6 F5.
+    #[serde(default)]
+    pub has_completed_unicode_normalization: bool,
     /// Most recently created or edited Scene id. Drives the Marketplace
     /// "Add to active Scene" short-cut (D-Imp-6) so the user does not need
     /// to pick from a list every install. `None` until the user creates or
@@ -781,6 +790,59 @@ pub struct PluginImportItem {
     pub source_path: String,
     /// Plugin version
     pub version: String,
+}
+
+/// Per-item failure surfaced by `import_plugin_skills` / `import_plugin_mcps`
+/// (R2-6). Pre-fix the backend swallowed these to `eprintln!`, leaving the
+/// frontend with no signal that some items failed — `setImportedPluginSkills`
+/// marked every selected item as imported, the user closed the modal, and
+/// only later (on the next SkillsPage refresh) noticed N rows were missing
+/// with no way to learn why.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginImportError {
+    /// Plugin ID: "plugin-name@marketplace"
+    pub plugin_id: String,
+    /// Item name (skill name or MCP name) that failed
+    pub item_name: String,
+    /// Human-readable failure reason (e.g. "Source path does not exist",
+    /// "Failed to create symlink: ...", "Failed to parse .mcp.json: ...").
+    pub error: String,
+}
+
+/// Aggregate result of an `import_plugin_*` call (R2-6).
+///
+/// `imported` mirrors the pre-fix `Vec<String>` return (import keys =
+/// `"pluginId|itemName"`) — clients building on it can keep their existing
+/// `addImportedPluginSkills` / `addImportedPluginMcps` plumbing unchanged.
+/// `errors` is the new surface: any non-empty value means the user should
+/// be shown the partial-failure detail before the modal closes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginImportResult {
+    /// Successfully imported item keys (`"pluginId|itemName"`)
+    pub imported: Vec<String>,
+    /// Failed items with structured reasons
+    pub errors: Vec<PluginImportError>,
+}
+
+/// Counts returned by `cleanup_orphan_plugin_imports` (R2-10).
+///
+/// When a user uninstalls a plugin from Claude Code, the entries in
+/// `AppData::imported_plugin_skills` / `imported_plugin_mcps` pointing at
+/// that plugin become orphans — they continue to suppress the corresponding
+/// rows in the Import-from-Plugins dialog (`is_imported = true`), trapping
+/// the user when they later reinstall the plugin (the dialog reports
+/// "Already imported" even though the symlink is broken). Counts are
+/// surfaced so the caller can log them at debug level; the cleanup itself
+/// is silent (no user-facing notification).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginImportCleanupResult {
+    /// Number of orphan markers removed from `imported_plugin_skills`
+    pub removed_skills: u32,
+    /// Number of orphan markers removed from `imported_plugin_mcps`
+    pub removed_mcps: u32,
 }
 
 // ============================================================================

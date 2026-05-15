@@ -1,6 +1,38 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
+use unicode_normalization::UnicodeNormalization;
+
+/// Normalize a string to Unicode NFC (Canonical Composition) form.
+///
+/// macOS APFS preserves the on-disk byte sequence of file names — a name
+/// written as NFC (precomposed `é` = U+00E9) stays NFC, a name written as
+/// NFD (decomposed `e` + `̀` = U+0065 U+0301) stays NFD. The OS treats the
+/// two forms as equivalent for path resolution (normalisation-insensitive
+/// lookup), but Rust `String` equality is a raw byte comparison.
+///
+/// Ensemble keys `data.json::skill_metadata` and `data.json::mcp_metadata`
+/// by `to_string_lossy()` of the disk path. If the same skill is at one
+/// point seen in NFC form (e.g. cloned from git with `core.precomposeUnicode`
+/// off) and later in NFD form (e.g. Finder rename), the two scans produce
+/// different `String` keys and the user's category / tags get reset.
+///
+/// The fix is to canonicalise every key — and every `source_path` we
+/// publish to the frontend — to NFC at scan time, and to run a one-time
+/// migration over existing `data.json` entries so legacy NFD keys collapse
+/// to their NFC twins.
+///
+/// Why NFC: git, Linux filesystems, the Web, and HTTP all default to NFC.
+/// Round-tripping across those surfaces is safe in NFC, lossy in NFD.
+///
+/// APFS path resolution remains normalisation-insensitive against the
+/// chosen form, so `Path::new(nfc).exists()` matches an on-disk NFD file
+/// transparently. We can therefore normalise both `id` and `source_path`
+/// without breaking subsequent `fs::*` calls. See R2-1 in
+/// `.dev/bug-audit-2026-05-15/round2/G1_plan.md` and finding R6 F5.
+pub fn normalize_nfc(s: &str) -> String {
+    s.nfc().collect::<String>()
+}
 
 /// Shared mutex used by all tests that mutate the `ENSEMBLE_DATA_DIR`
 /// environment variable. Cargo runs tests in parallel by default; without a
@@ -137,6 +169,35 @@ mod tests {
     // serialise with `commands::data::reorder_integration_tests` (which also
     // mutates ENSEMBLE_DATA_DIR). A per-module lock would NOT prevent races
     // across modules.
+
+    /// R2-1 regression: NFC and NFD encodings of the same string must
+    /// canonicalise to byte-equal output. The canonical example is
+    /// precomposed `é` (U+00E9) vs decomposed `e` + combining grave
+    /// (U+0065 U+0301).
+    #[test]
+    fn test_normalize_nfc_collapses_nfd_and_nfc() {
+        // U+00E9 — precomposed é (NFC form)
+        let nfc = "\u{00E9}";
+        // U+0065 U+0301 — e + combining acute (NFD form)
+        let nfd = "\u{0065}\u{0301}";
+        assert_ne!(nfc.as_bytes(), nfd.as_bytes(), "test fixture is wrong if these are byte-equal");
+        assert_eq!(normalize_nfc(nfc), normalize_nfc(nfd));
+        // NFC form is the fixpoint: normalising NFC again yields the same string.
+        assert_eq!(normalize_nfc(nfc), nfc);
+    }
+
+    #[test]
+    fn test_normalize_nfc_ascii_passthrough() {
+        let ascii = "/Users/bo/.ensemble/skills/code-helper";
+        assert_eq!(normalize_nfc(ascii), ascii);
+    }
+
+    #[test]
+    fn test_normalize_nfc_cjk_passthrough() {
+        // CJK chars are already in NFC form; nothing to compose.
+        let cjk = "数学专家";
+        assert_eq!(normalize_nfc(cjk), cjk);
+    }
 
     #[test]
     fn test_expand_path_with_tilde() {

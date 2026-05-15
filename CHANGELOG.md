@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.3] - 2026-05-15
+
+### Security
+
+- AppleScript injection guard for Terminal.app and iTerm launch paths -- project paths and Claude argv are now escaped before AppleScript interpolation, matching the existing Warp and Ghostty paths
+- GitHub `owner` / `repo` validation in marketplace skill install -- the codeload URL is built from sanitized identifiers; unexpected characters in the catalog `source` field abort before any network request
+- MCP Registry `registryType` allowlist -- unknown registry types no longer fall through to treating the package identifier as a binary to spawn
+- Child-process environment isolation for `fetch_mcp_tools` so API keys present in Ensemble's parent shell do not leak to third-party MCP servers
+
+### Fixed (data integrity)
+
+- Atomic `data.json` writes with last-known-good recovery -- power loss / disk full / process kill during a write can no longer corrupt the canonical app state
+- File lock on `~/.claude.json` writes -- concurrent updates from Ensemble and Claude Code itself no longer race and drop user-added MCP entries
+- `clear_project_config` removes only Ensemble-managed CLAUDE.md / `.mcp.json` / Rules; user-authored files at the same paths are no longer touched
+- Trash restore round-trips full metadata (category, tags, icon, scope, usage stats) for Skills, MCP Servers, CLAUDE.md, Rules, **and Scenes / Projects** -- the previous version lost the curated metadata and Scenes / Projects could not be restored at all
+- `claude_md` scan includes `.claude/CLAUDE.md` (the dotfile filter was previously too aggressive, hiding the most common location)
+- Ownership mismatch on `~/.ensemble/` is reported instead of silently falling back to a different data directory
+- Fresh-install default categories appear reliably (init order is now atomic)
+
+### Fixed (marketplace install)
+
+- Codeload tarball downloads now use a separate 120 s timeout (was sharing the 15 s JSON-API budget). On slower connections or larger curated repos (`microsoft/azure-skills`, `github/awesome-copilot`) the previous 15 s budget was cut mid-stream and reqwest surfaced the cut-off as the misleading `error decoding response body`
+- Codeload download is streamed with bytes-so-far reporting; when a download does fail, the error now names the actual reqwest kind (Timeout / Decode / Connect / Body) and the byte count, instead of the bare body-decode label
+
+### Fixed (UX)
+
+- Trash Recovery modal includes a Rules tab and lists deleted Scenes / Projects -- the previous version made some delete operations effectively irreversible
+- Deleting a Category or Tag cascades to Rules (previously left orphaned `categoryId` / `tagIds` references)
+- `syncProject` rolls back partial state on failure mid-sync; the failure is surfaced to the UI
+- Detail SlidePanel closes cleanly when the selected Skill / MCP is deleted (previously lingered empty)
+- Add Category / Tag / Scene validate name uniqueness
+- All Enter handlers guard against IME composition (no accidental submit during Chinese / Japanese / Korean input)
+- HTTP MCP install rejects empty URLs and unsubstituted `{VAR}` placeholders at install time
+- `importStore.importMcps` derives the right source directory for users with a custom `mcpSourceDir` setting
+- `update_rule` / `update_claude_md` support clearing `categoryId`
+- `syncProject` on filesystems without symlink support reports the failure instead of silent no-op
+- Terminal launcher fallbacks are more resilient when the configured terminal is uninstalled
+- Plugin import errors surface to the UI instead of being swallowed by `eprintln`
+
+## [2.1.2] - 2026-05-14
+
+### Fixed
+
+- Scene detail panel surfaces an "Included Rules" section and a Rules count cell (the previous build accepted Rules in the Create Scene modal and wrote them on Sync, but the detail view rendered only Skills and MCP Servers)
+- Scene list rows include a Rules chip alongside Skills / MCPs / Docs
+- Project Configuration panel has a Rules card with the same Synced badge logic as Skills / MCP Servers / CLAUDE.md; the Assigned Scene subtitle reports the Rules count
+- Project list rows include a Rules chip
+
+## [2.1.1] - 2026-05-14
+
+### Fixed
+
+- Sidebar header alignment -- macOS native window controls (close / minimize / zoom) now sit on the same horizontal line as the sidebar's refresh button (`trafficLightPosition.y` tuned from 25 to 29 so both centers align)
+
 ## [2.1.0] - 2026-05-14
 
 ### Added
@@ -22,7 +76,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Scenes include Rules**: multi-select Rules tab in the Create Scene modal; Project sync writes each selected Rule via batch distribute
 - **Category and Tag pages** include a Rules section alongside Skills, MCPs, and CLAUDE.md
 
-[Unreleased]: https://github.com/O0000-code/Ensemble/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/O0000-code/Ensemble/compare/v2.1.3...HEAD
+[2.1.3]: https://github.com/O0000-code/Ensemble/compare/v2.1.2...v2.1.3
+[2.1.2]: https://github.com/O0000-code/Ensemble/compare/v2.1.1...v2.1.2
+[2.1.1]: https://github.com/O0000-code/Ensemble/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/O0000-code/Ensemble/compare/v2.0.0...v2.1.0
 
 ## [2.0.0] - 2026-05-12

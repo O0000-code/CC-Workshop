@@ -1,6 +1,6 @@
 [package]
 name = "ensemble"
-version = "2.1.2"
+version = "2.1.3"
 description = "Manage Claude Code Skills, MCP Servers, CLAUDE.md, and Rule files"
 authors = ["O0000-code"]
 license = "MIT"
@@ -36,6 +36,13 @@ tokio = { version = "1", features = ["process", "io-util", "time", "sync", "rt"]
 regex = "1"
 flate2 = "1"
 tar = "0.4"
+# Round 2 R2-1: NFC normalisation of Skill / MCP ids so the same path stored
+# as NFD on disk (macOS Finder rename) vs. NFC (git clone, Linux scp,
+# iCloud) collapses to a single metadata key. Without this, the same skill
+# is identified as two distinct entries in `data.json::skill_metadata` and
+# user-set category / tags revert on every scan. See
+# `.dev/bug-audit-2026-05-15/round2/G1_plan.md`.
+unicode-normalization = "0.1"
 
 [dev-dependencies]
 tempfile = "3"

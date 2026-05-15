@@ -44,7 +44,7 @@ export function LauncherModal({ isOpen, folderPath, onClose }: LauncherModalProp
         onClose();
       }
     },
-    [onClose]
+    [onClose],
   );
 
   // Disable body scroll when modal is open
@@ -112,14 +112,29 @@ export function LauncherModal({ isOpen, folderPath, onClose }: LauncherModalProp
 
       onClose();
     } catch (err) {
-      setError(typeof err === 'string' ? err : String(err));
+      // R2-8d: the backend returns "TerminalNotInstalled:<App>" when the
+      // user-selected terminal is missing. Surface this as a friendly,
+      // actionable message instead of the raw OS-level error string.
+      const raw = typeof err === 'string' ? err : String(err);
+      if (raw.startsWith('TerminalNotInstalled:')) {
+        const missing = raw.substring('TerminalNotInstalled:'.length).trim();
+        setError(
+          `${missing} doesn't appear to be installed on this Mac. Open Settings → Launch Configuration and pick a different terminal, or install ${missing}.`,
+        );
+      } else {
+        setError(raw);
+      }
     } finally {
       setIsLaunching(false);
     }
   };
 
   // Get skill, MCP, and CLAUDE.md counts for a scene
-  const getSceneCounts = (scene: { skillIds: string[]; mcpIds: string[]; claudeMdIds?: string[] }) => {
+  const getSceneCounts = (scene: {
+    skillIds: string[];
+    mcpIds: string[];
+    claudeMdIds?: string[];
+  }) => {
     return {
       skillCount: scene.skillIds.length,
       mcpCount: scene.mcpIds.length,
@@ -202,7 +217,8 @@ export function LauncherModal({ isOpen, folderPath, onClose }: LauncherModalProp
                         {scene.name}
                       </span>
                       <span className="text-xs text-[#71717A]">
-                        {skillCount} Skills · {mcpCount} MCPs{claudeMdCount > 0 ? ` · ${claudeMdCount} Docs` : ''}
+                        {skillCount} Skills · {mcpCount} MCPs
+                        {claudeMdCount > 0 ? ` · ${claudeMdCount} Docs` : ''}
                       </span>
                     </div>
                   </div>

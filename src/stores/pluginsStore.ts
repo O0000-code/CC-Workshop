@@ -4,6 +4,8 @@ import {
   DetectedPluginSkill,
   DetectedPluginMcp,
   PluginImportItem,
+  PluginImportResult,
+  PluginImportCleanupResult,
 } from '../types/plugin';
 import { useSettingsStore } from './settingsStore';
 import { useSkillsStore } from './skillsStore';
@@ -29,7 +31,7 @@ interface PluginsState {
   detectedPluginMcps: DetectedPluginMcp[];
 
   // Imported records (loaded from AppData)
-  importedPluginSkills: string[];  // pluginId list
+  importedPluginSkills: string[]; // pluginId list
   importedPluginMcps: string[];
 
   // Plugin enabled status cache
@@ -48,8 +50,14 @@ interface PluginsState {
   loadInstalledPlugins: () => Promise<void>;
   detectPluginSkillsForImport: () => Promise<void>;
   detectPluginMcpsForImport: () => Promise<void>;
-  importPluginSkills: (items: PluginImportItem[]) => Promise<string[]>;
-  importPluginMcps: (items: PluginImportItem[]) => Promise<string[]>;
+  /**
+   * Import plugin Skills (R2-6). Returns the full `PluginImportResult` so
+   * the caller can show per-item failures inline before closing the modal.
+   * Backwards compatibility: callers that only care about success counts
+   * can read `result.imported.length`.
+   */
+  importPluginSkills: (items: PluginImportItem[]) => Promise<PluginImportResult>;
+  importPluginMcps: (items: PluginImportItem[]) => Promise<PluginImportResult>;
   refreshPluginEnabledStatus: () => Promise<void>;
   loadImportedPluginIds: () => Promise<void>;
   setImportedPluginSkills: (ids: string[]) => void;
@@ -68,7 +76,7 @@ interface PluginsState {
 // ============================================================================
 const persistImportedPluginIds = async (
   importedPluginSkills: string[],
-  importedPluginMcps: string[]
+  importedPluginMcps: string[],
 ) => {
   if (!isTauri()) {
     return;
@@ -144,6 +152,12 @@ export const usePluginsStore = create<PluginsState>((set, get) => ({
 
   // ============================================================================
   // Detect plugin Skills for import
+  //
+  // R2-10: call `cleanup_orphan_plugin_imports` before reading markers so
+  // any marker pointing at a plugin uninstalled outside Ensemble drops
+  // out before we ask the backend to detect. Silent self-heal — the user
+  // sees nothing unusual but reinstalling the same plugin no longer
+  // shows "Already imported" with broken symlinks underneath.
   // ============================================================================
   detectPluginSkillsForImport: async () => {
     if (!isTauri()) {
@@ -154,6 +168,26 @@ export const usePluginsStore = create<PluginsState>((set, get) => ({
     set({ isDetectingSkills: true, error: null });
 
     try {
+      // R2-10: prune orphan markers before reading. Failures here are
+      // non-fatal — log + proceed with whatever markers exist.
+      try {
+        const cleanup = await safeInvoke<PluginImportCleanupResult>(
+          'cleanup_orphan_plugin_imports',
+        );
+        if (cleanup && (cleanup.removedSkills > 0 || cleanup.removedMcps > 0)) {
+          // Diagnostic only — orphan cleanup is a silent self-heal. Use
+          // `console.warn` over `console.log` so it surfaces in the
+          // browser devtools' default "warnings + errors" filter without
+          // tripping the project's no-console ESLint rule.
+          console.warn(
+            `[plugins] Cleaned up ${cleanup.removedSkills} orphan skill markers, ` +
+              `${cleanup.removedMcps} orphan MCP markers`,
+          );
+        }
+      } catch (e) {
+        console.warn('Failed to clean up orphan plugin imports (non-fatal):', e);
+      }
+
       // Load latest imported IDs from AppData first
       const appData = await safeInvoke<AppData>('read_app_data');
       const importedPluginSkills = appData?.importedPluginSkills || [];
@@ -165,7 +199,7 @@ export const usePluginsStore = create<PluginsState>((set, get) => ({
 
       set({
         detectedPluginSkills: skills || [],
-        isDetectingSkills: false
+        isDetectingSkills: false,
       });
     } catch (error) {
       const message = typeof error === 'string' ? error : String(error);
@@ -175,7 +209,8 @@ export const usePluginsStore = create<PluginsState>((set, get) => ({
   },
 
   // ============================================================================
-  // Detect plugin MCPs for import
+  // Detect plugin MCPs for import — see `detectPluginSkillsForImport` for the
+  // shared R2-10 orphan-marker cleanup rationale.
   // ============================================================================
   detectPluginMcpsForImport: async () => {
     if (!isTauri()) {
@@ -186,6 +221,25 @@ export const usePluginsStore = create<PluginsState>((set, get) => ({
     set({ isDetectingMcps: true, error: null });
 
     try {
+      // R2-10: prune orphan markers before reading.
+      try {
+        const cleanup = await safeInvoke<PluginImportCleanupResult>(
+          'cleanup_orphan_plugin_imports',
+        );
+        if (cleanup && (cleanup.removedSkills > 0 || cleanup.removedMcps > 0)) {
+          // Diagnostic only — orphan cleanup is a silent self-heal. Use
+          // `console.warn` over `console.log` so it surfaces in the
+          // browser devtools' default "warnings + errors" filter without
+          // tripping the project's no-console ESLint rule.
+          console.warn(
+            `[plugins] Cleaned up ${cleanup.removedSkills} orphan skill markers, ` +
+              `${cleanup.removedMcps} orphan MCP markers`,
+          );
+        }
+      } catch (e) {
+        console.warn('Failed to clean up orphan plugin imports (non-fatal):', e);
+      }
+
       // Load latest imported IDs from AppData first
       const appData = await safeInvoke<AppData>('read_app_data');
       const importedPluginMcps = appData?.importedPluginMcps || [];
@@ -197,7 +251,7 @@ export const usePluginsStore = create<PluginsState>((set, get) => ({
 
       set({
         detectedPluginMcps: mcps || [],
-        isDetectingMcps: false
+        isDetectingMcps: false,
       });
     } catch (error) {
       const message = typeof error === 'string' ? error : String(error);
@@ -207,16 +261,23 @@ export const usePluginsStore = create<PluginsState>((set, get) => ({
   },
 
   // ============================================================================
-  // Import plugin Skills
+  // Import plugin Skills (R2-6)
+  //
+  // The backend now returns `PluginImportResult { imported, errors }`. We
+  // pass the full result back to the caller so the modal can show a
+  // partial-failure banner; the marker-list persistence below uses only
+  // `imported`, preserving prior behaviour for fully-successful imports.
   // ============================================================================
   importPluginSkills: async (items: PluginImportItem[]) => {
+    const emptyResult: PluginImportResult = { imported: [], errors: [] };
+
     if (!isTauri()) {
       console.warn('PluginsStore: Cannot import plugin skills in browser mode');
-      return [];
+      return emptyResult;
     }
 
     if (items.length === 0) {
-      return [];
+      return emptyResult;
     }
 
     set({ isImporting: true, error: null });
@@ -224,40 +285,45 @@ export const usePluginsStore = create<PluginsState>((set, get) => ({
     try {
       const { skillSourceDir } = useSettingsStore.getState();
 
-      const importedIds = await safeInvoke<string[]>('import_plugin_skills', {
+      const result = await safeInvoke<PluginImportResult>('import_plugin_skills', {
         items,
         destDir: skillSourceDir,
       });
 
-      if (importedIds && importedIds.length > 0) {
+      const safeResult: PluginImportResult = result ?? emptyResult;
+
+      if (safeResult.imported.length > 0) {
         // Update the imported plugin skills list
-        get().addImportedPluginSkills(importedIds);
+        get().addImportedPluginSkills(safeResult.imported);
 
         // Reload skills to show the newly imported ones
         await useSkillsStore.getState().loadSkills();
       }
 
       set({ isImporting: false });
-      return importedIds || [];
+      return safeResult;
     } catch (error) {
       const message = typeof error === 'string' ? error : String(error);
       console.error('Failed to import plugin skills:', error);
       set({ error: message, isImporting: false });
-      return [];
+      return emptyResult;
     }
   },
 
   // ============================================================================
-  // Import plugin MCPs
+  // Import plugin MCPs (R2-6) — see `importPluginSkills` for the rationale
+  // around the new `PluginImportResult` return shape.
   // ============================================================================
   importPluginMcps: async (items: PluginImportItem[]) => {
+    const emptyResult: PluginImportResult = { imported: [], errors: [] };
+
     if (!isTauri()) {
       console.warn('PluginsStore: Cannot import plugin MCPs in browser mode');
-      return [];
+      return emptyResult;
     }
 
     if (items.length === 0) {
-      return [];
+      return emptyResult;
     }
 
     set({ isImporting: true, error: null });
@@ -265,26 +331,28 @@ export const usePluginsStore = create<PluginsState>((set, get) => ({
     try {
       const { mcpSourceDir } = useSettingsStore.getState();
 
-      const importedIds = await safeInvoke<string[]>('import_plugin_mcps', {
+      const result = await safeInvoke<PluginImportResult>('import_plugin_mcps', {
         items,
         destDir: mcpSourceDir,
       });
 
-      if (importedIds && importedIds.length > 0) {
+      const safeResult: PluginImportResult = result ?? emptyResult;
+
+      if (safeResult.imported.length > 0) {
         // Update the imported plugin MCPs list
-        get().addImportedPluginMcps(importedIds);
+        get().addImportedPluginMcps(safeResult.imported);
 
         // Reload MCPs to show the newly imported ones
         await useMcpsStore.getState().loadMcps();
       }
 
       set({ isImporting: false });
-      return importedIds || [];
+      return safeResult;
     } catch (error) {
       const message = typeof error === 'string' ? error : String(error);
       console.error('Failed to import plugin MCPs:', error);
       set({ error: message, isImporting: false });
-      return [];
+      return emptyResult;
     }
   },
 

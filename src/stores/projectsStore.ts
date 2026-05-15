@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import type { Project, Scene } from '../types';
+import type { ClaudeMdDistributionResult } from '../types/claudeMd';
+import type { RuleDistributionResult } from '../types/rule';
 import { useScenesStore } from './scenesStore';
 import { useSkillsStore } from './skillsStore';
 import { useMcpsStore } from './mcpsStore';
@@ -20,6 +22,30 @@ interface NewProjectForm {
   sceneId: string;
 }
 
+/**
+ * Per-step result of a `syncProject` run.
+ *
+ * Round 2 fix R2-3 (R1 A7 / R7 F7-3 / R1 F5): the 4-step sync chain
+ * (sync_project_config → distribute_scene_claude_md → distribute_scene_rules
+ * → update_project lastSynced) previously surfaced only a single thrown
+ * error to the UI, leaving the user with no idea which step failed or
+ * whether the project was now half-synced. The store now collects one
+ * `SyncStepResult` per attempted step so `ProjectsPage` can render a
+ * structured banner naming each step's outcome.
+ *
+ * Steps that were skipped (e.g. Scene has no CLAUDE.md / Rules) are
+ * omitted from the array — the consumer should treat missing entries
+ * as "not applicable", not "succeeded silently".
+ */
+export interface SyncStepResult {
+  /** Human-readable step name, shown verbatim to the user. */
+  step: string;
+  /** True if every operation in this step succeeded. */
+  ok: boolean;
+  /** Failure message when `ok === false`. Omitted on success. */
+  error?: string;
+}
+
 interface ProjectsState {
   // Data
   projects: Project[];
@@ -32,6 +58,17 @@ interface ProjectsState {
   error: string | null;
   syncingProjectId: string | null;
 
+  /**
+   * Per-step results of the most recent `syncProject` run. Cleared when
+   * the user dismisses the banner or starts a new sync. `null` means
+   * there is no recent sync outcome to surface; an empty array means a
+   * sync was attempted but no step ran (defensive — should not happen
+   * in practice).
+   */
+  syncStepResults: SyncStepResult[] | null;
+  /** Project id the `syncStepResults` belong to, for banner targeting. */
+  syncResultsProjectId: string | null;
+
   // New project form
   newProject: NewProjectForm;
 
@@ -42,6 +79,12 @@ interface ProjectsState {
   startCreating: () => void;
   cancelCreating: () => void;
   updateNewProject: (data: Partial<NewProjectForm>) => void;
+  /**
+   * Clear the most recent sync step results — used by the banner's
+   * "Dismiss" button. Does not roll back any filesystem state; that is
+   * the user's job via `clearProjectConfig`.
+   */
+  clearSyncResults: () => void;
 
   // Tauri Actions
   loadProjects: () => Promise<void>;
@@ -71,6 +114,8 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
   },
   error: null,
   syncingProjectId: null,
+  syncStepResults: null,
+  syncResultsProjectId: null,
   newProject: {
     name: '',
     path: '',
@@ -116,6 +161,8 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
     set((state) => ({
       newProject: { ...state.newProject, ...data },
     })),
+
+  clearSyncResults: () => set({ syncStepResults: null, syncResultsProjectId: null }),
 
   // Tauri Actions
   loadProjects: async () => {
@@ -221,49 +268,140 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
       .map((mcpId) => allMcps.find((m) => m.id === mcpId))
       .filter((m): m is NonNullable<typeof m> => m !== undefined);
 
-    set({ syncingProjectId: id, error: null });
+    // Round 2 fix R2-3: step-level reporting. Each of the four steps is
+    // tried in its own try/catch, and the per-item Vec returned by
+    // `distribute_scene_claude_md` / `distribute_scene_rules` is
+    // inspected for `success: false` entries (backend convention: those
+    // commands always return Ok but include per-item errors). Any step
+    // failure aborts the chain (later steps would touch the same
+    // partially-synced project), the collected results are persisted to
+    // store state for the banner to render, and an Error is thrown so
+    // existing toast / store-error consumers still light up.
+    const stepResults: SyncStepResult[] = [];
+
+    set({
+      syncingProjectId: id,
+      error: null,
+      syncStepResults: null,
+      syncResultsProjectId: null,
+    });
+
     try {
-      // Sync Skills (symlinks) and MCP config (.mcp.json)
-      await safeInvoke('sync_project_config', {
-        projectPath: project.path,
-        skillPaths: skillPaths,
-        mcpServers: mcpServers,
-      });
+      // Step 1: Skills (symlinks) + .mcp.json
+      try {
+        await safeInvoke('sync_project_config', {
+          projectPath: project.path,
+          skillPaths: skillPaths,
+          mcpServers: mcpServers,
+        });
+        stepResults.push({ step: 'Skills + MCP config', ok: true });
+      } catch (e) {
+        stepResults.push({ step: 'Skills + MCP config', ok: false, error: String(e) });
+        throw new Error(`Sync step "Skills + MCP config" failed: ${String(e)}`);
+      }
 
-      // Distribute CLAUDE.md files if scene has any
+      // Step 2: CLAUDE.md distribution (only if scene references any)
       if (scene.claudeMdIds && scene.claudeMdIds.length > 0) {
-        // Get distribution path from settings (default: '.claude/CLAUDE.md')
         const claudeMdDistributionPath = useSettingsStore.getState().claudeMdDistributionPath;
-        await safeInvoke('distribute_scene_claude_md', {
-          claudeMdIds: scene.claudeMdIds,
-          projectPath: project.path,
-          targetPath: claudeMdDistributionPath,
-          conflictResolution: 'backup', // Backup existing files
-        });
+        try {
+          const results =
+            (await safeInvoke<ClaudeMdDistributionResult[]>('distribute_scene_claude_md', {
+              claudeMdIds: scene.claudeMdIds,
+              projectPath: project.path,
+              targetPath: claudeMdDistributionPath,
+              conflictResolution: 'backup', // Backup existing files
+            })) ?? [];
+          // Backend convention: the batch IPC returns Ok with per-item
+          // success flags. We must inspect them — otherwise a partial
+          // failure (1/3 CLAUDE.md couldn't be written) would slip past
+          // the catch entirely.
+          const failures = results.filter((r) => !r.success);
+          if (failures.length > 0) {
+            const summary = `${failures.length} file(s) failed: ${failures
+              .map((f) => f.error ?? 'unknown error')
+              .join('; ')}`;
+            stepResults.push({ step: 'CLAUDE.md distribute', ok: false, error: summary });
+            throw new Error(`Sync step "CLAUDE.md distribute" failed: ${summary}`);
+          }
+          stepResults.push({ step: 'CLAUDE.md distribute', ok: true });
+        } catch (e) {
+          // Either the IPC itself threw, or our per-item check rethrew.
+          // Only push a step result if we haven't already (the per-item
+          // branch pushes before throwing).
+          if (
+            stepResults.length === 0 ||
+            stepResults[stepResults.length - 1]?.step !== 'CLAUDE.md distribute'
+          ) {
+            stepResults.push({ step: 'CLAUDE.md distribute', ok: false, error: String(e) });
+          }
+          throw e;
+        }
       }
 
-      // Distribute Rules if the Scene references any. Target is fixed at
-      // `<project>/.claude/rules/<filename>.md` per `.dev/rule-management/01_design.md`,
-      // so there is no `targetPath` parameter — conflict policy stays `backup`
-      // for parity with the CLAUDE.md branch above.
+      // Step 3: Rules distribution (target is fixed at
+      // `<project>/.claude/rules/<filename>.md` per
+      // `.dev/rule-management/01_design.md`, so no `targetPath` param.
+      // Same per-item check pattern as Step 2.)
       if (scene.ruleIds && scene.ruleIds.length > 0) {
-        await safeInvoke('distribute_scene_rules', {
-          ruleIds: scene.ruleIds,
-          projectPath: project.path,
-          conflictResolution: 'backup',
-        });
+        try {
+          const results =
+            (await safeInvoke<RuleDistributionResult[]>('distribute_scene_rules', {
+              ruleIds: scene.ruleIds,
+              projectPath: project.path,
+              conflictResolution: 'backup',
+            })) ?? [];
+          const failures = results.filter((r) => !r.success);
+          if (failures.length > 0) {
+            const summary = `${failures.length} rule(s) failed: ${failures
+              .map((f) => f.error ?? 'unknown error')
+              .join('; ')}`;
+            stepResults.push({ step: 'Rules distribute', ok: false, error: summary });
+            throw new Error(`Sync step "Rules distribute" failed: ${summary}`);
+          }
+          stepResults.push({ step: 'Rules distribute', ok: true });
+        } catch (e) {
+          if (
+            stepResults.length === 0 ||
+            stepResults[stepResults.length - 1]?.step !== 'Rules distribute'
+          ) {
+            stepResults.push({ step: 'Rules distribute', ok: false, error: String(e) });
+          }
+          throw e;
+        }
       }
 
-      // Update lastSynced
+      // Step 4: update lastSynced timestamp
       const now = new Date().toISOString();
-      await safeInvoke('update_project', { id, lastSynced: now });
+      try {
+        await safeInvoke('update_project', { id, lastSynced: now });
+        stepResults.push({ step: 'Update last-synced timestamp', ok: true });
+      } catch (e) {
+        stepResults.push({
+          step: 'Update last-synced timestamp',
+          ok: false,
+          error: String(e),
+        });
+        throw new Error(`Sync step "Update last-synced timestamp" failed: ${String(e)}`);
+      }
 
+      // All steps succeeded — clear any previous result banner since the
+      // user just got a clean run, then update local lastSynced.
       set((state) => ({
         projects: state.projects.map((p) => (p.id === id ? { ...p, lastSynced: now } : p)),
         syncingProjectId: null,
+        syncStepResults: null,
+        syncResultsProjectId: null,
       }));
     } catch (error) {
-      set({ error: String(error), syncingProjectId: null });
+      // Partial-fail path: keep `stepResults` so the page can render the
+      // banner naming exactly which step blew up. `error` still set so
+      // existing toast / banner consumers behave as before.
+      set({
+        error: String(error),
+        syncingProjectId: null,
+        syncStepResults: stepResults,
+        syncResultsProjectId: id,
+      });
       throw error;
     }
   },

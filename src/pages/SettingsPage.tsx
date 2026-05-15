@@ -291,6 +291,29 @@ export function SettingsPage() {
   const supportsOpenMode = terminalApp === 'Warp' || terminalApp === 'Ghostty';
   const terminalOpenModeLabel = terminalApp === 'Ghostty' ? 'Ghostty Open Mode' : 'Warp Open Mode';
 
+  // R2-8e: validate the user-selected terminal app whenever it changes.
+  // `null` = not yet checked (initial mount / between checks), so we
+  // render no status dot. The dot is intentionally subtle — it confirms
+  // installation rather than nagging — and the row only adds a red
+  // warning line when the answer is definitively "not installed".
+  const [terminalAppInstalled, setTerminalAppInstalled] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setTerminalAppInstalled(null);
+    safeInvoke<boolean>('validate_terminal_app', { name: terminalApp })
+      .then((result) => {
+        if (!cancelled) setTerminalAppInstalled(result ?? null);
+      })
+      .catch(() => {
+        // Unknown terminal name shouldn't happen because the dropdown is
+        // a closed set, but be defensive — show no indicator on error.
+        if (!cancelled) setTerminalAppInstalled(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [terminalApp]);
+
   // Callback to refresh all data after trash recovery
   const handleRestoreComplete = useCallback(async () => {
     // Reload all data stores in parallel for better performance.
@@ -530,18 +553,44 @@ export function SettingsPage() {
                     Terminal Application
                   </span>
                   <span className="text-xs text-[#71717A]">Select your preferred terminal app</span>
+                  {/* R2-8e: visible "not installed" warning sits in the
+                      description column so it shares the dropdown row
+                      and does not require a new layout slot. */}
+                  {terminalAppInstalled === false && (
+                    <span className="text-xs text-[#DC2626]">
+                      {terminalApp} doesn't appear to be installed on this Mac.
+                    </span>
+                  )}
                 </div>
-                <CustomSelect
-                  value={terminalApp}
-                  onChange={setTerminalApp}
-                  options={[
-                    { value: 'Terminal', label: 'Terminal.app' },
-                    { value: 'iTerm', label: 'iTerm2' },
-                    { value: 'Warp', label: 'Warp' },
-                    { value: 'Ghostty', label: 'Ghostty' },
-                    { value: 'Alacritty', label: 'Alacritty' },
-                  ]}
-                />
+                <div className="flex items-center gap-2">
+                  {/* R2-8e: status dot. Green = present, red = missing,
+                      hidden = not yet checked. 6 px circle aligns with
+                      the existing "Installed" badge style elsewhere on
+                      this page. */}
+                  {terminalAppInstalled === true && (
+                    <span
+                      className="h-1.5 w-1.5 rounded-full bg-[#16A34A]"
+                      aria-label={`${terminalApp} installed`}
+                    />
+                  )}
+                  {terminalAppInstalled === false && (
+                    <span
+                      className="h-1.5 w-1.5 rounded-full bg-[#DC2626]"
+                      aria-label={`${terminalApp} not installed`}
+                    />
+                  )}
+                  <CustomSelect
+                    value={terminalApp}
+                    onChange={setTerminalApp}
+                    options={[
+                      { value: 'Terminal', label: 'Terminal.app' },
+                      { value: 'iTerm', label: 'iTerm2' },
+                      { value: 'Warp', label: 'Warp' },
+                      { value: 'Ghostty', label: 'Ghostty' },
+                      { value: 'Alacritty', label: 'Alacritty' },
+                    ]}
+                  />
+                </div>
               </Row>
 
               {/* Open Mode - Only shown for terminal apps that support window/tab selection */}

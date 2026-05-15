@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
+import { isEnterCommit } from '@/utils/keyboard';
 
 // ============================================================================
 // 预设颜色
@@ -7,11 +8,26 @@ import { createPortal } from 'react-dom';
 
 export const PRESET_COLORS = [
   // Row 1: 中性色 (Zinc)
-  '#18181B', '#3F3F46', '#71717A', '#A1A1AA', '#D4D4D8', '#E4E4E7',
+  '#18181B',
+  '#3F3F46',
+  '#71717A',
+  '#A1A1AA',
+  '#D4D4D8',
+  '#E4E4E7',
   // Row 2: 暖色调
-  '#EF4444', '#F97316', '#EAB308', '#22C55E', '#10B981', '#06B6D4',
+  '#EF4444',
+  '#F97316',
+  '#EAB308',
+  '#22C55E',
+  '#10B981',
+  '#06B6D4',
   // Row 3: 冷色调
-  '#3B82F6', '#6366F1', '#8B5CF6', '#A855F7', '#EC4899', '#F43F5E',
+  '#3B82F6',
+  '#6366F1',
+  '#8B5CF6',
+  '#A855F7',
+  '#EC4899',
+  '#F43F5E',
 ] as const;
 
 // ============================================================================
@@ -109,10 +125,7 @@ export const ColorPicker: React.FC<ColorPickerProps> = ({
 
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node;
-      if (
-        panelRef.current?.contains(target) ||
-        triggerRef.current?.contains(target)
-      ) {
+      if (panelRef.current?.contains(target) || triggerRef.current?.contains(target)) {
         return;
       }
       setIsOpen(false);
@@ -162,7 +175,10 @@ export const ColorPicker: React.FC<ColorPickerProps> = ({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && inputValue.length === 6) {
+    // IME guard — never commit a hex value during composition. A hex
+    // input has no realistic CJK use case, but matching the global
+    // pattern keeps behavior consistent and future-proof.
+    if (isEnterCommit(e) && inputValue.length === 6) {
       onChange(`#${inputValue}`);
     }
   };
@@ -274,7 +290,7 @@ export const ColorPicker: React.FC<ColorPickerProps> = ({
               ))}
             </div>
           </div>,
-          document.body
+          document.body,
         )}
     </>
   );

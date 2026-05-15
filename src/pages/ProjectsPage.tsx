@@ -68,6 +68,8 @@ export function ProjectsPage() {
     isCreating,
     filter,
     newProject,
+    syncStepResults,
+    syncResultsProjectId,
     setFilter,
     selectProject,
     startCreating,
@@ -78,8 +80,36 @@ export function ProjectsPage() {
     deleteProject,
     syncProject,
     clearProjectConfig,
+    clearSyncResults,
     selectProjectFolder,
   } = useProjectsStore();
+
+  // Round 2 fix R2-3: derive the partial-sync banner from the most
+  // recent run's step results. A banner appears whenever any step
+  // failed; an all-success run sets `syncStepResults` back to null in
+  // the store, so we never display "Sync succeeded" — the user already
+  // sees lastSynced in the ProjectCard.
+  const failedSteps = useMemo(() => syncStepResults?.filter((s) => !s.ok) ?? [], [syncStepResults]);
+  const showSyncBanner = failedSteps.length > 0;
+  const syncBannerProject = useMemo(
+    () => projects.find((p) => p.id === syncResultsProjectId) ?? null,
+    [projects, syncResultsProjectId],
+  );
+
+  // "Clear & Retry" action for the banner — invokes the existing
+  // clearProjectConfig (deletes managed symlinks / files) then dismisses
+  // the banner. We deliberately do NOT auto-retry sync afterward: the
+  // user should see a clean state and decide whether to re-sync.
+  const handleClearAndRetry = async () => {
+    if (!syncBannerProject) return;
+    try {
+      await clearProjectConfig(syncBannerProject.id);
+      clearSyncResults();
+    } catch {
+      // clearProjectConfig writes to `error` on failure — leave the
+      // banner up so the user can see both issues at once.
+    }
+  };
 
   // Get scenes from scenesStore
   const scenes = useScenesStore((state) => state.scenes);
@@ -314,6 +344,75 @@ export function ProjectsPage() {
           ${isDetailOpen ? 'mr-[800px]' : ''}
         `}
       >
+        {/* Round 2 fix R2-3 banner: when the most recent syncProject run
+            had a partial failure, list per-step outcomes so the user can
+            see exactly which step blew up and which side-effects already
+            landed on disk. Color tokens follow design-language
+            `--color-error*` (same as MainLayout global error banner).
+            "Clear & Retry" runs `clearProjectConfig` to put the project
+            back into a known-clean state; "Dismiss" just hides the
+            banner. */}
+        {showSyncBanner && (
+          <div
+            role="alert"
+            className="mb-4 rounded-md border px-4 py-3"
+            style={{
+              backgroundColor: 'var(--color-error-bg)',
+              borderColor: 'var(--color-error)',
+            }}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1">
+                <p className="text-[13px] font-semibold" style={{ color: 'var(--color-error)' }}>
+                  Sync did not complete
+                  {syncBannerProject ? ` for "${syncBannerProject.name}"` : ''}
+                </p>
+                <ul
+                  className="mt-2 flex flex-col gap-1 text-[12px]"
+                  style={{ color: 'var(--color-error)' }}
+                >
+                  {syncStepResults?.map((s, idx) => (
+                    <li key={`${s.step}-${idx}`} className="flex items-start gap-2">
+                      <span className="mt-[2px] inline-block w-4 shrink-0 font-medium">
+                        {s.ok ? '✓' : '✗'}
+                      </span>
+                      <span>
+                        <span className="font-medium">{s.step}</span>
+                        {!s.ok && s.error ? ` — ${s.error}` : ''}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2 text-[12px]" style={{ color: 'var(--color-error)' }}>
+                  The project may be in a half-synced state. Use "Clear &amp; Retry" to remove
+                  Ensemble-managed files and start over.
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {syncBannerProject && (
+                  <button
+                    onClick={handleClearAndRetry}
+                    className="rounded border px-2.5 py-1 text-[12px] font-medium hover:opacity-80"
+                    style={{
+                      color: 'var(--color-error)',
+                      borderColor: 'var(--color-error)',
+                    }}
+                  >
+                    Clear &amp; Retry
+                  </button>
+                )}
+                <button
+                  onClick={clearSyncResults}
+                  className="text-[12px] font-medium hover:opacity-80"
+                  style={{ color: 'var(--color-error)' }}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Status line — count + context | View Options (Sort only; no Group).
             Hidden while the user is in the "create new project" flow so the
             inline NewProjectItem stays visually anchored. */}

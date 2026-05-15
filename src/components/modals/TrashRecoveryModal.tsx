@@ -1,7 +1,18 @@
 import { useEffect, useCallback, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Check, Info, Wand2, Server, FileText, ScrollText, Layers, Folder } from 'lucide-react';
-import { useTrashStore } from '@/stores/trashStore';
+import {
+  X,
+  Check,
+  Info,
+  Wand2,
+  Server,
+  FileText,
+  ScrollText,
+  Layers,
+  Folder,
+  Trash2,
+} from 'lucide-react';
+import { useTrashStore, type TrashKind } from '@/stores/trashStore';
 import { Tooltip } from '@/components/common/Tooltip';
 import type {
   TrashedSkill,
@@ -88,6 +99,7 @@ export function TrashRecoveryModal({
     trashedItems,
     isLoading,
     isRestoring,
+    isPermanentlyDeleting,
     loadTrashedItems,
     restoreSkill,
     restoreMcp,
@@ -95,11 +107,30 @@ export function TrashRecoveryModal({
     restoreRule,
     restoreScene,
     restoreProject,
+    deleteTrashedItemPermanently,
+    emptyTrash,
     clearError,
   } = useTrashStore();
 
   // Local error state for showing restore errors
   const [restoreError, setRestoreError] = useState<string | null>(null);
+
+  // R2-9 — permanent-delete confirm. Two confirm shapes share one piece of
+  // state so we render exactly one centred dialog at a time:
+  //   - `kind: 'empty'`     → "Empty Trash" pressed (delete everything).
+  //   - `kind: 'single'`    → trash icon on a row pressed (delete one item).
+  // Setting this to null closes the dialog. Confirming dispatches the
+  // matching trashStore action and clears the dialog on completion.
+  type ConfirmRequest =
+    | { kind: 'empty'; itemCount: number }
+    | {
+        kind: 'single';
+        trashKind: TrashKind;
+        pathOrId: string;
+        displayName: string;
+      };
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
+  const [emptyTrashSummary, setEmptyTrashSummary] = useState<string | null>(null);
 
   // Counts
   const skillsCount = trashedItems?.skills.length || 0;
@@ -369,14 +400,23 @@ export function TrashRecoveryModal({
     onRestoreComplete,
   ]);
 
-  // Handle Escape key press
+  // Handle Escape key press.
+  //
+  // R2-9: when the permanent-delete confirm overlay is open, ESC dismisses
+  // *just the confirm* (treat it as Cancel) rather than closing the whole
+  // modal. This matches macOS-native confirm-sheet behaviour and prevents
+  // a stray ESC from blowing away the user's selection state.
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        onClose();
+        if (confirmRequest) {
+          setConfirmRequest(null);
+        } else {
+          onClose();
+        }
       }
     },
-    [onClose],
+    [confirmRequest, onClose],
   );
 
   // Disable body scroll when modal is open
@@ -411,9 +451,71 @@ export function TrashRecoveryModal({
       setSelectedProjects(new Set());
       setActiveTab('skills');
       setRestoreError(null);
+      // R2-9: also clear permanent-delete confirm + empty-trash summary
+      // so a fresh open never inherits a half-dismissed dialog.
+      setConfirmRequest(null);
+      setEmptyTrashSummary(null);
       clearError();
     }
   }, [isOpen, clearError]);
+
+  // R2-9 — handlers for the new permanent-delete actions.
+  //
+  // Open-confirm helpers just set state — they never touch the backend.
+  // The confirm dialog's "Delete Permanently" button is what dispatches
+  // the action (gated by `isPermanentlyDeleting` so a double-click does
+  // not double-fire).
+  const openEmptyTrashConfirm = useCallback(() => {
+    setConfirmRequest({ kind: 'empty', itemCount: totalCount });
+  }, [totalCount]);
+
+  const openSingleDeleteConfirm = useCallback(
+    (trashKind: TrashKind, pathOrId: string, displayName: string) => {
+      setConfirmRequest({ kind: 'single', trashKind, pathOrId, displayName });
+    },
+    [],
+  );
+
+  const handleConfirmDelete = useCallback(async () => {
+    if (!confirmRequest) return;
+    if (confirmRequest.kind === 'empty') {
+      const result = await emptyTrash();
+      setConfirmRequest(null);
+      if (!result.success) {
+        setRestoreError(result.errors[0] || 'Failed to empty trash');
+        return;
+      }
+      // R2-9: show an aggregated summary as the success path so the user
+      // gets confirmation that the action ran. Errors (per-item) get
+      // surfaced through the same red banner used by restore failures.
+      if (result.errors.length > 0) {
+        setRestoreError(`Emptied trash with ${result.errors.length} error(s)`);
+      } else {
+        setEmptyTrashSummary('Trash emptied');
+      }
+    } else {
+      const ok = await deleteTrashedItemPermanently(
+        confirmRequest.trashKind,
+        confirmRequest.pathOrId,
+      );
+      setConfirmRequest(null);
+      if (!ok) {
+        setRestoreError(`Failed to delete '${confirmRequest.displayName}'`);
+      }
+    }
+  }, [confirmRequest, emptyTrash, deleteTrashedItemPermanently]);
+
+  // R2-9: the per-tab "active" trash kind, used by `renderRow` when the
+  // user clicks the trash icon on a row. Scene/Project rows pass `id`
+  // for their backend record; everything else passes the disk path.
+  const trashKindForTab: Record<TabType, TrashKind> = {
+    skills: 'skill',
+    mcps: 'mcp',
+    claudemd: 'claudeMd',
+    rules: 'rule',
+    scenes: 'scene',
+    projects: 'project',
+  };
 
   // Handle overlay click
   const handleOverlayClick = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -439,19 +541,26 @@ export function TrashRecoveryModal({
   ];
 
   // Render a single list item (consistent layout across all six tabs):
-  // checkbox + name + meta line. `meta` is the secondary text (deleted
-  // time, or filename + deleted time for Rules).
+  // checkbox + name + meta line + trash icon. `meta` is the secondary text
+  // (deleted time, or filename + deleted time for Rules). The trash icon
+  // (R2-9) is always present; click stops propagation so it does NOT
+  // toggle the row's checkbox.
+  //
+  // `pathOrId` is the value passed to `deleteTrashedItemPermanently` —
+  // for Scenes/Projects this is the record id; for the other four kinds
+  // it is the on-disk trash path.
   const renderRow = (
     key: string,
     isSelected: boolean,
     onToggle: () => void,
     name: string,
     meta: string,
+    pathOrId: string,
   ) => (
     <div
       key={key}
       onClick={onToggle}
-      className="flex items-center gap-3 py-2.5 px-3 rounded-[6px] hover:bg-[#FAFAFA] cursor-pointer transition-colors"
+      className="group flex items-center gap-3 py-2.5 px-3 rounded-[6px] hover:bg-[#FAFAFA] cursor-pointer transition-colors"
     >
       {/* Checkbox - 16x16 */}
       {isSelected ? (
@@ -466,6 +575,21 @@ export function TrashRecoveryModal({
         <span className="text-[13px] font-medium text-[#18181B] truncate">{name}</span>
         <span className="text-[11px] font-normal text-[#A1A1AA] truncate">{meta}</span>
       </div>
+      {/* R2-9: per-row "Delete Permanently" affordance. Hover-revealed so
+          the row stays visually quiet by default — destructive actions
+          should not advertise themselves. */}
+      <Tooltip content="Delete permanently" position="top">
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            openSingleDeleteConfirm(trashKindForTab[activeTab], pathOrId, name);
+          }}
+          className="w-7 h-7 flex items-center justify-center rounded-[6px] opacity-0 group-hover:opacity-100 hover:bg-[#FEE2E2] transition-all flex-shrink-0"
+          aria-label={`Delete '${name}' permanently`}
+        >
+          <Trash2 className="w-3.5 h-3.5 text-[#A1A1AA] hover:text-[#DC2626]" />
+        </button>
+      </Tooltip>
     </div>
   );
 
@@ -538,6 +662,7 @@ export function TrashRecoveryModal({
           () => handleToggleSkill(skill),
           skill.name,
           formatDeletedTime(skill.deletedAt),
+          skill.path,
         ),
       );
     }
@@ -551,6 +676,7 @@ export function TrashRecoveryModal({
           () => handleToggleMcp(mcp),
           mcp.name,
           formatDeletedTime(mcp.deletedAt),
+          mcp.path,
         ),
       );
     }
@@ -564,6 +690,7 @@ export function TrashRecoveryModal({
           () => handleToggleClaudeMd(claudeMd),
           claudeMd.name,
           formatDeletedTime(claudeMd.deletedAt),
+          claudeMd.path,
         ),
       );
     }
@@ -580,6 +707,7 @@ export function TrashRecoveryModal({
           // rules share the same display name (filename is the Claude
           // Code identity per CLAUDE.md easy-to-miss).
           `${rule.filename} · ${formatDeletedTime(rule.deletedAt)}`,
+          rule.path,
         ),
       );
     }
@@ -596,6 +724,7 @@ export function TrashRecoveryModal({
           () => handleToggleScene(scene),
           scene.name,
           `${bundleSummary} · ${formatDeletedTime(scene.deletedAt)}`,
+          scene.id,
         );
       });
     }
@@ -609,6 +738,7 @@ export function TrashRecoveryModal({
           () => handleToggleProject(project),
           project.name,
           `${project.path} · ${formatDeletedTime(project.deletedAt)}`,
+          project.id,
         ),
       );
     }
@@ -631,13 +761,30 @@ export function TrashRecoveryModal({
               Found {totalCount} {totalCount === 1 ? 'item' : 'items'} in trash
             </p>
           </div>
-          <button
-            onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center rounded-[6px] hover:bg-[#FAFAFA] transition-colors"
-            aria-label="Close modal"
-          >
-            <X className="w-[18px] h-[18px] text-[#A1A1AA]" />
-          </button>
+          <div className="flex items-center gap-2">
+            {/* R2-9: Empty Trash — destructive batch action, only visible
+                when there is something to empty. Same red token as the
+                error banner so the destructive nature reads consistently
+                across the modal. Two-step confirm lives in
+                `confirmRequest` state — this button only opens the dialog. */}
+            {totalCount > 0 && (
+              <button
+                onClick={openEmptyTrashConfirm}
+                className="h-8 px-3 flex items-center gap-1.5 rounded-[6px] text-[12px] font-medium text-[#DC2626] hover:bg-[#FEE2E2] transition-colors"
+                aria-label="Empty Trash"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Empty Trash
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="w-8 h-8 flex items-center justify-center rounded-[6px] hover:bg-[#FAFAFA] transition-colors"
+              aria-label="Close modal"
+            >
+              <X className="w-[18px] h-[18px] text-[#A1A1AA]" />
+            </button>
+          </div>
         </div>
 
         {/* Tab Row - justify-between with tabs left, selection right */}
@@ -711,6 +858,25 @@ export function TrashRecoveryModal({
             </div>
           )}
 
+          {/* R2-9: Empty-trash success banner — positive (zinc tokens
+              rather than red) so the user can distinguish success from
+              partial failure. Same absolute-positioned overlay shape
+              as the error banner for consistency. */}
+          {emptyTrashSummary && !restoreError && (
+            <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-6 py-2.5 bg-[#F4F4F5]">
+              <div className="flex items-center gap-2">
+                <Check className="w-3 h-3 text-[#52525B]" strokeWidth={3} />
+                <span className="text-[12px] text-[#52525B]">{emptyTrashSummary}</span>
+              </div>
+              <button
+                onClick={() => setEmptyTrashSummary(null)}
+                className="text-[11px] font-medium text-[#52525B] hover:text-[#18181B] transition-colors"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
           {/* Tab body — list / loading / empty state */}
           <div className="flex-1 overflow-y-auto py-4 px-6 flex flex-col gap-0.5">
             {renderTabBody()}
@@ -718,6 +884,75 @@ export function TrashRecoveryModal({
 
           {/* Shared footer — same across all tabs */}
           {renderFooter()}
+
+          {/* R2-9: Permanent-delete confirm overlay. Inline (NOT a nested
+              portal) so the visual hierarchy stays within this modal's
+              own layer — design-language Rule "Visual hierarchy ≤ 3
+              layers". Backdrop is the same `bg-black/40` as the modal
+              overlay so the layered look is consistent. */}
+          {confirmRequest && (
+            <div
+              onClick={(e) => {
+                // Click on backdrop only — bail if click came from the
+                // confirm card itself.
+                if (e.target === e.currentTarget) {
+                  setConfirmRequest(null);
+                }
+              }}
+              className="absolute inset-0 z-20 flex items-center justify-center bg-black/40"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="trash-confirm-title"
+            >
+              <div className="w-[380px] bg-white rounded-[12px] shadow-[0_25px_50px_rgba(0,0,0,0.1)] overflow-hidden">
+                <div className="p-5 flex flex-col gap-2">
+                  <h3 id="trash-confirm-title" className="text-[14px] font-semibold text-[#18181B]">
+                    {confirmRequest.kind === 'empty' ? 'Empty Trash?' : 'Delete Permanently?'}
+                  </h3>
+                  <p className="text-[13px] font-normal text-[#52525B]">
+                    {confirmRequest.kind === 'empty' ? (
+                      <>
+                        This will permanently delete all{' '}
+                        <span className="font-medium text-[#18181B]">
+                          {confirmRequest.itemCount}{' '}
+                          {confirmRequest.itemCount === 1 ? 'item' : 'items'}
+                        </span>{' '}
+                        in trash. This cannot be undone.
+                      </>
+                    ) : (
+                      <>
+                        Permanently delete{' '}
+                        <span className="font-medium text-[#18181B]">
+                          &lsquo;{confirmRequest.displayName}&rsquo;
+                        </span>
+                        ? This cannot be undone.
+                      </>
+                    )}
+                  </p>
+                </div>
+                <div className="flex items-center justify-end gap-2.5 px-5 py-3 bg-[#FAFAFA] border-t border-[#E5E5E5]">
+                  <button
+                    onClick={() => setConfirmRequest(null)}
+                    disabled={isPermanentlyDeleting}
+                    className="h-[32px] px-3 rounded-[6px] border border-[#E5E5E5] text-[12px] font-medium text-[#71717A] hover:bg-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleConfirmDelete}
+                    disabled={isPermanentlyDeleting}
+                    className="h-[32px] px-3 rounded-[6px] bg-[#DC2626] text-[12px] font-medium text-white hover:bg-[#B91C1C] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isPermanentlyDeleting
+                      ? 'Deleting...'
+                      : confirmRequest.kind === 'empty'
+                        ? 'Empty Trash'
+                        : 'Delete Permanently'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -218,6 +218,18 @@ export default function MainLayout() {
           if (shouldOpen) {
             await safeInvoke('open_accessibility_settings', {});
           }
+        } else if (errorStr.includes('TerminalNotInstalled:')) {
+          // R2-8d: the backend returns "TerminalNotInstalled:<App>" when
+          // the selected terminal is missing on this Mac. Quick-Action
+          // and shortcut launches happen without the LauncherModal, so
+          // we surface a focused window + confirm dialog here instead
+          // of silently failing.
+          await focusWindow();
+          const match = errorStr.match(/TerminalNotInstalled:([^\s"]+)/);
+          const missing = match ? match[1] : 'the selected terminal';
+          window.alert(
+            `${missing} doesn't appear to be installed on this Mac.\n\nOpen Ensemble Settings → Launch Configuration and pick a different terminal, or install ${missing}.`,
+          );
         } else {
           // Fall back to opening launcher on error - need to show window
           await focusWindow();
@@ -264,6 +276,21 @@ export default function MainLayout() {
 
         // Initialize app data (categories, tags)
         await initApp();
+
+        // Round 2 R2-2: `appStore.initApp` swallows IPC errors and writes
+        // them to `appStore.error`. The structured `EnsembleDirUnwritable:`
+        // shape is fatal for app initialisation — every subsequent loader
+        // would just fail the same way — so we surface it as `initError`
+        // here and bail before the parallel load runs. Reading the latest
+        // state via `getState()` is mandatory: the React hook value
+        // captured at the top of this component is stale until the next
+        // render.
+        const postInitError = useAppStore.getState().error;
+        if (postInitError && postInitError.startsWith('EnsembleDirUnwritable:')) {
+          setInitError(postInitError);
+          setIsInitializing(false);
+          return;
+        }
 
         // Load all data in parallel
         await Promise.all([
@@ -733,8 +760,76 @@ export default function MainLayout() {
     );
   }
 
-  // Show error state if initialization failed
+  // Show error state if initialization failed.
+  //
+  // Round 2 R2-2: when `~/.ensemble/` is owned by root (almost always
+  // because the user ran `sudo open Ensemble.app` once and the directory
+  // ownership flipped), the backend `init_app_data` returns a structured
+  // error prefixed with `EnsembleDirUnwritable:`. We render a dedicated
+  // remediation pane in that case — the generic "Failed to Load" message
+  // is correct but not actionable, and users keep relaunching expecting
+  // a different outcome. The dedicated pane spells out the `chown`
+  // command so they can copy-paste it into Terminal.
   if (initError) {
+    const isDirUnwritable = initError.startsWith('EnsembleDirUnwritable:');
+
+    if (isDirUnwritable) {
+      // Extract the canonical chown command. The backend formats the
+      // message as:
+      //   "EnsembleDirUnwritable: cannot write to <dir>. Hint: ...
+      //    Run: `sudo chown -R $(whoami) <dir>` in Terminal, ..."
+      // We pull the backticked command out so the UI can present it as
+      // a copy-able code block; fall back to the raw message if the
+      // regex doesn't match (defensive — backend wording change should
+      // not break this surface).
+      const commandMatch = initError.match(/Run:\s*`([^`]+)`/);
+      const remediationCommand = commandMatch?.[1] ?? 'sudo chown -R $(whoami) ~/.ensemble';
+
+      return (
+        <div className="flex h-screen w-screen items-center justify-center bg-white px-6">
+          <div
+            role="alertdialog"
+            aria-labelledby="ensemble-dir-unwritable-title"
+            className="flex flex-col items-start gap-4 max-w-xl rounded-md border px-6 py-5"
+            style={{
+              backgroundColor: 'var(--color-error-bg)',
+              borderColor: 'var(--color-error)',
+            }}
+          >
+            <h2
+              id="ensemble-dir-unwritable-title"
+              className="text-[16px] font-semibold"
+              style={{ color: 'var(--color-error)' }}
+            >
+              Ensemble can't write to its data directory
+            </h2>
+            <p className="text-[13px] text-zinc-700">
+              This usually happens after launching Ensemble with{' '}
+              <code className="px-1 rounded bg-zinc-100 text-zinc-800">sudo</code> once — the
+              directory's owner becomes{' '}
+              <code className="px-1 rounded bg-zinc-100 text-zinc-800">root</code> and normal
+              launches can no longer save changes. Run the following in Terminal, then click Retry:
+            </p>
+            <pre className="w-full overflow-x-auto rounded bg-zinc-900 text-zinc-100 text-[12px] px-3 py-2 font-mono">
+              <code>{remediationCommand}</code>
+            </pre>
+            <p className="text-[12px] text-zinc-500">
+              You'll be prompted for your password. The command transfers ownership of the directory
+              back to your user account.
+            </p>
+            <div className="flex gap-2 self-end">
+              <button
+                onClick={() => window.location.reload()}
+                className="px-4 py-2 text-[13px] font-medium text-white bg-zinc-900 rounded-md hover:bg-zinc-800"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-white">
         <div className="flex flex-col items-center gap-4 max-w-md text-center">

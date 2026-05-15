@@ -1,13 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { Category } from '@/types';
 import { ColorPicker } from '@/components/common';
+import { isEnterCommit } from '@/utils/keyboard';
 
 interface CategoryInlineInputProps {
   mode: 'add' | 'edit';
-  category?: Category;  // 编辑模式必需
+  category?: Category; // 编辑模式必需
   onSave: (name: string) => void;
   onCancel: () => void;
-  onColorChange?: (color: string) => void;  // 颜色变更回调
+  onColorChange?: (color: string) => void; // 颜色变更回调
 }
 
 export const CategoryInlineInput: React.FC<CategoryInlineInputProps> = ({
@@ -18,7 +19,9 @@ export const CategoryInlineInput: React.FC<CategoryInlineInputProps> = ({
   onColorChange,
 }) => {
   const [value, setValue] = useState(mode === 'edit' ? category?.name || '' : '');
-  const [currentColor, setCurrentColor] = useState(mode === 'edit' ? category?.color || '#A1A1AA' : '#A1A1AA');
+  const [currentColor, setCurrentColor] = useState(
+    mode === 'edit' ? category?.color || '#A1A1AA' : '#A1A1AA',
+  );
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -44,7 +47,10 @@ export const CategoryInlineInput: React.FC<CategoryInlineInputProps> = ({
   }, [onCancel]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
+    // IME guard: Enter during CJK composition (e.g. picking a Pinyin
+    // candidate) must NOT commit the input — only a real Enter press
+    // outside composition should.
+    if (isEnterCommit(e)) {
       e.preventDefault();
       if (value.trim()) {
         onSave(value.trim());
@@ -67,10 +73,7 @@ export const CategoryInlineInput: React.FC<CategoryInlineInputProps> = ({
       className="flex items-center h-8 px-2.5 gap-2.5 rounded-[6px] bg-[#F4F4F5]"
     >
       {/* 颜色圆点 - ColorPicker 触发器 */}
-      <ColorPicker
-        value={currentColor}
-        onChange={handleColorChange}
-      />
+      <ColorPicker value={currentColor} onChange={handleColorChange} />
 
       {/* 输入框 */}
       <input

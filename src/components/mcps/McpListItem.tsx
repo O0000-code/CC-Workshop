@@ -13,6 +13,7 @@ import {
 } from '@/utils/categoryTree';
 import { TagsWithTooltip } from '@/components/common/TagsWithTooltip';
 import { Badge } from '@/components/common/Badge';
+import { isEnterCommit } from '@/utils/keyboard';
 
 // ============================================================================
 // Animation Constants
@@ -321,7 +322,8 @@ export const McpListItem: React.FC<McpListItemProps> = ({
                   value={pendingTagText}
                   onChange={(e) => setPendingTagText(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
+                    // IME guard — CJK candidate Enter must not commit.
+                    if (isEnterCommit(e)) {
                       e.preventDefault();
                       void handleAddTag();
                     }

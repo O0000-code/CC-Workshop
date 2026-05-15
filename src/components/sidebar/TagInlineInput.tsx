@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { Tag } from '@/types';
+import { isEnterCommit } from '@/utils/keyboard';
 
 interface TagInlineInputProps {
   mode: 'add' | 'edit';
@@ -8,12 +9,7 @@ interface TagInlineInputProps {
   onCancel: () => void;
 }
 
-export const TagInlineInput: React.FC<TagInlineInputProps> = ({
-  mode,
-  tag,
-  onSave,
-  onCancel,
-}) => {
+export const TagInlineInput: React.FC<TagInlineInputProps> = ({ mode, tag, onSave, onCancel }) => {
   const [value, setValue] = useState(mode === 'edit' ? tag?.name || '' : '');
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -40,7 +36,8 @@ export const TagInlineInput: React.FC<TagInlineInputProps> = ({
   }, [onCancel]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
+    // IME guard — see CategoryInlineInput for the same reasoning.
+    if (isEnterCommit(e)) {
       e.preventDefault();
       if (value.trim()) {
         onSave(value.trim());

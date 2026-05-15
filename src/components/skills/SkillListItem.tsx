@@ -12,6 +12,7 @@ import {
   getCategoryDisplayName,
   getCategoryColor as getResolvedCategoryColor,
 } from '@/utils/categoryTree';
+import { isEnterCommit } from '@/utils/keyboard';
 import { Skill } from '@/types';
 
 // ============================================================================
@@ -315,7 +316,8 @@ export const SkillListItem: React.FC<SkillListItemProps> = ({
                   value={pendingTagText}
                   onChange={(e) => setPendingTagText(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
+                    // IME guard — CJK candidate Enter must not commit.
+                    if (isEnterCommit(e)) {
                       e.preventDefault();
                       void handleAddTag();
                     }

@@ -15,10 +15,18 @@ import { useSettingsStore } from './settingsStore';
 // Projects are identified by `id` because their trash records live in
 // `data.json::trashed_scenes` / `trashed_projects` and have no on-disk path.
 
+/**
+ * Trash kind for `deleteTrashedItemPermanently` (R2-9). String discriminator
+ * is intentionally spelt to match the Rust `parse_trash_kind` accepts.
+ */
+export type TrashKind = 'skill' | 'mcp' | 'claudeMd' | 'rule' | 'scene' | 'project';
+
 interface TrashState {
   trashedItems: TrashedItems | null;
   isLoading: boolean;
   isRestoring: boolean;
+  /** R2-9 — separate from `isRestoring` so the UI can show distinct affordances. */
+  isPermanentlyDeleting: boolean;
   error: string | null;
 
   // Actions
@@ -35,6 +43,21 @@ interface TrashState {
    * the backend resets `scene_id` to empty so the user can rebind.
    */
   restoreProject: (id: string) => Promise<boolean>;
+  /**
+   * Permanently remove a single trashed entry (R2-9). Idempotent: removing
+   * an entry that no longer exists returns true. Callers MUST present a
+   * confirm modal before invoking — the backend commits immediately.
+   *
+   * `pathOrId` is the trash path for skill/mcp/claudeMd/rule kinds, and the
+   * record id for scene/project kinds.
+   */
+  deleteTrashedItemPermanently: (kind: TrashKind, pathOrId: string) => Promise<boolean>;
+  /**
+   * Empty all trash (R2-9). Best-effort: per-item failures are returned as
+   * a list so the UI can show "Emptied N, M errors". Callers MUST present
+   * a confirm modal first.
+   */
+  emptyTrash: () => Promise<{ success: boolean; errors: string[] }>;
   clearError: () => void;
 }
 
@@ -43,6 +66,7 @@ export const useTrashStore = create<TrashState>((set, get) => ({
   trashedItems: null,
   isLoading: false,
   isRestoring: false,
+  isPermanentlyDeleting: false,
   error: null,
 
   // Actions
@@ -214,6 +238,56 @@ export const useTrashStore = create<TrashState>((set, get) => ({
       const message = typeof error === 'string' ? error : String(error);
       set({ error: message, isRestoring: false });
       return false;
+    }
+  },
+
+  // R2-9 — permanent single-item delete. Confirm modal is the frontend's
+  // responsibility; this action commits the delete immediately on call.
+  deleteTrashedItemPermanently: async (kind: TrashKind, pathOrId: string) => {
+    if (!isTauri()) {
+      console.warn('TrashStore: Cannot permanently delete in browser mode');
+      return false;
+    }
+
+    set({ isPermanentlyDeleting: true, error: null });
+
+    try {
+      await safeInvoke('delete_trashed_item_permanently', {
+        kind,
+        trashPathOrId: pathOrId,
+      });
+      await get().loadTrashedItems();
+      set({ isPermanentlyDeleting: false });
+      return true;
+    } catch (error) {
+      const message = typeof error === 'string' ? error : String(error);
+      set({ error: message, isPermanentlyDeleting: false });
+      return false;
+    }
+  },
+
+  // R2-9 — empty all trash. Best-effort: per-item errors are surfaced as a
+  // string list so the UI can display them as "Emptied N, M errors".
+  emptyTrash: async () => {
+    if (!isTauri()) {
+      console.warn('TrashStore: Cannot empty trash in browser mode');
+      return { success: false, errors: ['Not available in browser mode'] };
+    }
+
+    const { skillSourceDir } = useSettingsStore.getState();
+    const ensembleDir = skillSourceDir.replace('/skills', '');
+
+    set({ isPermanentlyDeleting: true, error: null });
+
+    try {
+      const errors = (await safeInvoke<string[]>('empty_trash', { ensembleDir })) || [];
+      await get().loadTrashedItems();
+      set({ isPermanentlyDeleting: false });
+      return { success: true, errors };
+    } catch (error) {
+      const message = typeof error === 'string' ? error : String(error);
+      set({ error: message, isPermanentlyDeleting: false });
+      return { success: false, errors: [message] };
     }
   },
 

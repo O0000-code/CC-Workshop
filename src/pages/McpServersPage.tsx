@@ -43,6 +43,7 @@ import { useScenesStore } from '@/stores/scenesStore';
 import { usePluginsStore } from '@/stores/pluginsStore';
 import { useSortPreferencesStore } from '@/stores/sortPreferencesStore';
 import { safeInvoke } from '@/utils/tauri';
+import { isEnterCommit } from '@/utils/keyboard';
 import type { Category, McpServer, McpUsage, Tag, Tool } from '@/types';
 
 // ============================================================================
@@ -552,7 +553,8 @@ export const McpServersPage: React.FC = () => {
 
   // Handle tag input key down
   const handleTagInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && tagInputValue.trim()) {
+    // IME guard — CJK candidate Enter must not commit.
+    if (isEnterCommit(e) && tagInputValue.trim()) {
       e.preventDefault();
       handleAddTag(tagInputValue);
     } else if (e.key === 'Escape') {

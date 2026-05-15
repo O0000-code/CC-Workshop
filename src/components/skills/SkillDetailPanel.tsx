@@ -36,6 +36,7 @@ import { useSkillsStore } from '@/stores/skillsStore';
 import { useAppStore } from '@/stores/appStore';
 import { useScenesStore } from '@/stores/scenesStore';
 import { safeInvoke } from '@/utils/tauri';
+import { isEnterCommit } from '@/utils/keyboard';
 import type { Skill } from '@/types';
 
 // ============================================================================
@@ -330,7 +331,8 @@ export function SkillDetailPanel({ skill, isOpen, onClose }: SkillDetailPanelPro
   };
 
   const handleTagInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && tagInputValue.trim()) {
+    // IME guard — CJK candidate Enter must not commit.
+    if (isEnterCommit(e) && tagInputValue.trim()) {
       e.preventDefault();
       handleAddTag(tagInputValue);
     } else if (e.key === 'Escape') {

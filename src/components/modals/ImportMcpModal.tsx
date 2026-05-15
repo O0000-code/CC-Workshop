@@ -5,7 +5,7 @@ import { useImportStore } from '@/stores/importStore';
 import { usePluginsStore } from '@/stores/pluginsStore';
 import { Tooltip } from '@/components/common/Tooltip';
 import type { DetectedMcp } from '@/types';
-import type { DetectedPluginMcp, PluginImportItem } from '@/types/plugin';
+import type { DetectedPluginMcp, PluginImportError, PluginImportItem } from '@/types/plugin';
 
 type TabType = 'claude' | 'plugin';
 
@@ -60,6 +60,10 @@ export function ImportMcpModal({ isOpen, onClose, onImportComplete }: ImportMcpM
 
   // Track selected plugin MCPs
   const [selectedPluginMcps, setSelectedPluginMcps] = useState<Set<string>>(new Set());
+
+  // R2-6: Plugin MCP import partial-failure surface. Mirrors the skill
+  // import modal — non-empty `errors` keeps the modal open with a banner.
+  const [pluginImportErrors, setPluginImportErrors] = useState<PluginImportError[] | null>(null);
 
   // Use directly from store (populated by openMcpsModal -> detectMcpsOnly)
   const isDetecting = isDetectingMcps;
@@ -163,9 +167,13 @@ export function ImportMcpModal({ isOpen, onClose, onImportComplete }: ImportMcpM
     onClose();
   }, [selectedCount, selectedItems, importMcps, onImportComplete, onClose]);
 
-  // Handle import plugin MCPs
+  // Handle import plugin MCPs (R2-6). Mirrors `handleImportPluginSkills` in
+  // ImportSkillsModal — non-empty `result.errors` keeps the modal open
+  // with a partial-failure banner instead of silently closing.
   const handleImportPluginMcps = useCallback(async () => {
     if (selectedPluginCount === 0) return;
+
+    setPluginImportErrors(null);
 
     // Build import items from selected plugin MCPs
     const itemsToImport: PluginImportItem[] = [];
@@ -186,7 +194,27 @@ export function ImportMcpModal({ isOpen, onClose, onImportComplete }: ImportMcpM
       }
     });
 
-    await importPluginMcps(itemsToImport);
+    const result = await importPluginMcps(itemsToImport);
+
+    if (result.errors.length > 0) {
+      await detectPluginMcpsForImport();
+      setPluginImportErrors(result.errors);
+      const succeededKeys = new Set(result.imported);
+      setSelectedPluginMcps((prev) => {
+        const next = new Set<string>();
+        prev.forEach((key) => {
+          if (!succeededKeys.has(key)) {
+            next.add(key);
+          }
+        });
+        return next;
+      });
+      if (result.imported.length > 0) {
+        onImportComplete?.();
+      }
+      return;
+    }
+
     setSelectedPluginMcps(new Set());
     onImportComplete?.();
     onClose();
@@ -195,6 +223,7 @@ export function ImportMcpModal({ isOpen, onClose, onImportComplete }: ImportMcpM
     selectedPluginMcps,
     unimportedPluginMcps,
     importPluginMcps,
+    detectPluginMcpsForImport,
     onImportComplete,
     onClose,
   ]);
@@ -235,6 +264,9 @@ export function ImportMcpModal({ isOpen, onClose, onImportComplete }: ImportMcpM
     if (!isOpen) {
       setSelectedPluginMcps(new Set());
       setActiveTab('claude');
+      // R2-6: clear the partial-failure banner so a fresh open does not
+      // show stale errors from the previous batch.
+      setPluginImportErrors(null);
     }
   }, [isOpen]);
 
@@ -470,118 +502,159 @@ export function ImportMcpModal({ isOpen, onClose, onImportComplete }: ImportMcpM
         {/* Plugin Tab Content */}
         {activeTab === 'plugin' && (
           <>
-            {/* Modal Body - Scrollable Plugin MCPs List */}
-            <div className="flex-1 overflow-y-auto py-4 px-6 flex flex-col gap-0.5">
-              {isDetectingPluginMcps ? (
-                <div className="flex items-center justify-center h-full">
-                  <span className="text-[13px] text-[#71717A]">Detecting plugin MCPs...</span>
-                </div>
-              ) : allPluginMcps.length === 0 ? (
-                <div className="flex items-center justify-center h-full flex-col gap-2">
-                  <Puzzle className="w-8 h-8 text-[#D4D4D8]" />
-                  <span className="text-[13px] text-[#71717A]">No plugin MCPs available</span>
-                  <span className="text-[11px] text-[#A1A1AA]">
-                    Install plugins with MCPs to import them here
-                  </span>
-                </div>
-              ) : (
-                allPluginMcps.map((mcp) => {
-                  const key = `${mcp.pluginId}|${mcp.mcpName}`;
-                  const isSelected = selectedPluginMcps.has(key);
-                  const isAlreadyImported = mcp.isImported;
-                  return (
-                    <div
-                      key={key}
-                      onClick={() => !isAlreadyImported && handleTogglePluginMcp(mcp)}
-                      className={`flex items-center gap-3 p-3 rounded-[6px] transition-colors ${
-                        isAlreadyImported
-                          ? 'opacity-50 cursor-default'
-                          : 'hover:bg-[#FAFAFA] cursor-pointer'
-                      }`}
-                    >
-                      {/* Checkbox - 16x16 */}
-                      {isAlreadyImported ? (
-                        <div className="w-4 h-4 rounded-[4px] bg-[#D4D4D8] flex items-center justify-center flex-shrink-0">
-                          <Check className="w-2.5 h-2.5 text-white" strokeWidth={3} />
-                        </div>
-                      ) : isSelected ? (
-                        <div className="w-4 h-4 rounded-[4px] bg-[#18181B] flex items-center justify-center flex-shrink-0">
-                          <Check className="w-2.5 h-2.5 text-white" strokeWidth={3} />
-                        </div>
-                      ) : (
-                        <div className="w-4 h-4 rounded-[4px] border-[1.5px] border-[#D4D4D8] bg-transparent flex-shrink-0" />
-                      )}
-                      {/* Plugin MCP Info - gap 4px */}
-                      <div className="flex-1 flex flex-col gap-1 min-w-0">
-                        {/* Name row with Marketplace label - gap 8px */}
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`text-[13px] font-medium truncate ${isAlreadyImported ? 'text-[#A1A1AA]' : 'text-[#18181B]'}`}
+            {/* R2-6 — wrap in a `relative` container so the partial-failure
+                banner stays inside the same modal layer (per
+                design-language Rule "Visual hierarchy ≤ 3 layers"). */}
+            <div className="flex-1 flex flex-col min-h-0 relative">
+              {pluginImportErrors && pluginImportErrors.length > 0 && (
+                <div className="absolute top-0 left-0 right-0 z-10 flex items-start justify-between gap-3 px-6 py-2.5 bg-[#FEE2E2]">
+                  <div className="flex items-start gap-2 min-w-0 flex-1">
+                    <div className="w-1.5 h-1.5 rounded-full bg-[#DC2626] flex-shrink-0 mt-1.5" />
+                    <div className="flex flex-col gap-1 min-w-0 flex-1">
+                      <span className="text-[12px] font-medium text-[#DC2626]">
+                        Failed to import {pluginImportErrors.length}{' '}
+                        {pluginImportErrors.length === 1 ? 'MCP' : 'MCPs'}
+                      </span>
+                      <ul className="text-[11px] text-[#DC2626] flex flex-col gap-0.5">
+                        {pluginImportErrors.slice(0, 3).map((err) => (
+                          <li
+                            key={`${err.pluginId}|${err.itemName}`}
+                            className="truncate"
+                            title={err.error}
                           >
-                            {mcp.mcpName}
-                          </span>
-                          {isAlreadyImported && (
-                            <span className="text-[10px] font-medium text-[#A1A1AA] bg-[#F4F4F5] rounded px-1.5 py-0.5 flex-shrink-0">
-                              Imported
-                            </span>
-                          )}
-                          {/* Marketplace indicator */}
-                          <div className="flex items-center gap-1 flex-shrink-0">
-                            <Store className="w-[9px] h-[9px] text-[#A1A1AA]" />
-                            <span className="text-[11px] font-normal text-[#A1A1AA]">
-                              {mcp.marketplace}
-                            </span>
-                          </div>
-                        </div>
-                        {/* Description - 12px #71717A */}
-                        <span className="text-[12px] font-normal text-[#71717A] truncate">
-                          {mcp.mcpType === 'http' && mcp.url
-                            ? `HTTP · ${mcp.url}`
-                            : `${mcp.command} ${mcp.args?.join(' ')}`}
-                        </span>
-                      </div>
+                            {err.itemName}: {err.error}
+                          </li>
+                        ))}
+                        {pluginImportErrors.length > 3 && (
+                          <li className="text-[#DC2626]/80">
+                            ... and {pluginImportErrors.length - 3} more
+                          </li>
+                        )}
+                      </ul>
                     </div>
-                  );
-                })
+                  </div>
+                  <button
+                    onClick={() => setPluginImportErrors(null)}
+                    className="text-[11px] font-medium text-[#DC2626] hover:text-[#B91C1C] transition-colors flex-shrink-0"
+                  >
+                    Dismiss
+                  </button>
+                </div>
               )}
-            </div>
 
-            {/* Modal Footer */}
-            <div className="flex items-center justify-between py-4 px-6 border-t border-[#E5E5E5]">
-              {/* Info Button */}
-              <Tooltip
-                content="Shows MCP servers from installed Claude Code plugins"
-                position="top"
-              >
-                <button
-                  className="w-7 h-7 flex items-center justify-center rounded-[6px] hover:bg-[#FAFAFA] transition-colors"
-                  aria-label="More information"
-                >
-                  <Info className="w-4 h-4 text-[#A1A1AA]" />
-                </button>
-              </Tooltip>
+              {/* Modal Body - Scrollable Plugin MCPs List */}
+              <div className="flex-1 overflow-y-auto py-4 px-6 flex flex-col gap-0.5">
+                {isDetectingPluginMcps ? (
+                  <div className="flex items-center justify-center h-full">
+                    <span className="text-[13px] text-[#71717A]">Detecting plugin MCPs...</span>
+                  </div>
+                ) : allPluginMcps.length === 0 ? (
+                  <div className="flex items-center justify-center h-full flex-col gap-2">
+                    <Puzzle className="w-8 h-8 text-[#D4D4D8]" />
+                    <span className="text-[13px] text-[#71717A]">No plugin MCPs available</span>
+                    <span className="text-[11px] text-[#A1A1AA]">
+                      Install plugins with MCPs to import them here
+                    </span>
+                  </div>
+                ) : (
+                  allPluginMcps.map((mcp) => {
+                    const key = `${mcp.pluginId}|${mcp.mcpName}`;
+                    const isSelected = selectedPluginMcps.has(key);
+                    const isAlreadyImported = mcp.isImported;
+                    return (
+                      <div
+                        key={key}
+                        onClick={() => !isAlreadyImported && handleTogglePluginMcp(mcp)}
+                        className={`flex items-center gap-3 p-3 rounded-[6px] transition-colors ${
+                          isAlreadyImported
+                            ? 'opacity-50 cursor-default'
+                            : 'hover:bg-[#FAFAFA] cursor-pointer'
+                        }`}
+                      >
+                        {/* Checkbox - 16x16 */}
+                        {isAlreadyImported ? (
+                          <div className="w-4 h-4 rounded-[4px] bg-[#D4D4D8] flex items-center justify-center flex-shrink-0">
+                            <Check className="w-2.5 h-2.5 text-white" strokeWidth={3} />
+                          </div>
+                        ) : isSelected ? (
+                          <div className="w-4 h-4 rounded-[4px] bg-[#18181B] flex items-center justify-center flex-shrink-0">
+                            <Check className="w-2.5 h-2.5 text-white" strokeWidth={3} />
+                          </div>
+                        ) : (
+                          <div className="w-4 h-4 rounded-[4px] border-[1.5px] border-[#D4D4D8] bg-transparent flex-shrink-0" />
+                        )}
+                        {/* Plugin MCP Info - gap 4px */}
+                        <div className="flex-1 flex flex-col gap-1 min-w-0">
+                          {/* Name row with Marketplace label - gap 8px */}
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`text-[13px] font-medium truncate ${isAlreadyImported ? 'text-[#A1A1AA]' : 'text-[#18181B]'}`}
+                            >
+                              {mcp.mcpName}
+                            </span>
+                            {isAlreadyImported && (
+                              <span className="text-[10px] font-medium text-[#A1A1AA] bg-[#F4F4F5] rounded px-1.5 py-0.5 flex-shrink-0">
+                                Imported
+                              </span>
+                            )}
+                            {/* Marketplace indicator */}
+                            <div className="flex items-center gap-1 flex-shrink-0">
+                              <Store className="w-[9px] h-[9px] text-[#A1A1AA]" />
+                              <span className="text-[11px] font-normal text-[#A1A1AA]">
+                                {mcp.marketplace}
+                              </span>
+                            </div>
+                          </div>
+                          {/* Description - 12px #71717A */}
+                          <span className="text-[12px] font-normal text-[#71717A] truncate">
+                            {mcp.mcpType === 'http' && mcp.url
+                              ? `HTTP · ${mcp.url}`
+                              : `${mcp.command} ${mcp.args?.join(' ')}`}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
 
-              {/* Action Buttons */}
-              <div className="flex items-center gap-2.5">
-                <button
-                  onClick={onClose}
-                  className="h-[36px] px-4 rounded-[6px] border border-[#E5E5E5] text-[13px] font-medium text-[#71717A] hover:bg-[#FAFAFA] transition-colors"
+              {/* Modal Footer */}
+              <div className="flex items-center justify-between py-4 px-6 border-t border-[#E5E5E5]">
+                {/* Info Button */}
+                <Tooltip
+                  content="Shows MCP servers from installed Claude Code plugins"
+                  position="top"
                 >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleImportPluginMcps}
-                  disabled={selectedPluginCount === 0 || isImportingPlugin}
-                  className={`h-[36px] px-5 rounded-[6px] text-[13px] font-medium text-white transition-colors
-                    ${
-                      selectedPluginCount === 0 || isImportingPlugin
-                        ? 'bg-[#18181B]/50 cursor-not-allowed'
-                        : 'bg-[#18181B] hover:bg-[#27272A]'
-                    }
-                  `}
-                >
-                  {isImportingPlugin ? 'Importing...' : 'Import Selected'}
-                </button>
+                  <button
+                    className="w-7 h-7 flex items-center justify-center rounded-[6px] hover:bg-[#FAFAFA] transition-colors"
+                    aria-label="More information"
+                  >
+                    <Info className="w-4 h-4 text-[#A1A1AA]" />
+                  </button>
+                </Tooltip>
+
+                {/* Action Buttons */}
+                <div className="flex items-center gap-2.5">
+                  <button
+                    onClick={onClose}
+                    className="h-[36px] px-4 rounded-[6px] border border-[#E5E5E5] text-[13px] font-medium text-[#71717A] hover:bg-[#FAFAFA] transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleImportPluginMcps}
+                    disabled={selectedPluginCount === 0 || isImportingPlugin}
+                    className={`h-[36px] px-5 rounded-[6px] text-[13px] font-medium text-white transition-colors
+                      ${
+                        selectedPluginCount === 0 || isImportingPlugin
+                          ? 'bg-[#18181B]/50 cursor-not-allowed'
+                          : 'bg-[#18181B] hover:bg-[#27272A]'
+                      }
+                    `}
+                  >
+                    {isImportingPlugin ? 'Importing...' : 'Import Selected'}
+                  </button>
+                </div>
               </div>
             </div>
           </>

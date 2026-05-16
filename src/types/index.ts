@@ -426,6 +426,16 @@ export interface AppData {
    * before" hint without reaching into `data.json.skillMetadata`.
    */
   importedMarketplaceSkills?: string[];
+  /**
+   * Schema version anchor (R3-2 / R5 F7+F8 passive forward-compat). Stamped
+   * by Rust `write_app_data` to `APP_DATA_SCHEMA_VERSION` on every write.
+   * Read-only on the frontend: never set by stores; the value is informative
+   * only (no UI surfaces it today). Backward compat: legacy `data.json`
+   * omits this key → `undefined`.
+   *
+   * Mirrors Rust const `APP_DATA_SCHEMA_VERSION` in `src-tauri/src/types.rs`.
+   */
+  schemaVersion?: number;
 }
 
 /**

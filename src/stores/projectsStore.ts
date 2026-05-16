@@ -227,7 +227,23 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
     }
 
     try {
-      await safeInvoke('update_project', { id, ...data });
+      // `sceneId` is three-state on the backend (`Option<Option<String>>`):
+      //   - key omitted              → "do not modify"
+      //   - key with literal `null`  → "clear scene binding"
+      //   - key with string id       → "rebind"
+      // Detect intent by `'sceneId' in data`; normalise `undefined` → `null`
+      // so JSON.stringify emits an explicit `null` for the clear signal
+      // rather than dropping the key. Mirrors the round-1 A8 pattern in
+      // `rulesStore.updateRule` / `claudeMdStore.updateFile`. R3-1 / R3 F10.
+      const payload: Record<string, unknown> = { id };
+      if ('name' in data) payload.name = data.name;
+      if ('path' in data) payload.path = data.path;
+      if ('sceneId' in data) {
+        payload.sceneId = data.sceneId === undefined ? null : data.sceneId;
+      }
+      if ('lastSynced' in data) payload.lastSynced = data.lastSynced;
+
+      await safeInvoke('update_project', payload);
       set((state) => ({
         projects: state.projects.map((p) => (p.id === id ? { ...p, ...data } : p)),
       }));

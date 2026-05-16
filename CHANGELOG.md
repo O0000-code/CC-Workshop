@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.4] - 2026-05-16
+
+### Fixed
+
+#### Filesystem & Startup
+- Skill / MCP ids normalise to Unicode NFC (macOS Finder rename creates NFD; git clone / Linux scp / iCloud creates NFC; previously tracked as separate entries) -- a one-shot migration rewrites existing `data.json` keys
+- Startup `~/.ensemble/` writability probe with structured `EnsembleDirUnwritable:` error and a `chown` hint in a dedicated alertdialog (previously a silent fallback to empty AppData)
+- Quick Action uses `std::env::current_exe()` instead of hard-coded `/Applications/Ensemble.app`
+
+#### Plugin Install & Trash
+- Plugin import returns structured `PluginImportResult` with per-item reasons; partial failures surface as a red banner inside the modal
+- Empty Trash button + per-row permanent delete on every Trash Recovery tab (with inline confirm overlays)
+- Plugin marker orphan cleanup on detect -- re-installed plugins are visible again after Ensemble notices the previous install was wiped
+
+#### Sync, Input & Reliability
+- HTTP MCP install / update rejects empty URLs and unresolved `{VAR}` placeholders
+- `fetch_mcp_tools` captures child-process stderr so MCP startup failures are visible to the user
+- Terminal pre-flight check before launch (no more silent no-op when the configured terminal is uninstalled)
+- `syncProject` reports per-step success / failure (partial sync no longer indistinguishable from full success)
+- IME composition guard on 11 text-input Enter handlers (Chinese / Japanese / Korean users)
+
 ## [2.1.3] - 2026-05-15
 
 ### Security
@@ -76,7 +97,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Scenes include Rules**: multi-select Rules tab in the Create Scene modal; Project sync writes each selected Rule via batch distribute
 - **Category and Tag pages** include a Rules section alongside Skills, MCPs, and CLAUDE.md
 
-[Unreleased]: https://github.com/O0000-code/Ensemble/compare/v2.1.3...HEAD
+[Unreleased]: https://github.com/O0000-code/Ensemble/compare/v2.1.4...HEAD
+[2.1.4]: https://github.com/O0000-code/Ensemble/compare/v2.1.3...v2.1.4
 [2.1.3]: https://github.com/O0000-code/Ensemble/compare/v2.1.2...v2.1.3
 [2.1.2]: https://github.com/O0000-code/Ensemble/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/O0000-code/Ensemble/compare/v2.1.0...v2.1.1

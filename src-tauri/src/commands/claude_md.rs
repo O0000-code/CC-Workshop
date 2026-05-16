@@ -321,13 +321,13 @@ fn is_excluded_dir(entry: &walkdir::DirEntry) -> bool {
 /// * `ClaudeMdImportResult` - Import result
 #[tauri::command]
 pub fn import_claude_md(options: ClaudeMdImportOptions) -> Result<ClaudeMdImportResult, String> {
-    println!("[import_claude_md] Called with source_path: {}", options.source_path);
+    log::debug!("[import_claude_md] Called with source_path: {}", options.source_path);
     let source_path = expand_path(&options.source_path);
-    println!("[import_claude_md] Expanded path: {:?}", source_path);
+    log::debug!("[import_claude_md] Expanded path: {:?}", source_path);
 
     // Verify source file exists
     if !source_path.exists() {
-        println!("[import_claude_md] Source file not found!");
+        log::warn!("[import_claude_md] Source file not found!");
         return Ok(ClaudeMdImportResult {
             success: false,
             file: None,
@@ -341,7 +341,7 @@ pub fn import_claude_md(options: ClaudeMdImportOptions) -> Result<ClaudeMdImport
     // Read file content
     let content =
         fs::read_to_string(&source_path).map_err(|e| format!("Failed to read file: {}", e))?;
-    println!("[import_claude_md] Read content, length: {}", content.len());
+    log::debug!("[import_claude_md] Read content, length: {}", content.len());
 
     let size = source_path.metadata().map(|m| m.len()).unwrap_or(0);
 
@@ -352,7 +352,7 @@ pub fn import_claude_md(options: ClaudeMdImportOptions) -> Result<ClaudeMdImport
     let name = options
         .name
         .unwrap_or_else(|| infer_name_from_path(&source_path));
-    println!("[import_claude_md] Generated name: {}", name);
+    log::debug!("[import_claude_md] Generated name: {}", name);
 
     // Generate UUID for the file
     let id = Uuid::new_v4().to_string();
@@ -360,7 +360,7 @@ pub fn import_claude_md(options: ClaudeMdImportOptions) -> Result<ClaudeMdImport
     // Write content to independent file
     write_claude_md_content(&id, &content)?;
     let managed_path = get_claude_md_file_path(&id).to_string_lossy().to_string();
-    println!("[import_claude_md] Written to managed path: {}", managed_path);
+    log::info!("[import_claude_md] Written to managed path: {}", managed_path);
 
     // Create ClaudeMdFile (content field is empty, will be read from independent file)
     let now = Utc::now().to_rfc3339();
@@ -380,18 +380,18 @@ pub fn import_claude_md(options: ClaudeMdImportOptions) -> Result<ClaudeMdImport
         size,
         icon: None,
     };
-    println!("[import_claude_md] Created file with id: {}", file.id);
+    log::info!("[import_claude_md] Created file with id: {}", file.id);
 
     // Save metadata to AppData
-    println!("[import_claude_md] Reading app_data...");
+    log::debug!("[import_claude_md] Reading app_data...");
     let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
     let mut app_data = read_app_data()?;
-    println!("[import_claude_md] Current claude_md_files count: {}", app_data.claude_md_files.len());
+    log::debug!("[import_claude_md] Current claude_md_files count: {}", app_data.claude_md_files.len());
     app_data.claude_md_files.push(file.clone());
-    println!("[import_claude_md] After push, count: {}", app_data.claude_md_files.len());
-    println!("[import_claude_md] Writing app_data...");
+    log::debug!("[import_claude_md] After push, count: {}", app_data.claude_md_files.len());
+    log::debug!("[import_claude_md] Writing app_data...");
     write_app_data(app_data)?;
-    println!("[import_claude_md] Write complete!");
+    log::debug!("[import_claude_md] Write complete!");
 
     // Populate content for return value
     file.content = content;
@@ -616,27 +616,27 @@ pub fn delete_claude_md(id: String) -> Result<(), String> {
             let info_path = file_dir.join("info.json");
             if let Ok(info_json) = serde_json::to_string_pretty(metadata) {
                 if let Err(e) = fs::write(&info_path, info_json) {
-                    println!("[delete_claude_md] Warning: Failed to save info.json: {}", e);
+                    log::warn!("[delete_claude_md] Warning: Failed to save info.json: {}", e);
                 }
             }
         }
 
         let trash_dir = get_app_data_dir().join("trash").join("claude-md");
         if let Err(e) = fs::create_dir_all(&trash_dir) {
-            println!("[delete_claude_md] Warning: Failed to create trash directory: {}", e);
+            log::warn!("[delete_claude_md] Warning: Failed to create trash directory: {}", e);
         } else {
             // Generate unique trash name with timestamp
             let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
             let trash_dest = trash_dir.join(format!("{}_{}", id, timestamp));
 
             if let Err(e) = fs::rename(&file_dir, &trash_dest) {
-                println!("[delete_claude_md] Warning: Failed to move to trash: {}", e);
+                log::warn!("[delete_claude_md] Warning: Failed to move to trash: {}", e);
                 // Fallback to permanent deletion if move fails
                 if let Err(e) = fs::remove_dir_all(&file_dir) {
-                    println!("[delete_claude_md] Warning: Failed to delete directory: {}", e);
+                    log::warn!("[delete_claude_md] Warning: Failed to delete directory: {}", e);
                 }
             } else {
-                println!("[delete_claude_md] Moved to trash: {:?}", trash_dest);
+                log::info!("[delete_claude_md] Moved to trash: {:?}", trash_dest);
             }
         }
     }
@@ -744,7 +744,7 @@ pub fn set_global_claude_md(id: String) -> Result<SetGlobalResult, String> {
 
             backup_path = Some(backup_file.to_string_lossy().to_string());
 
-            println!("[set_global_claude_md] Auto-imported existing global file as 'Original Global'");
+            log::info!("[set_global_claude_md] Auto-imported existing global file as 'Original Global'");
         }
     }
 
@@ -964,13 +964,13 @@ pub fn migrate_claude_md_storage() -> Result<(), String> {
             file.content = String::new();
 
             migrated = true;
-            println!("[Migration] Migrated CLAUDE.md: {} (id: {})", file.name, file.id);
+            log::info!("[Migration] Migrated CLAUDE.md: {} (id: {})", file.name, file.id);
         }
     }
 
     if migrated {
         write_app_data(app_data)?;
-        println!("[Migration] CLAUDE.md storage migration completed");
+        log::info!("[Migration] CLAUDE.md storage migration completed");
     }
 
     Ok(())

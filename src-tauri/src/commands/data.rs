@@ -270,7 +270,22 @@ pub fn read_app_data() -> Result<AppData, String> {
 
     let content = fs::read_to_string(&data_path).map_err(|e| e.to_string())?;
     match serde_json::from_str::<AppData>(&content) {
-        Ok(data) => Ok(data),
+        Ok(data) => {
+            // R3-2: passive forward-compat warning. If the on-disk
+            // schema version is newer than what this build understands,
+            // surface the mismatch via stderr so a support investigation
+            // can find it in Console.app. We do NOT refuse to operate —
+            // any fields this build doesn't know about are preserved via
+            // the `other` flatten map on AppData and re-emitted on write.
+            if data.schema_version > crate::types::APP_DATA_SCHEMA_VERSION {
+                eprintln!(
+                    "[read_app_data] WARNING: data.json schemaVersion is {} but this build supports only {}. Unknown fields are preserved via the `other` flatten map, but any new semantics added in the newer version are ignored. Consider upgrading the app.",
+                    data.schema_version,
+                    crate::types::APP_DATA_SCHEMA_VERSION
+                );
+            }
+            Ok(data)
+        }
         Err(parse_err) => {
             // V2 (bug-audit B-12): surface the recovery path to stderr so
             // a future support investigation can find this in Console.app.
@@ -334,8 +349,17 @@ pub fn read_app_data() -> Result<AppData, String> {
 /// `rules.rs`, `claude_md.rs`, `marketplace.rs`, `import.rs`, `trash.rs`
 /// continue to work without modification.
 #[tauri::command]
-pub fn write_app_data(data: AppData) -> Result<(), String> {
+pub fn write_app_data(mut data: AppData) -> Result<(), String> {
     let data_path = get_data_file_path();
+
+    // R3-2: stamp the current runtime schema version so every freshly
+    // written `data.json` carries the build's version anchor. If this
+    // build is older than the on-disk version (the `read_app_data`
+    // warning case above), this overwrites the higher number — that is
+    // the intended outcome: the user has accepted the warning and the
+    // data is now the older build's, but newer fields are still
+    // preserved via the `other` flatten map.
+    data.schema_version = crate::types::APP_DATA_SCHEMA_VERSION;
 
     // (1) Serialize first — if this fails, no disk side-effect happens.
     let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
@@ -458,6 +482,10 @@ pub fn init_app_data() -> Result<(), String> {
             has_completed_unicode_normalization: true,
             last_edited_scene_id: None,
             imported_marketplace_skills: vec![],
+            // R3-2: stamped to the runtime value here for clarity; the
+            // first `write_app_data` below would set it anyway.
+            schema_version: crate::types::APP_DATA_SCHEMA_VERSION,
+            other: std::collections::HashMap::new(),
         };
         write_app_data(default_data)?;
     }
@@ -1358,10 +1386,10 @@ pub fn add_scene(
     claudeMdIds: Option<Vec<String>>,
     ruleIds: Option<Vec<String>>,
 ) -> Result<Scene, String> {
-    println!("add_scene called: name={}, skillIds={:?}, mcpIds={:?}, claudeMdIds={:?}, ruleIds={:?}", name, skillIds, mcpIds, claudeMdIds, ruleIds);
+    log::debug!("add_scene called: name={}, skillIds={:?}, mcpIds={:?}, claudeMdIds={:?}, ruleIds={:?}", name, skillIds, mcpIds, claudeMdIds, ruleIds);
     let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
     let mut data = read_app_data()?;
-    println!("Current scenes count: {}", data.scenes.len());
+    log::debug!("Current scenes count: {}", data.scenes.len());
 
     let scene = Scene {
         id: Uuid::new_v4().to_string(),
@@ -1508,14 +1536,29 @@ pub fn add_project(name: String, path: String, sceneId: Option<String>) -> Resul
     Ok(project)
 }
 
-/// Update a project
+/// Update a project.
+///
+/// `sceneId` is three-state on the JSON boundary (`Option<Option<String>>`):
+///   - key omitted              → "do not modify"
+///   - key with literal `null`  → "clear scene binding" (empty string,
+///                                 matching `add_project` sentinel)
+///   - key with string id       → "rebind to this scene"
+///
+/// `Project.scene_id` itself stays `String` (empty = unbound, the existing
+/// project-wide convention used by `add_project` and `syncProject`'s
+/// `scenes.find(s => s.id === project.sceneId)` lookup).
+///
+/// Bug Audit 2026-05-15 round 3 finding R3-1 / R3 F10. Mirrors the
+/// round-1 A8 pattern in `update_rule` / `update_claude_md` so the
+/// "clear vs no-op" disambiguation is consistent across all mutation
+/// IPCs.
 #[tauri::command]
 #[allow(non_snake_case)]
 pub fn update_project(
     id: String,
     name: Option<String>,
     path: Option<String>,
-    sceneId: Option<String>,
+    sceneId: Option<Option<String>>,
     lastSynced: Option<String>,
 ) -> Result<(), String> {
     let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
@@ -1528,8 +1571,12 @@ pub fn update_project(
         if let Some(p) = path {
             project.path = p;
         }
-        if let Some(s) = sceneId {
-            project.scene_id = s;
+        if let Some(new_scene_id_opt) = sceneId {
+            // Some(Some(id)) → set; Some(None) → clear via empty string
+            // (matches add_project, where the empty-string sentinel was
+            // already the unbound state — `syncProject` already handles
+            // the empty case by surfacing a "no scene bound" error).
+            project.scene_id = new_scene_id_opt.unwrap_or_default();
         }
         if let Some(l) = lastSynced {
             project.last_synced = Some(l);
@@ -3786,5 +3833,164 @@ mod scene_lifecycle_tests {
 
         let after_delete = read_app_data().expect("read");
         assert_eq!(after_delete.last_edited_scene_id, Some(b.id));
+    }
+}
+
+// ============================================================================
+// AppData schema forward-compat tests — R3-2 (R5 F7 + F8)
+// ============================================================================
+//
+// Verify that a newer-version data.json (containing fields this build does
+// not declare on AppData) round-trips through `read_app_data` → mutate →
+// `write_app_data` without losing the unknown fields. This is the core
+// regression guard against the "user opens older app build on newer data,
+// loses Rules / Marketplace history" failure mode (R5 F8).
+//
+// Also verifies that `write_app_data` stamps `schema_version` on every
+// write so a freshly-written `data.json` always carries the runtime
+// version anchor.
+
+#[cfg(test)]
+mod schema_forward_compat_tests {
+    use super::*;
+    use crate::types::APP_DATA_SCHEMA_VERSION;
+    use crate::utils::path::ENV_TEST_LOCK;
+    use tempfile::TempDir;
+
+    struct ScopedDataDir {
+        _tempdir: TempDir,
+        prior: Option<String>,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ScopedDataDir {
+        fn new() -> Self {
+            let guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prior = std::env::var("ENSEMBLE_DATA_DIR").ok();
+            let tempdir = TempDir::new().expect("create tempdir");
+            std::env::set_var("ENSEMBLE_DATA_DIR", tempdir.path());
+            Self {
+                _tempdir: tempdir,
+                prior,
+                _guard: guard,
+            }
+        }
+    }
+
+    impl Drop for ScopedDataDir {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(v) => std::env::set_var("ENSEMBLE_DATA_DIR", v),
+                None => std::env::remove_var("ENSEMBLE_DATA_DIR"),
+            }
+        }
+    }
+
+    #[test]
+    fn write_stamps_schema_version() {
+        let _scope = ScopedDataDir::new();
+        // Even a Default AppData (schema_version: 0) gets stamped to the
+        // current runtime version by write_app_data.
+        write_app_data(AppData::default()).expect("seed");
+
+        let on_disk = read_app_data().expect("read");
+        assert_eq!(on_disk.schema_version, APP_DATA_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn unknown_top_level_fields_round_trip() {
+        let _scope = ScopedDataDir::new();
+
+        // Hand-craft a "future" data.json that has a top-level field
+        // (`futureFieldX`) the current AppData definition does NOT
+        // declare, and a higher schemaVersion. This simulates a user
+        // who ran a newer app version and is now opening older code.
+        let data_path = get_data_file_path();
+        if let Some(parent) = data_path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        let future_json = r#"{
+            "categories": [],
+            "tags": [],
+            "scenes": [],
+            "projects": [],
+            "skillMetadata": {},
+            "mcpMetadata": {},
+            "schemaVersion": 99,
+            "futureFieldX": "preserve_me",
+            "futureFieldNested": { "count": 42, "label": "ok" }
+        }"#;
+        std::fs::write(&data_path, future_json).expect("write future");
+
+        // Read + write — exercises the round-trip path.
+        let data = read_app_data().expect("read");
+        // Unknown fields were captured by the `other` flatten map.
+        assert_eq!(
+            data.other.get("futureFieldX").and_then(|v| v.as_str()),
+            Some("preserve_me")
+        );
+        assert!(data.other.contains_key("futureFieldNested"));
+
+        // Mutate something innocuous (the write path is what re-emits
+        // the unknown fields) — schema_version on the data we pass in
+        // is irrelevant because write_app_data will overwrite it.
+        write_app_data(data).expect("write back");
+
+        // Read the file directly as raw JSON to confirm the unknown
+        // fields are still present on disk.
+        let on_disk_raw =
+            std::fs::read_to_string(&data_path).expect("read on-disk");
+        let on_disk_val: serde_json::Value =
+            serde_json::from_str(&on_disk_raw).expect("parse on-disk");
+        let obj = on_disk_val.as_object().expect("object root");
+
+        // futureFieldX preserved
+        assert_eq!(
+            obj.get("futureFieldX").and_then(|v| v.as_str()),
+            Some("preserve_me"),
+            "unknown top-level field should round-trip via flatten map"
+        );
+        // futureFieldNested preserved
+        let nested = obj.get("futureFieldNested").expect("nested present");
+        assert_eq!(
+            nested.get("count").and_then(|v| v.as_u64()),
+            Some(42),
+            "nested unknown field should round-trip verbatim"
+        );
+
+        // schemaVersion was overwritten by write_app_data to the
+        // current runtime value — the warning fires on read but the
+        // file is then stamped to the running build's version.
+        assert_eq!(
+            obj.get("schemaVersion").and_then(|v| v.as_u64()),
+            Some(APP_DATA_SCHEMA_VERSION as u64),
+            "write_app_data stamps schemaVersion to the runtime constant"
+        );
+    }
+
+    #[test]
+    fn missing_schema_version_defaults_to_zero() {
+        // A legacy data.json (pre-R3-2) does not have the schemaVersion
+        // key — verify it deserialises to 0 (Default) without error and
+        // does not trigger the warning eprintln (0 <= 1).
+        let _scope = ScopedDataDir::new();
+        let data_path = get_data_file_path();
+        if let Some(parent) = data_path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        let legacy_json = r#"{
+            "categories": [],
+            "tags": [],
+            "scenes": [],
+            "projects": [],
+            "skillMetadata": {},
+            "mcpMetadata": {}
+        }"#;
+        std::fs::write(&data_path, legacy_json).expect("write legacy");
+
+        let data = read_app_data().expect("read legacy");
+        assert_eq!(data.schema_version, 0);
+        // No fields beyond the declared ones in the legacy JSON.
+        assert!(data.other.is_empty());
     }
 }

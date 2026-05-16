@@ -227,6 +227,19 @@ pub struct Tag {
     pub count: u32,
 }
 
+/// Current AppData schema version. Bump when adding a field that older
+/// app versions cannot safely ignore (e.g., a field whose absence would
+/// cause a data-loss interpretation if a newer build serialised it and
+/// an older build round-tripped without it). Most additive changes can
+/// rely on `#[serde(default)]` per-field plus the `other: flatten` map
+/// below and do NOT need a bump.
+///
+/// On-disk `schemaVersion` is set by `write_app_data` to this constant
+/// on every write; `read_app_data` logs a stderr warning when the disk
+/// value exceeds the runtime value (the user is running an older build
+/// against newer data) but does not refuse to operate. R3-2 / R5 F7+F8.
+pub const APP_DATA_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AppData {
@@ -292,6 +305,30 @@ pub struct AppData {
     /// only; not yet read by any UI surface (R-36 keeps top-level lists lean).
     #[serde(default)]
     pub imported_marketplace_skills: Vec<String>,
+    /// Schema version anchor (R3-2 / R5 F7+F8 passive forward-compat).
+    /// `write_app_data` stamps this to `APP_DATA_SCHEMA_VERSION` on every
+    /// write; `read_app_data` logs an `eprintln!` warning when on-disk
+    /// version exceeds the runtime constant but does NOT refuse to
+    /// operate. Active refuse-to-mutate is intentionally deferred for a
+    /// single-developer project (would require an in-app modal). The
+    /// flatten `other` field below is the primary forward-compat
+    /// mechanism; this version is the explicit anchor when a future
+    /// build needs to detect "I am older than this data".
+    /// Backward compat: missing key in old `data.json` deserialises to
+    /// `0` (default), which `<= APP_DATA_SCHEMA_VERSION` so no warning;
+    /// the next `write_app_data` stamps it to the current value.
+    #[serde(default)]
+    pub schema_version: u32,
+    /// Forward-compat: unknown top-level fields from a newer AppData
+    /// version are captured here on read and re-emitted on write.
+    /// Round-trip safe: a future V_n+1 → V_n → V_n+1 cycle preserves
+    /// any V_n+1-only fields (e.g. a hypothetical new
+    /// `imported_marketplace_mcps` field added in a later release).
+    /// Mirrors the same pattern in `ClaudeJson::other` (~line 649).
+    /// `skip_serializing_if = "HashMap::is_empty"` keeps fresh
+    /// `data.json` files free of an empty `"other": {}` block.
+    #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+    pub other: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

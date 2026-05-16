@@ -605,7 +605,7 @@ pub fn delete_rule(id: String) -> Result<(), String> {
                 let global_path = home.join(".claude").join("rules").join(&meta.filename);
                 if global_path.exists() {
                     if let Err(e) = fs::remove_file(&global_path) {
-                        println!(
+                        log::warn!(
                             "[delete_rule] Warning: Failed to remove global rule file {}: {}",
                             global_path.display(),
                             e
@@ -628,14 +628,14 @@ pub fn delete_rule(id: String) -> Result<(), String> {
             let info_path = file_dir.join("info.json");
             if let Ok(info_json) = serde_json::to_string_pretty(metadata) {
                 if let Err(e) = fs::write(&info_path, info_json) {
-                    println!("[delete_rule] Warning: Failed to save info.json: {}", e);
+                    log::warn!("[delete_rule] Warning: Failed to save info.json: {}", e);
                 }
             }
         }
 
         let trash_dir = get_app_data_dir().join("trash").join("rules");
         if let Err(e) = fs::create_dir_all(&trash_dir) {
-            println!(
+            log::warn!(
                 "[delete_rule] Warning: Failed to create trash directory: {}",
                 e
             );
@@ -644,12 +644,12 @@ pub fn delete_rule(id: String) -> Result<(), String> {
             let trash_dest = trash_dir.join(format!("{}_{}", id, timestamp));
 
             if let Err(e) = fs::rename(&file_dir, &trash_dest) {
-                println!("[delete_rule] Warning: Failed to move to trash: {}", e);
+                log::warn!("[delete_rule] Warning: Failed to move to trash: {}", e);
                 if let Err(e) = fs::remove_dir_all(&file_dir) {
-                    println!("[delete_rule] Warning: Failed to delete directory: {}", e);
+                    log::warn!("[delete_rule] Warning: Failed to delete directory: {}", e);
                 }
             } else {
-                println!("[delete_rule] Moved to trash: {:?}", trash_dest);
+                log::info!("[delete_rule] Moved to trash: {:?}", trash_dest);
             }
         }
     }
@@ -754,7 +754,7 @@ pub fn set_global_rule(id: String) -> Result<SetGlobalRuleResult, String> {
             fs::copy(&global_path, &backup_file).map_err(|e| e.to_string())?;
             backup_path = Some(backup_file.to_string_lossy().to_string());
 
-            println!("[set_global_rule] Auto-imported existing global rule as 'Original {}'", original_filename);
+            log::info!("[set_global_rule] Auto-imported existing global rule as 'Original {}'", original_filename);
         }
     }
 

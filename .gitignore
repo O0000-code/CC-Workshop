@@ -32,3 +32,8 @@ src-tauri/target/
 
 # Claude Code runtime lockfile (sessionId + pid; rewritten each launch).
 .claude/scheduled_tasks.lock
+
+# Internal development scratch — design specs, tech plans, bug audits,
+# SubAgent prompts, release plans. Useful only inside the local working
+# tree; not for public consumption.
+.dev/

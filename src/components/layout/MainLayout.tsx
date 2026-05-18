@@ -239,6 +239,26 @@ export default function MainLayout() {
           window.alert(
             `${missing} doesn't appear to be installed on this Mac.\n\nOpen CC Workshop Settings → Launch Configuration and pick a different terminal, or install ${missing}.`,
           );
+        } else if (errorStr.includes('CMUX_SOCKET_LOCKED')) {
+          // cmux's CLI socket is gated by `automation.socketControlMode`
+          // in ~/.config/cmux/cmux.json — default is "cmuxOnly", which
+          // rejects external control. We use the same sentinel +
+          // window.alert pattern as TerminalNotInstalled so Quick Action
+          // launches (which bypass LauncherModal) still get readable,
+          // multi-line recovery steps. Rationale: the same multi-line
+          // copy lives in LauncherModal.tsx for the launcher path; both
+          // paths surface the identical instructions.
+          await focusWindow();
+          window.alert(
+            'cmux is installed and running, but its CLI socket is locked down (default mode "cmuxOnly").\n\n' +
+              'To let CC Workshop control cmux:\n\n' +
+              '  1. Open ~/.config/cmux/cmux.json\n' +
+              '  2. Add or set:\n' +
+              '     "automation": { "socketControlMode": "automation" }\n' +
+              '  3. Fully quit cmux (Cmd-Q) and reopen it.\n' +
+              "     — cmux's reload-config command does NOT pick up this setting.\n" +
+              '  4. Retry Launch.',
+          );
         } else {
           // Fall back to opening launcher on error - need to show window
           await focusWindow();

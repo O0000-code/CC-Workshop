@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **cmux terminal support** ([#6](https://github.com/O0000-code/CC-Workshop/issues/6)). Settings → Launch Configuration → Terminal Application now offers **cmux** alongside Terminal / iTerm2 / Warp / Ghostty / Alacritty. cmux's "tab vs new window" Open Mode is honoured (same toggle as Warp / Ghostty).
+- Launch path uses cmux's bundled CLI at `/Applications/cmux.app/Contents/Resources/bin/cmux` (argv-only — no shell, no AppleScript), so folder names with spaces, quotes, or shell metacharacters cannot inject. Each `cmux ping` probe during cold-start polling is hard-capped at 500 ms to prevent a wedged socket from hanging the launch flow.
+
+### Setup note (cmux only)
+
+cmux ships with `automation.socketControlMode = "cmuxOnly"` in `~/.config/cmux/cmux.json` by default, which rejects external CLI control. The first time CC Workshop tries to launch cmux, you'll see a multi-line hint with the one-time fix:
+
+1. Open `~/.config/cmux/cmux.json`
+2. Add or set `"automation": { "socketControlMode": "automation" }`
+3. **Fully quit cmux (Cmd-Q) and reopen it** — `cmux reload-config` does NOT pick up this setting.
+
+### Changed
+
+- **Open Mode label is now brand-agnostic**: the row previously titled "Warp Open Mode" / "Ghostty Open Mode" is now "Open new sessions as" for all three brands. Avoids the awkward sentence-start lowercase "cmux Open Mode" while reading cleanly for every supported terminal.
+
 ## [2.3.0] - 2026-05-18
 
 ### Changed

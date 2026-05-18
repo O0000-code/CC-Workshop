@@ -12,6 +12,23 @@ interface LauncherModalProps {
   onClose: () => void;
 }
 
+/**
+ * Multi-line recovery instructions shown when cmux's CLI socket is locked
+ * down by the default `socketControlMode: "cmuxOnly"`. Mirrors the
+ * `ACCESSIBILITY_PERMISSION_REQUIRED` pattern (see MainLayout.tsx) — the
+ * backend returns a short sentinel and the frontend supplies the user-facing
+ * copy in the locale and layout it controls. Rendered in a `whitespace-pre-line`
+ * container so newlines and the JSON literal stay readable.
+ */
+const CMUX_SOCKET_LOCKED_MESSAGE = `cmux is installed and running, but its CLI socket is locked down (default mode "cmuxOnly"). To let CC Workshop control cmux:
+
+  1. Open ~/.config/cmux/cmux.json
+  2. Add or set:
+     "automation": { "socketControlMode": "automation" }
+  3. Fully quit cmux (Cmd-Q) and reopen it.
+     — cmux's reload-config command does NOT pick up this setting.
+  4. Retry Launch.`;
+
 export function LauncherModal({ isOpen, folderPath, onClose }: LauncherModalProps) {
   const { scenes } = useScenesStore();
   const { projects, syncProject, updateProject } = useProjectsStore();
@@ -115,12 +132,17 @@ export function LauncherModal({ isOpen, folderPath, onClose }: LauncherModalProp
       // R2-8d: the backend returns "TerminalNotInstalled:<App>" when the
       // user-selected terminal is missing. Surface this as a friendly,
       // actionable message instead of the raw OS-level error string.
+      // cmux: a separate CMUX_SOCKET_LOCKED sentinel covers the
+      // socketControlMode=cmuxOnly default — see cmux module-level comment
+      // in `import.rs` for the rationale.
       const raw = typeof err === 'string' ? err : String(err);
       if (raw.startsWith('TerminalNotInstalled:')) {
         const missing = raw.substring('TerminalNotInstalled:'.length).trim();
         setError(
           `${missing} doesn't appear to be installed on this Mac. Open Settings → Launch Configuration and pick a different terminal, or install ${missing}.`,
         );
+      } else if (raw === 'CMUX_SOCKET_LOCKED' || raw.includes('CMUX_SOCKET_LOCKED')) {
+        setError(CMUX_SOCKET_LOCKED_MESSAGE);
       } else {
         setError(raw);
       }
@@ -228,9 +250,14 @@ export function LauncherModal({ isOpen, folderPath, onClose }: LauncherModalProp
           </div>
         </div>
 
-        {/* Error Display */}
+        {/* Error Display
+         *
+         * `whitespace-pre-line` preserves `\n` line breaks for multi-line
+         * recovery instructions (e.g. CMUX_SOCKET_LOCKED_MESSAGE). Single-line
+         * errors render identically. `max-h-32 overflow-y-auto` prevents the
+         * footer from being pushed out of frame when the error is long. */}
         {error && (
-          <div className="mx-6 mb-2 rounded-lg bg-[#FEF2F2] p-3 text-sm text-[#DC2626]">
+          <div className="mx-6 mb-2 max-h-32 overflow-y-auto whitespace-pre-line rounded-lg bg-[#FEF2F2] p-3 text-sm text-[#DC2626]">
             {error}
           </div>
         )}

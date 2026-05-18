@@ -288,8 +288,12 @@ export function SettingsPage() {
   const { loadRules } = useRulesStore();
   const { loadScenes } = useScenesStore();
   const { loadProjects } = useProjectsStore();
-  const supportsOpenMode = terminalApp === 'Warp' || terminalApp === 'Ghostty';
-  const terminalOpenModeLabel = terminalApp === 'Ghostty' ? 'Ghostty Open Mode' : 'Warp Open Mode';
+  const supportsOpenMode =
+    terminalApp === 'Warp' || terminalApp === 'Ghostty' || terminalApp === 'cmux';
+  // Brand-agnostic label so the row reads cleanly regardless of which
+  // terminal is active. Avoids the awkward sentence-start lowercase brand
+  // ("cmux Open Mode") that the per-brand label flavor would produce.
+  const terminalOpenModeLabel = 'Open new sessions as';
 
   // R2-8e: validate the user-selected terminal app whenever it changes.
   // `null` = not yet checked (initial mount / between checks), so we
@@ -583,11 +587,16 @@ export function SettingsPage() {
                     value={terminalApp}
                     onChange={setTerminalApp}
                     options={[
+                      // Brand-canonical spellings: each label reflects the
+                      // product's own marketing capitalization. iTerm2's
+                      // lowercase-i and cmux's all-lowercase are deliberate
+                      // brand choices — do not "normalize" them to Title Case.
                       { value: 'Terminal', label: 'Terminal.app' },
                       { value: 'iTerm', label: 'iTerm2' },
                       { value: 'Warp', label: 'Warp' },
                       { value: 'Ghostty', label: 'Ghostty' },
                       { value: 'Alacritty', label: 'Alacritty' },
+                      { value: 'cmux', label: 'cmux' },
                     ]}
                   />
                 </div>

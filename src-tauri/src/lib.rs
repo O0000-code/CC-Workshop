@@ -110,6 +110,31 @@ pub fn run() {
             // do not depend on absence of this file.
             marketplace::cleanup_legacy_mcp_cache();
 
+            // v2.2.0+ Finder Quick Action cleanup. Users on v2.1.x and
+            // earlier had `~/Library/Services/Open with Ensemble.workflow/`
+            // pointing at `/Applications/Ensemble.app/Contents/MacOS/Ensemble`,
+            // which no longer exists after the brand rename. Right-clicking
+            // a folder shows a confusing zsh "no such file or directory"
+            // error. This migration removes the legacy workflow and (if
+            // missing) installs the modern "Open with CC Workshop"
+            // workflow via current_exe(). Idempotent + best-effort.
+            match commands::import::migrate_legacy_quick_action() {
+                Ok(commands::import::QuickActionMigrationOutcome::Replaced) => {
+                    eprintln!(
+                        "[Migration] replaced legacy 'Open with Ensemble' Quick Action with 'Open with CC Workshop'"
+                    );
+                }
+                Ok(commands::import::QuickActionMigrationOutcome::Removed) => {
+                    eprintln!(
+                        "[Migration] removed obsolete 'Open with Ensemble' Quick Action (new workflow already in place)"
+                    );
+                }
+                Ok(commands::import::QuickActionMigrationOutcome::Skipped) => {}
+                Err(e) => {
+                    eprintln!("[Migration] legacy Quick Action cleanup FAILED: {e}");
+                }
+            }
+
             // If app was launched with --launch argument, hide the window initially
             // Frontend will show it if needed (when folder has no Scene)
             let args: Vec<String> = std::env::args().collect();

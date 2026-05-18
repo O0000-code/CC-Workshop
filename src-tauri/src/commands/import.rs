@@ -13,6 +13,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use walkdir::WalkDir;
 
 /// Claude JSON project config structure (for parsing ~/.claude.json projects)
@@ -942,6 +943,127 @@ fn xml_escape_for_plist(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// Outcome of [`migrate_legacy_quick_action`] — surfaced to the Tauri
+/// `setup` hook so the caller can log + optionally emit a one-time notice
+/// to the frontend. `Skipped` covers fresh installs and users who never had
+/// the legacy "Open with Ensemble" Quick Action in the first place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickActionMigrationOutcome {
+    /// Legacy workflow not present (fresh install or already cleaned).
+    Skipped,
+    /// Legacy workflow removed; the modern "Open with CC Workshop"
+    /// workflow already existed alongside it (user had reinstalled).
+    Removed,
+    /// Legacy workflow removed AND a fresh "Open with CC Workshop"
+    /// workflow installed via [`install_quick_action`].
+    Replaced,
+}
+
+/// Returns true if the given workflow `document.wflow` content shows the
+/// v2.1.x brand-era binary path `/Applications/Ensemble.app/Contents/MacOS/Ensemble`.
+/// We test for the exact target string because that's the only signal
+/// distinguishing a legacy-broken workflow from a hypothetical hand-edited
+/// one that happens to share the "Open with Ensemble" name. Kept as a pure
+/// function so it can be unit-tested without touching the real
+/// `~/Library/Services/` directory.
+fn legacy_workflow_targets_obsolete_binary(workflow_content: &str) -> bool {
+    workflow_content.contains("/Applications/Ensemble.app/Contents/MacOS/Ensemble")
+}
+
+/// One-time migration for users who installed the Finder Quick Action under
+/// the legacy "Open with Ensemble" name (CC Workshop v2.1.x and earlier).
+/// After the v2.2.0 brand rename, [`install_quick_action`] writes a new
+/// `Open with CC Workshop.workflow` resolving the binary via
+/// `std::env::current_exe()`, but the legacy workflow file was never
+/// cleaned up by the rename — its `COMMAND_STRING` still references
+/// `/Applications/Ensemble.app/Contents/MacOS/Ensemble`, a path that no
+/// longer exists. Symptom users see when right-clicking a folder:
+///
+///   The action "Run Shell Script" encountered an error:
+///   "zsh:3: no such file or directory: /Applications/Ensemble.app/…"
+///
+/// We:
+///   1. Detect `~/Library/Services/Open with Ensemble.workflow/`.
+///   2. Confirm it actually targets the obsolete binary path (defensive
+///      against a user-hand-edited workflow that kept the old name).
+///   3. Delete the legacy workflow directory.
+///   4. If the modern "Open with CC Workshop.workflow" is missing, install
+///      it via [`install_quick_action`], which resolves the running binary
+///      at install time.
+///   5. Refresh the LaunchServices Services cache (`pbs -update`).
+///
+/// Idempotent — re-running after success returns `Skipped`. Designed to
+/// run unconditionally from `lib.rs::setup` (no per-install state flag).
+///
+/// Per `.claude/rules/fallback-path-must-be-unreachable-in-test.md`, this
+/// function MUST NOT touch `~/Library/Services/` under `cargo test`. The
+/// guard at the top panics with a clear message if reached.
+pub fn migrate_legacy_quick_action() -> Result<QuickActionMigrationOutcome, String> {
+    #[cfg(test)]
+    {
+        panic!(
+            "migrate_legacy_quick_action() called during cargo test — this would \
+             delete real Finder Quick Action workflows on the developer's machine. \
+             Test the pure helper `legacy_workflow_targets_obsolete_binary` instead."
+        );
+    }
+    #[cfg(not(test))]
+    {
+        let services_dir = dirs::home_dir()
+            .ok_or_else(|| "Cannot find home directory".to_string())?
+            .join("Library/Services");
+        let legacy = services_dir.join("Open with Ensemble.workflow");
+        let current = services_dir.join("Open with CC Workshop.workflow");
+
+        if !legacy.exists() {
+            return Ok(QuickActionMigrationOutcome::Skipped);
+        }
+
+        // Read the workflow's `document.wflow` to confirm it really targets
+        // the obsolete binary path. If the file is unreadable (corrupted
+        // workflow, permission issue), bail with `Skipped` rather than
+        // potentially destroying a user-authored workflow.
+        let doc_path = legacy.join("Contents/document.wflow");
+        let content = match fs::read_to_string(&doc_path) {
+            Ok(s) => s,
+            Err(_) => return Ok(QuickActionMigrationOutcome::Skipped),
+        };
+        if !legacy_workflow_targets_obsolete_binary(&content) {
+            return Ok(QuickActionMigrationOutcome::Skipped);
+        }
+
+        fs::remove_dir_all(&legacy).map_err(|e| {
+            format!(
+                "Failed to remove legacy quick action workflow at {}: {}",
+                legacy.display(),
+                e
+            )
+        })?;
+
+        let outcome = if current.exists() {
+            QuickActionMigrationOutcome::Removed
+        } else {
+            // `install_quick_action` resolves the binary via current_exe(),
+            // so it works whether CC Workshop.app is in /Applications/ or
+            // ~/Applications/. Propagate its error so the caller can log
+            // and surface a one-time notice — the legacy workflow was
+            // already removed, so the worst case is "user has no Quick
+            // Action until they reinstall it from Settings", which is no
+            // worse than not running migration at all.
+            install_quick_action()?;
+            QuickActionMigrationOutcome::Replaced
+        };
+
+        // Refresh LaunchServices so Finder picks up the rename
+        std::process::Command::new("/System/Library/CoreServices/pbs")
+            .arg("-update")
+            .output()
+            .ok();
+
+        Ok(outcome)
+    }
+}
+
 /// Install Finder Quick Action
 #[tauri::command]
 pub fn install_quick_action() -> Result<String, String> {
@@ -1519,6 +1641,276 @@ fn ghostty_supports_native_applescript(version: &str) -> bool {
 }
 
 // ============================================================================
+// cmux — bundled CLI + socket readiness
+// ============================================================================
+//
+// cmux (https://github.com/manaflow-ai/cmux) is a Ghostty-engine-based native
+// macOS terminal for AI coding agents. It ships a Swift CLI inside its app
+// bundle at `<bundle>/Contents/Resources/bin/cmux`. That CLI drives an
+// in-process Unix-domain socket API
+// (`~/Library/Application Support/cmux/cmux.sock`).
+//
+// CRITICAL CONSTRAINT — `automation.socketControlMode` (default `"cmuxOnly"`)
+// rejects external CLI callers with `Broken pipe (errno 32)`. The user has to
+// edit `~/.config/cmux/cmux.json` to set `"socketControlMode": "automation"`
+// (or higher) AND fully restart cmux — `cmux reload-config` does NOT pick up
+// this value. We return the `CMUX_SOCKET_LOCKED` sentinel string in that case
+// rather than baking a multi-line hint into the error message; the frontend
+// (`LauncherModal.tsx` / `MainLayout.tsx`) intercepts the sentinel and renders
+// the actionable recovery steps in a layout that preserves line breaks —
+// mirroring the established `ACCESSIBILITY_PERMISSION_REQUIRED` /
+// `TerminalNotInstalled:<App>` pattern used by Warp / Ghostty / Alacritty.
+//
+// Why we use the bundled CLI directly (not the Homebrew PATH symlink at
+// `/opt/homebrew/bin/cmux`): the bundled path is stable and self-documenting,
+// and is the same path cmux's own `AppDelegate+CmuxSSHURL.swift` uses
+// internally via `Bundle.main.resourceURL?.appendingPathComponent("bin/cmux")`.
+// Users who installed cmux by drag-dropping the DMG (no `brew install --cask`)
+// have the bundled path but not the symlink — relying on PATH would orphan
+// them.
+//
+// Why NOT AppleScript: cmux's scripting dictionary (`Resources/cmux.sdef`)
+// exposes verbs like `new tab` and `input text`, but every verb beyond
+// `activate` ultimately routes through the same socket. With
+// socketControlMode=cmuxOnly even `tell application "cmux" to quit` hangs
+// (AppleEvent timed out -1712, empirically verified). AppleScript is therefore
+// not a viable fallback path.
+//
+// Why NOT `cmux://`: registered only for SSH deeplinks + auth callbacks
+// (`Resources/Info.plist::CFBundleURLTypes` + `Sources/AppDelegate+CmuxSSHURL.swift`),
+// and incoming SSH URLs trigger a confirmation `NSAlert`. Not viable for
+// silent automation.
+//
+// Empirically observed (cmux 0.64.6, see
+// `.dev/cmux-support/03_empirical_findings.md` §3-§4):
+//   `cmux ping`                                → exit 0 / stdout "PONG\n"
+//   `cmux ping` (under cmuxOnly)               → exit 1 / stderr "Error: Failed
+//                                                to write to socket
+//                                                (Broken pipe, errno 32)"
+//   `cmux ping` (cold, no socket)              → exit 1 / stderr "Error: Failed
+//                                                to connect to socket … (Connection
+//                                                refused, errno 61)"
+//   `cmux new-workspace --cwd X --command Y …` → "OK workspace:N\n"
+//   `cmux new-window`                          → "OK <UUID>\n" (UUID, NOT
+//                                                "window:N" — even with
+//                                                `--id-format refs`)
+
+/// Sentinel returned to the frontend when cmux's CLI socket is locked down by
+/// the default `socketControlMode: "cmuxOnly"`. Both the Tauri command's
+/// frontend caller (LauncherModal) and MainLayout's Quick Action handler
+/// recognise this token and render the full recovery instructions in a
+/// layout that preserves line breaks. This pattern mirrors how Warp's
+/// `ACCESSIBILITY_PERMISSION_REQUIRED` token is handled.
+pub(super) const CMUX_SOCKET_LOCKED: &str = "CMUX_SOCKET_LOCKED";
+
+/// Resolve the path to cmux's bundled CLI binary, performing three checks:
+/// (1) the file exists as a real file (not a symlink — symlinks would let
+/// a same-UID attacker substitute another binary at this path);
+/// (2) the executable bit is set;
+/// (3) for the user-local fallback, the file is owned by the current user
+/// (already guaranteed by `~/Applications/...` semantics — we just probe
+/// `is_file` without canonicalising).
+///
+/// Returning `None` here keeps the missing/corrupt cmux install case routed
+/// through `TerminalNotInstalled:cmux` rather than `cmux CLI failed: …` at
+/// launch time. Empirical bundled-CLI fingerprint: 12 MB Mach-O universal
+/// binary (`x86_64 + arm64`).
+fn cmux_bundled_cli_path() -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let candidates: Vec<PathBuf> = {
+        let mut v = vec![PathBuf::from(
+            "/Applications/cmux.app/Contents/Resources/bin/cmux",
+        )];
+        if let Some(home) = dirs::home_dir() {
+            v.push(home.join("Applications/cmux.app/Contents/Resources/bin/cmux"));
+        }
+        v
+    };
+    for candidate in candidates {
+        let meta = match std::fs::symlink_metadata(&candidate) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        // Reject symlinks: `Path::is_file()` follows symlinks, which would
+        // let a same-UID attacker substitute `/bin/sh` at this path and
+        // have us run it. cmux ships as a regular Mach-O file.
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            continue;
+        }
+        // Executable bit must be set; otherwise the launch path would
+        // fail with EACCES and the user would get a confusing wrapped
+        // error instead of "not installed".
+        if meta.permissions().mode() & 0o111 == 0 {
+            continue;
+        }
+        return Some(candidate);
+    }
+    None
+}
+
+/// True when the cmux CLI stderr matches the `socketControlMode = "cmuxOnly"`
+/// signature. We match the **errno** primarily (locale-independent) and fall
+/// back to the english phrase (defensive belt-and-braces for cmux builds we
+/// haven't observed).
+fn cmux_stderr_indicates_locked(stderr: &str) -> bool {
+    stderr.contains("errno 32")
+        || stderr.contains("Broken pipe")
+        || stderr.contains("write to socket")
+}
+
+/// True when the cmux CLI stderr matches a "socket not yet listening" state —
+/// the cold-start race that resolves on its own once cmux fully boots.
+fn cmux_stderr_indicates_not_ready(stderr: &str) -> bool {
+    stderr.contains("errno 61")
+        || stderr.contains("Connection refused")
+        || stderr.contains("Socket not found")
+}
+
+/// Map cmux CLI stderr to a user-actionable message. Returns the
+/// `CMUX_SOCKET_LOCKED` sentinel for the `errno 32` / Broken-pipe state,
+/// a generic "not ready" string for the transient cold-start state, and a
+/// wrapped error otherwise. Errno is preferred over english text so that
+/// non-en_US.UTF-8 macOS locales don't degrade silently — see
+/// `cmux_stderr_indicates_locked` / `cmux_stderr_indicates_not_ready`.
+fn classify_cmux_cli_error(stderr: &str) -> String {
+    if cmux_stderr_indicates_locked(stderr) {
+        return CMUX_SOCKET_LOCKED.to_string();
+    }
+    if cmux_stderr_indicates_not_ready(stderr) {
+        return "cmux is not ready yet — make sure it's open, then retry.".to_string();
+    }
+    format!("cmux CLI failed: {}", stderr.trim())
+}
+
+/// Run `cmux ping` with a hard per-call timeout. Returns `Ok(Some(Output))`
+/// if the process exits within `timeout`, `Ok(None)` if it hung past the cap
+/// (treated as "transient" by the caller — they may retry), or `Err(...)` if
+/// the spawn itself failed.
+///
+/// This guards against the case where cmux accepts the socket connection but
+/// never writes a reply (hung mid-startup, a half-open socket from a crashed
+/// previous run, etc.) — `std::process::Command::output()` would block
+/// forever in that state, defeating the outer `wait_for_cmux_socket`
+/// wall-clock budget and ultimately hanging the Tauri worker thread.
+/// cmux's own CLI uses a 150 ms `poll()` cap inside `SocketClient.canConnect`
+/// (see `01_cmux_research.md` §4.1); our per-call cap of 500 ms gives
+/// generous slack while still bounding the outer 5 s budget meaningfully.
+fn cmux_ping_with_timeout(
+    cli: &Path,
+    timeout: Duration,
+) -> Result<Option<std::process::Output>, String> {
+    use std::process::Stdio;
+    let mut child = std::process::Command::new(cli)
+        .arg("ping")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("cmux ping spawn failed: {}", e))?;
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                let output = child
+                    .wait_with_output()
+                    .map_err(|e| format!("cmux ping wait failed: {}", e))?;
+                return Ok(Some(output));
+            }
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    // Best-effort kill; ignore errors. The child belongs to us.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Ok(None);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return Err(format!("cmux ping try_wait failed: {}", e)),
+        }
+    }
+}
+
+/// Poll `cmux ping` until it returns "PONG" or `timeout` elapses. Each
+/// individual ping is capped at 500 ms via `cmux_ping_with_timeout`. Bails
+/// out early with the `CMUX_SOCKET_LOCKED` sentinel when stderr matches the
+/// locked-socket errno signature (errno 32 / Broken pipe) — empirically
+/// verified for cmux 0.64.6 in `.dev/cmux-support/03_empirical_findings.md`
+/// §3. Hung pings (per-call timeout hit) are treated as transient and the
+/// outer loop retries.
+fn wait_for_cmux_socket(cli: &Path, timeout: Duration) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    let per_call = Duration::from_millis(500);
+    let poll = Duration::from_millis(200);
+    loop {
+        match cmux_ping_with_timeout(cli, per_call)? {
+            Some(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                // Check stderr first — locked-socket exits non-zero and
+                // is independent of stdout/exit-code interpretation. This
+                // ordering also future-proofs against a hypothetical cmux
+                // build that logs the locked-socket error to stderr but
+                // also exits 0.
+                if cmux_stderr_indicates_locked(&stderr) {
+                    return Err(CMUX_SOCKET_LOCKED.to_string());
+                }
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    if stdout.trim() == "PONG" {
+                        return Ok(());
+                    }
+                }
+                // Other states (Connection refused / Socket not found /
+                // unexpected stdout) → fall through and keep polling.
+            }
+            None => {
+                // ping hung past the per-call cap. Treat as transient and
+                // keep polling — the outer wall-clock budget will fire if
+                // this keeps happening.
+            }
+        }
+        if start.elapsed() >= timeout {
+            return Err(format!(
+                "cmux did not become ready within {} seconds. Make sure cmux is open, then retry.",
+                timeout.as_secs()
+            ));
+        }
+        std::thread::sleep(poll);
+    }
+}
+
+/// Parse the window handle out of `cmux new-window` stdout. cmux 0.64.x prints
+/// `OK <UUID>\n` (note: a UUID, NOT a `window:N` short ref — even with
+/// `--id-format refs`, empirically verified). Trimming both before and after
+/// the prefix strip handles all observed and several hypothetical
+/// whitespace-padding cases. Returning `None` keeps malformed-output errors
+/// uniform with other CLI failures.
+fn parse_cmux_new_window_output(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("OK ")
+                .map(|s| s.trim().to_string())
+        })
+        .filter(|s| !s.is_empty())
+}
+
+/// Invoke the cmux CLI with the given argv, returning trimmed stdout on
+/// success or a classified error string on failure. Centralises the
+/// "spawn → check status → classify stderr" boilerplate the tab-mode and
+/// window-mode dispatch branches both need.
+fn run_cmux_cli(cli: &Path, args: &[&str]) -> Result<String, String> {
+    let output = std::process::Command::new(cli)
+        .args(args)
+        .output()
+        .map_err(|e| format!("Failed to invoke cmux CLI: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(classify_cmux_cli_error(&stderr));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+// ============================================================================
 // R2-8: Terminal app installation probe
 // ============================================================================
 //
@@ -1569,6 +1961,11 @@ fn binary_on_path(binary_name: &str) -> bool {
 ///     binary on PATH (Homebrew non-cask install).
 ///   - Alacritty: `alacritty` binary on PATH (Brew default) OR a
 ///     `.app` bundle (rare custom packaging).
+///   - cmux: bundled Swift CLI at
+///     `<cmux.app>/Contents/Resources/bin/cmux`. The presence of that
+///     binary is necessary AND sufficient — we invoke it directly rather
+///     than via the Homebrew PATH symlink, so the symlink existence is
+///     not checked.
 #[tauri::command]
 pub fn validate_terminal_app(name: String) -> Result<bool, String> {
     match name.as_str() {
@@ -1581,6 +1978,7 @@ pub fn validate_terminal_app(name: String) -> Result<bool, String> {
         "Warp" => Ok(app_bundle_exists("Warp.app")),
         "Ghostty" => Ok(app_bundle_exists("Ghostty.app") || binary_on_path("ghostty")),
         "Alacritty" => Ok(binary_on_path("alacritty") || app_bundle_exists("Alacritty.app")),
+        "cmux" => Ok(cmux_bundled_cli_path().is_some()),
         other => Err(format!("Unknown terminal app: {}", other)),
     }
 }
@@ -1790,6 +2188,99 @@ windows:
                     .map_err(|fallback_error| format!("{native_error}. Fallback failed: {fallback_error}"))?;
             }
         }
+        "cmux" => {
+            // Full rationale in the `cmux — bundled CLI + socket readiness`
+            // module-level comment block above `cmux_bundled_cli_path`.
+            // Short version:
+            //   1. cmux's bundled Swift CLI is the only practical surface
+            //      for opening a folder + auto-running a command (no
+            //      AppleScript path, no URL scheme).
+            //   2. The CLI drives a Unix socket whose default
+            //      `socketControlMode = "cmuxOnly"` rejects external callers.
+            //      `wait_for_cmux_socket` detects that and surfaces the
+            //      `CMUX_SOCKET_LOCKED` sentinel which the frontend
+            //      translates into actionable multi-line setup steps.
+            //   3. argv-level invocation means no shell / AppleScript
+            //      escape needed — stricter trust model than the iTerm /
+            //      Terminal branches' AppleScript paths.
+            let cli = cmux_bundled_cli_path().ok_or_else(|| {
+                // validate_terminal_app already returned `Ok(false)` for
+                // the missing-cmux case before dispatch; reaching here
+                // means cmux was removed (or the executable bit was
+                // cleared, or it was replaced by a symlink) between the
+                // pre-flight and this call.
+                "TerminalNotInstalled:cmux".to_string()
+            })?;
+
+            // Step 1: ensure cmux is running. `open -a` is idempotent and
+            // goes through macOS LaunchServices, NOT cmux's socket — so
+            // this works even when socketControlMode = cmuxOnly.
+            let open_status = std::process::Command::new("/usr/bin/open")
+                .arg("-a")
+                .arg("cmux")
+                .status()
+                .map_err(|e| format!("Failed to spawn /usr/bin/open: {}", e))?;
+            if !open_status.success() {
+                return Err(format!(
+                    "open -a cmux exited with code {}. Is cmux installed at /Applications/cmux.app?",
+                    open_status
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "?".to_string())
+                ));
+            }
+
+            // Step 2: wait for socket. Each ping is capped at 500 ms via
+            // `cmux_ping_with_timeout` so a hung cmux can't pin the Tauri
+            // worker thread past our 5 s wall budget. Bails early with
+            // `CMUX_SOCKET_LOCKED` when ping reports the
+            // socketControlMode=cmuxOnly state.
+            wait_for_cmux_socket(&cli, Duration::from_secs(5))?;
+
+            // Step 3: dispatch by open mode. Tab mode (no --window) puts
+            // the new workspace into cmux's currently-selected window;
+            // window mode creates a fresh window first. See
+            // `.dev/cmux-support/03_empirical_findings.md` §5 for
+            // behavior.
+            if warp_open_mode == "window" {
+                let win_stdout = run_cmux_cli(&cli, &["new-window"])?;
+                let window_id = parse_cmux_new_window_output(&win_stdout).ok_or_else(|| {
+                    format!(
+                        "cmux returned an unexpected response: {}",
+                        win_stdout.trim()
+                    )
+                })?;
+                run_cmux_cli(
+                    &cli,
+                    &[
+                        "new-workspace",
+                        "--window",
+                        &window_id,
+                        "--cwd",
+                        &folder_path_str,
+                        "--command",
+                        &claude_command,
+                        "--focus",
+                        "true",
+                    ],
+                )?;
+            } else {
+                // Tab mode (default): omit --window → workspace lands in
+                // cmux's currently-selected window.
+                run_cmux_cli(
+                    &cli,
+                    &[
+                        "new-workspace",
+                        "--cwd",
+                        &folder_path_str,
+                        "--command",
+                        &claude_command,
+                        "--focus",
+                        "true",
+                    ],
+                )?;
+            }
+        }
         _ => {
             // Default to Terminal.app using native 'do script' command (no keystroke).
             //
@@ -1995,5 +2486,302 @@ mod tests {
         assert!(script.contains("keystroke \"n\" using command down"));
         assert!(script.contains("set the clipboard to \"cd '/Users/bo/My Project' && claude\""));
         assert!(script.contains("key code 36"));
+    }
+
+    // ====== cmux ======
+    //
+    // cmux's external entry points are all process-spawn (`Command::new`),
+    // not AppleScript string assembly, so these tests target the pure
+    // helpers that DO contain branching logic — output parsing + error
+    // classification + path probing. End-to-end behavior (cmux actually
+    // launches and runs the command) is covered by the manual smoke tests
+    // in `.dev/cmux-support/03_empirical_findings.md` §9 because it
+    // requires a real cmux install and a real macOS GUI session.
+
+    #[test]
+    fn cmux_parse_new_window_output_returns_uuid_after_ok_prefix() {
+        // Empirically observed cmux 0.64.6 output (see 03_empirical_findings.md §4).
+        let stdout = "OK C8391256-B0EA-4903-BB75-6ACC784835E1\n";
+        assert_eq!(
+            parse_cmux_new_window_output(stdout),
+            Some("C8391256-B0EA-4903-BB75-6ACC784835E1".to_string())
+        );
+    }
+
+    #[test]
+    fn cmux_parse_new_window_output_accepts_window_ref() {
+        // Future-proof: cmux's `--id-format refs` does NOT currently change
+        // new-window output, but if a future cmux release switches to
+        // `OK window:N` we want to keep parsing successfully rather than
+        // hard-failing. The contract is "take whatever follows 'OK '".
+        let stdout = "OK window:7\n";
+        assert_eq!(
+            parse_cmux_new_window_output(stdout),
+            Some("window:7".to_string())
+        );
+    }
+
+    #[test]
+    fn cmux_parse_new_window_output_handles_no_trailing_newline() {
+        // Defensive: don't fall over if cmux ever drops the trailing \n.
+        assert_eq!(
+            parse_cmux_new_window_output("OK abc-123"),
+            Some("abc-123".to_string())
+        );
+    }
+
+    #[test]
+    fn cmux_parse_new_window_output_returns_none_on_malformed_input() {
+        assert_eq!(parse_cmux_new_window_output(""), None);
+        assert_eq!(parse_cmux_new_window_output("FAIL nope"), None);
+        // "OK " with nothing after it isn't a usable handle.
+        assert_eq!(parse_cmux_new_window_output("OK "), None);
+        assert_eq!(parse_cmux_new_window_output("OK\n"), None);
+    }
+
+    #[test]
+    fn cmux_classify_error_broken_pipe_returns_locked_sentinel() {
+        // Empirically observed stderr under socketControlMode = "cmuxOnly":
+        //   "Error: Failed to write to socket (Broken pipe, errno 32)".
+        // The classifier must collapse this to the CMUX_SOCKET_LOCKED
+        // sentinel so the frontend can render the multi-line recovery
+        // instructions in a layout that preserves line breaks.
+        let stderr = "Error: Failed to write to socket (Broken pipe, errno 32)";
+        let msg = classify_cmux_cli_error(stderr);
+        assert_eq!(msg, CMUX_SOCKET_LOCKED);
+    }
+
+    #[test]
+    fn cmux_classify_error_errno_32_alone_returns_locked_sentinel() {
+        // Locale-independence check: a future cmux build with a localized
+        // strerror (e.g. "管道损坏" / "Tubería rota") would still print
+        // "errno 32" — our matcher must accept that.
+        let stderr = "Error: 管道损坏 (errno 32)";
+        let msg = classify_cmux_cli_error(stderr);
+        assert_eq!(msg, CMUX_SOCKET_LOCKED);
+    }
+
+    #[test]
+    fn cmux_classify_error_connection_refused_says_not_ready() {
+        // Empirically observed stderr when cmux is not yet running:
+        //   "Error: Failed to connect to socket at <path> (Connection refused, errno 61)"
+        let stderr = "Error: Failed to connect to socket at /tmp/foo (Connection refused, errno 61)";
+        let msg = classify_cmux_cli_error(stderr);
+        assert!(msg.contains("not ready"), "got: {}", msg);
+        // Must NOT confuse this with the locked-socket case — the user fix
+        // is different (here: just open cmux; there: edit config + restart).
+        assert_ne!(msg, CMUX_SOCKET_LOCKED);
+    }
+
+    #[test]
+    fn cmux_classify_error_errno_61_alone_says_not_ready() {
+        // Same locale-independence guard for the not-ready case.
+        let stderr = "Error: (errno 61)";
+        let msg = classify_cmux_cli_error(stderr);
+        assert!(msg.contains("not ready"), "got: {}", msg);
+    }
+
+    #[test]
+    fn cmux_classify_error_socket_not_found_says_not_ready() {
+        // Empirically observed stderr when cmux is not running and the
+        // socket file has never been created: "Error: Socket not found at <path>".
+        let stderr = "Error: Socket not found at /Users/bo/Library/Application Support/cmux/cmux.sock";
+        let msg = classify_cmux_cli_error(stderr);
+        assert!(msg.contains("not ready"), "got: {}", msg);
+        assert_ne!(msg, CMUX_SOCKET_LOCKED);
+    }
+
+    #[test]
+    fn cmux_classify_error_unknown_wraps_stderr() {
+        // For anything we don't recognise, the wrapper still has to
+        // include the original message so the user / bug reporter has
+        // something actionable.
+        let msg = classify_cmux_cli_error("Something weird happened");
+        assert!(msg.contains("Something weird happened"));
+        assert!(msg.contains("cmux CLI failed"));
+    }
+
+    #[test]
+    fn cmux_bundled_cli_path_returns_none_when_app_missing() {
+        // We can't easily mock `/Applications/cmux.app` in a unit test,
+        // but we CAN verify the function's invariants on machines where
+        // cmux is absent: it must return None, not panic. On CI / dev
+        // machines with cmux installed, the function returns Some(...).
+        // The contract we lock in: it never panics, and Some(path) means
+        // (a) path exists as a real file, (b) path is not a symlink,
+        // (c) path has the executable bit set, (d) path ends with the
+        // canonical bundled-CLI tail.
+        if let Some(path) = cmux_bundled_cli_path() {
+            let meta = std::fs::symlink_metadata(&path).expect("must stat");
+            assert!(meta.is_file(), "returned path must be a regular file");
+            assert!(!meta.file_type().is_symlink(), "must reject symlinks");
+            use std::os::unix::fs::PermissionsExt;
+            assert!(
+                meta.permissions().mode() & 0o111 != 0,
+                "executable bit must be set"
+            );
+            let s = path.display().to_string();
+            assert!(
+                s.ends_with("cmux.app/Contents/Resources/bin/cmux"),
+                "returned path has unexpected layout: {}",
+                s
+            );
+        }
+    }
+
+    #[test]
+    fn validate_terminal_app_accepts_cmux_name() {
+        // The dispatcher must recognise "cmux" as a known name (Ok(bool)),
+        // not return Err("Unknown terminal app: cmux"). The bool value
+        // depends on whether cmux is installed on the runner.
+        let result = validate_terminal_app("cmux".to_string());
+        assert!(
+            result.is_ok(),
+            "validate_terminal_app must treat 'cmux' as known, got {:?}",
+            result
+        );
+    }
+
+    // ---- wait_for_cmux_socket fixture-binary tests ----
+    //
+    // These tests exercise the polling loop's decision tree without
+    // depending on a real cmux install. We synthesize a tiny shell-script
+    // "fake CLI" whose `ping` output drives the assertion. Per the project
+    // Rule `fallback-path-must-be-unreachable-in-test.md`, real-resource
+    // probes inside `cargo test` must use scoped fixtures; this pattern
+    // honours that — the fixture binary lives in a `tempfile::tempdir`
+    // and is wiped at test end.
+
+    use std::os::unix::fs::PermissionsExt;
+
+    fn write_fixture_cli(dir: &Path, script: &str) -> PathBuf {
+        let cli = dir.join("fake-cmux");
+        fs::write(&cli, script).expect("write fixture");
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o755))
+            .expect("chmod fixture");
+        cli
+    }
+
+    #[test]
+    fn wait_for_cmux_socket_returns_ok_when_fixture_pings_pong() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = write_fixture_cli(dir.path(), "#!/bin/sh\necho PONG\n");
+        let r = wait_for_cmux_socket(&cli, Duration::from_secs(2));
+        assert!(r.is_ok(), "expected Ok, got {:?}", r);
+    }
+
+    #[test]
+    fn wait_for_cmux_socket_returns_locked_when_fixture_prints_errno_32() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = write_fixture_cli(
+            dir.path(),
+            "#!/bin/sh\necho 'Error: Failed to write to socket (Broken pipe, errno 32)' 1>&2\nexit 1\n",
+        );
+        let r = wait_for_cmux_socket(&cli, Duration::from_secs(2));
+        let err = r.unwrap_err();
+        assert_eq!(err, CMUX_SOCKET_LOCKED);
+    }
+
+    #[test]
+    fn wait_for_cmux_socket_returns_locked_when_locked_signature_appears_with_exit_0() {
+        // Defensive: a future cmux build might print the locked-socket
+        // error to stderr but still exit 0 (warning-style). Our stderr
+        // check is independent of exit-code, so this should still bail.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = write_fixture_cli(
+            dir.path(),
+            "#!/bin/sh\necho 'Failed to write to socket (errno 32)' 1>&2\nexit 0\n",
+        );
+        let r = wait_for_cmux_socket(&cli, Duration::from_secs(2));
+        let err = r.unwrap_err();
+        assert_eq!(err, CMUX_SOCKET_LOCKED);
+    }
+
+    #[test]
+    fn wait_for_cmux_socket_times_out_when_fixture_always_says_connection_refused() {
+        // Connection-refused / not-ready is treated as transient — the
+        // loop keeps polling until the outer wall-clock budget expires.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = write_fixture_cli(
+            dir.path(),
+            "#!/bin/sh\necho 'Error: Failed to connect to socket (Connection refused, errno 61)' 1>&2\nexit 1\n",
+        );
+        let r = wait_for_cmux_socket(&cli, Duration::from_millis(500));
+        let err = r.unwrap_err();
+        assert!(err.contains("did not become ready"), "got: {}", err);
+        assert_ne!(err, CMUX_SOCKET_LOCKED);
+    }
+
+    #[test]
+    fn wait_for_cmux_socket_returns_err_when_fixture_does_not_exist() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = dir.path().join("no-such-cli");
+        // Spawn failure flows through cmux_ping_with_timeout → Err.
+        let r = wait_for_cmux_socket(&cli, Duration::from_secs(1));
+        assert!(r.is_err());
+    }
+
+    // ====== Quick Action legacy-name migration ======
+
+    #[test]
+    fn legacy_workflow_targets_obsolete_binary_detects_old_path() {
+        // Real-world legacy workflow content as observed on a 2026-05-18 user
+        // machine (the COMMAND_STRING fragment is sufficient to identify).
+        let content = r#"<key>COMMAND_STRING</key>
+<string>for f in "$@"
+do
+    "/Applications/Ensemble.app/Contents/MacOS/Ensemble" --launch "$f"
+done</string>"#;
+        assert!(legacy_workflow_targets_obsolete_binary(content));
+    }
+
+    #[test]
+    fn legacy_workflow_targets_obsolete_binary_rejects_modern_path() {
+        // A user who already reinstalled gets a workflow with the new
+        // /Applications/CC Workshop.app/... binary path; we must not
+        // misclassify it.
+        let content = r#"<key>COMMAND_STRING</key>
+<string>for f in "$@"
+do
+    "/Applications/CC Workshop.app/Contents/MacOS/cc-workshop" --launch "$f"
+done</string>"#;
+        assert!(!legacy_workflow_targets_obsolete_binary(content));
+    }
+
+    #[test]
+    fn legacy_workflow_targets_obsolete_binary_rejects_unrelated_content() {
+        assert!(!legacy_workflow_targets_obsolete_binary(""));
+        assert!(!legacy_workflow_targets_obsolete_binary("not a workflow file"));
+        // A user-edited workflow that uses "Ensemble" in a string but
+        // doesn't reference the obsolete binary path stays untouched.
+        assert!(!legacy_workflow_targets_obsolete_binary(
+            r#"<string>Welcome to Ensemble's launch shortcut</string>"#
+        ));
+        // The path component must be the FULL binary path — partial
+        // matches (e.g. user has /Applications/EnsembleX.app for some
+        // other product) must not trigger.
+        assert!(!legacy_workflow_targets_obsolete_binary(
+            "/Applications/EnsembleBrand.app/Contents/MacOS/Ensemble"
+        ));
+    }
+
+    #[test]
+    fn cmux_ping_with_timeout_kills_hung_child_at_per_call_cap() {
+        // Fixture sleeps longer than the per-call cap. The helper must
+        // kill the child and return Ok(None) (transient).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = write_fixture_cli(dir.path(), "#!/bin/sh\nsleep 5\necho PONG\n");
+        let start = std::time::Instant::now();
+        let r = cmux_ping_with_timeout(&cli, Duration::from_millis(200));
+        let elapsed = start.elapsed();
+        let outcome = r.expect("spawn ok");
+        assert!(outcome.is_none(), "expected None (transient), got Some");
+        // Honour the timeout — the helper must return promptly, well
+        // under the fixture's 5 s sleep.
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "took {}ms; helper did not bound per-call latency",
+            elapsed.as_millis()
+        );
     }
 }

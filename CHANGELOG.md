@@ -7,10 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-05-18
+
 ### Added
 
 - **cmux terminal support** ([#6](https://github.com/O0000-code/CC-Workshop/issues/6)). Settings → Launch Configuration → Terminal Application now offers **cmux** alongside Terminal / iTerm2 / Warp / Ghostty / Alacritty. cmux's "tab vs new window" Open Mode is honoured (same toggle as Warp / Ghostty).
 - Launch path uses cmux's bundled CLI at `/Applications/cmux.app/Contents/Resources/bin/cmux` (argv-only — no shell, no AppleScript), so folder names with spaces, quotes, or shell metacharacters cannot inject. Each `cmux ping` probe during cold-start polling is hard-capped at 500 ms to prevent a wedged socket from hanging the launch flow.
+
+### Fixed
+
+- **Finder Quick Action broken on installs that pre-date v2.2.0.** Users who installed the "Open with Ensemble" Quick Action before the brand rename saw `zsh: no such file or directory: /Applications/Ensemble.app/Contents/MacOS/Ensemble` every time they right-clicked a folder, because the workflow file still hardcoded the deleted Ensemble.app path. v2.3.1 auto-detects and removes the legacy workflow on startup, then installs the modern "Open with CC Workshop" workflow pointing at the actual CC Workshop binary (works whether you installed to `/Applications/` or `~/Applications/`). Idempotent — no user action required.
 
 ### Setup note (cmux only)
 

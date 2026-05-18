@@ -38,7 +38,7 @@ Read `AGENTS.md` for the full project conventions before reviewing.
 
 - [ ] No sensitive information exposed (API keys, tokens, file paths)
 - [ ] All Tauri IPC calls use `safeInvoke` wrapper (not raw `invoke`)
-- [ ] No unsafe file operations outside `~/.ensemble/` data directory
+- [ ] No unsafe file operations outside `~/.cc-workshop/` data directory
 - [ ] No modifications to `tauri.conf.json` signing or capabilities
 - [ ] No `.env` or credential files included in the diff
 - [ ] npm dependencies: no known vulnerabilities introduced

@@ -108,7 +108,7 @@ export const useImportStore = create<ImportState>((set, get) => ({
 
       if (config && config.hasConfig) {
         // 默认不全选 — 让用户显式选择要导入的项目，避免误把 ~/.claude/skills/ 里
-        // 的内容整体搬进 ~/.ensemble/skills/（import 流程会同时从源目录删除原文件）
+        // 的内容整体搬进 ~/.cc-workshop/skills/（import 流程会同时从源目录删除原文件）
         set({
           detectedConfig: config,
           selectedItems: [],

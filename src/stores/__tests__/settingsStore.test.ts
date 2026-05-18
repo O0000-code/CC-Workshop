@@ -7,8 +7,8 @@ describe('settingsStore - utility methods and state', () => {
     // default to `true` so Marketplace installs auto-classify without the
     // user having to opt in.
     useSettingsStore.setState({
-      skillSourceDir: '~/.ensemble/skills',
-      mcpSourceDir: '~/.ensemble/mcps',
+      skillSourceDir: '~/.cc-workshop/skills',
+      mcpSourceDir: '~/.cc-workshop/mcps',
       claudeConfigDir: '~/.claude',
       anthropicApiKey: '',
       autoClassifyNewItems: true,
@@ -27,8 +27,8 @@ describe('settingsStore - utility methods and state', () => {
   describe('initial state', () => {
     it('has correct default values', () => {
       const state = useSettingsStore.getState();
-      expect(state.skillSourceDir).toBe('~/.ensemble/skills');
-      expect(state.mcpSourceDir).toBe('~/.ensemble/mcps');
+      expect(state.skillSourceDir).toBe('~/.cc-workshop/skills');
+      expect(state.mcpSourceDir).toBe('~/.cc-workshop/mcps');
       expect(state.claudeConfigDir).toBe('~/.claude');
       expect(state.anthropicApiKey).toBe('');
       // V2 (D-Imp-12): default flipped from false → true.

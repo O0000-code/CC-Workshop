@@ -389,7 +389,7 @@ export function ImportDialog() {
         <div className="flex items-center justify-between py-4 px-6 border-t border-[#E5E5E5] flex-shrink-0">
           {/* Info Icon */}
           <Tooltip
-            content="Items will be copied to ~/.ensemble/ for centralized management"
+            content="Items will be copied to ~/.cc-workshop/ for centralized management"
             position="top"
           >
             <div className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-[#FAFAFA] cursor-pointer">

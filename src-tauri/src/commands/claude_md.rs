@@ -16,7 +16,7 @@ use walkdir::WalkDir;
 // Constants
 // ============================================================================
 
-/// Global backup directory (~/.ensemble/claude-md/global-backup/)
+/// Global backup directory (~/.cc-workshop/claude-md/global-backup/)
 fn get_global_backup_dir() -> PathBuf {
     get_app_data_dir().join("claude-md").join("global-backup")
 }
@@ -25,17 +25,17 @@ fn get_global_backup_dir() -> PathBuf {
 // Helper functions for independent file storage
 // ============================================================================
 
-/// Get CLAUDE.md storage root directory (~/.ensemble/claude-md/)
+/// Get CLAUDE.md storage root directory (~/.cc-workshop/claude-md/)
 fn get_claude_md_storage_dir() -> PathBuf {
     get_app_data_dir().join("claude-md")
 }
 
-/// Get directory for a specific CLAUDE.md file (~/.ensemble/claude-md/{id}/)
+/// Get directory for a specific CLAUDE.md file (~/.cc-workshop/claude-md/{id}/)
 fn get_claude_md_file_dir(id: &str) -> PathBuf {
     get_claude_md_storage_dir().join(id)
 }
 
-/// Get path to the CLAUDE.md file (~/.ensemble/claude-md/{id}/CLAUDE.md)
+/// Get path to the CLAUDE.md file (~/.cc-workshop/claude-md/{id}/CLAUDE.md)
 fn get_claude_md_file_path(id: &str) -> PathBuf {
     get_claude_md_file_dir(id).join("CLAUDE.md")
 }
@@ -656,7 +656,7 @@ pub fn delete_claude_md(id: String) -> Result<(), String> {
 ///
 /// Flow:
 /// 1. Read current ~/.claude/CLAUDE.md
-/// 2. If exists and not managed by us, backup to ~/.ensemble/claude-md/global-backup/
+/// 2. If exists and not managed by us, backup to ~/.cc-workshop/claude-md/global-backup/
 /// 3. Unset previous global file's isGlobal flag
 /// 4. Copy new file content to ~/.claude/CLAUDE.md
 /// 5. Set new file's isGlobal to true
@@ -945,7 +945,7 @@ pub fn distribute_scene_claude_md(
 /// Migrate old CLAUDE.md data from embedded content to independent file storage
 ///
 /// This function checks for old data where content is stored in data.json
-/// and migrates it to independent files in ~/.ensemble/claude-md/{id}/CLAUDE.md
+/// and migrates it to independent files in ~/.cc-workshop/claude-md/{id}/CLAUDE.md
 pub fn migrate_claude_md_storage() -> Result<(), String> {
     let _guard = DATA_MUTEX.lock().map_err(|e| e.to_string())?;
     let mut app_data = read_app_data()?;

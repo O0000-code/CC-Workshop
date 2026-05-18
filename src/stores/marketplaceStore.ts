@@ -37,7 +37,7 @@ import { useTrashStore } from './trashStore';
 //
 // - Catalog data: read from backend IPC `list_marketplace_skills` /
 //   `list_marketplace_mcps`; cached locally in this store. The 24h cache
-//   sits on the Rust side under `~/.ensemble/marketplace-cache/`.
+//   sits on the Rust side under `~/.cc-workshop/marketplace-cache/`.
 // - Install completes → trigger `useSkillsStore.loadSkills()` /
 //   `useMcpsStore.loadMcps()` to keep SSoT in sync (spec §6.4 / R4 §10.4).
 // - "Already installed?" is computed by deriving from `useSkillsStore.skills` /
@@ -1545,7 +1545,7 @@ export const useMarketplaceStore = create<MarketplaceState>()(
           switch (outcome.kind) {
             case 'installed': {
               // Backend reuses `skillId` field for both variants — for MCP
-              // installs the value is the local mcp id (`~/.ensemble/mcps/<name>.json`
+              // installs the value is the local mcp id (`~/.cc-workshop/mcps/<name>.json`
               // path). Phase A SubAgent note explicitly calls this out.
               await useMcpsStore.getState().loadMcps();
               set((state) => {

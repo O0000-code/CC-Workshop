@@ -38,6 +38,15 @@ export default function MainLayout() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
+  // v2.3.0 data-dir migration notice (legacy ~/.ensemble/ → ~/.cc-workshop/).
+  // Surfaced via Tauri events emitted from `lib.rs::setup` after
+  // `utils::migration::migrate_legacy_data_dir` runs. Three mutually
+  // exclusive outcomes; the user can dismiss any of them.
+  const [migrationNotice, setMigrationNotice] = useState<{
+    kind: 'migrated' | 'conflict' | 'failed';
+    message: string;
+  } | null>(null);
+
   const {
     activeCategory,
     activeTags,
@@ -358,6 +367,52 @@ export default function MainLayout() {
 
     checkLaunchArgs();
   }, [isInitializing, handleLaunchPath]);
+
+  // v2.3.0: subscribe to legacy data-dir migration outcome events emitted
+  // from `lib.rs::setup`. Three events fire at most once per app launch
+  // and we render a non-blocking dismissible notice for each. Failure to
+  // listen is best-effort — if the listener attaches after the event was
+  // already fired (rare race during cold start), the notice simply does
+  // not appear; the migration log in stderr remains the source of truth.
+  useEffect(() => {
+    if (!isTauri()) return;
+    const unlisteners: UnlistenFn[] = [];
+    (async () => {
+      try {
+        unlisteners.push(
+          await listen('legacy-data-migrated', () => {
+            setMigrationNotice({
+              kind: 'migrated',
+              message:
+                'Your data was moved from ~/.ensemble/ to ~/.cc-workshop/. The old folder contains a marker file and can be safely deleted.',
+            });
+          }),
+        );
+        unlisteners.push(
+          await listen('legacy-data-conflict', () => {
+            setMigrationNotice({
+              kind: 'conflict',
+              message:
+                'Both ~/.ensemble/ and ~/.cc-workshop/ already contain data. Inspect manually and remove one before relaunching.',
+            });
+          }),
+        );
+        unlisteners.push(
+          await listen<string>('legacy-data-migration-failed', (event) => {
+            setMigrationNotice({
+              kind: 'failed',
+              message: `Data directory migration failed: ${event.payload}. Relaunch to retry; your data at ~/.ensemble/ is intact.`,
+            });
+          }),
+        );
+      } catch (e) {
+        console.error('[MainLayout] migration listener attach failed:', e);
+      }
+    })();
+    return () => {
+      for (const u of unlisteners) u();
+    };
+  }, []);
 
   // Listen for second instance launch events (when app is already running)
   useEffect(() => {
@@ -762,7 +817,7 @@ export default function MainLayout() {
 
   // Show error state if initialization failed.
   //
-  // Round 2 R2-2: when `~/.ensemble/` is owned by root (almost always
+  // Round 2 R2-2: when `~/.cc-workshop/` is owned by root (almost always
   // because the user ran `sudo open CC Workshop.app` once and the directory
   // ownership flipped), the backend `init_app_data` returns a structured
   // error prefixed with `CCWorkshopDirUnwritable:`. We render a dedicated
@@ -783,7 +838,7 @@ export default function MainLayout() {
       // regex doesn't match (defensive — backend wording change should
       // not break this surface).
       const commandMatch = initError.match(/Run:\s*`([^`]+)`/);
-      const remediationCommand = commandMatch?.[1] ?? 'sudo chown -R $(whoami) ~/.ensemble';
+      const remediationCommand = commandMatch?.[1] ?? 'sudo chown -R $(whoami) ~/.cc-workshop';
 
       return (
         <div className="flex h-screen w-screen items-center justify-center bg-white px-6">
@@ -957,6 +1012,52 @@ export default function MainLayout() {
           }}
         >
           <MarketplaceShortcutBanner />
+        </div>
+      )}
+
+      {/* v2.3.0 data-dir migration notice — floating bottom-left toast,
+          dismissible. Three outcomes (success / conflict / failure) share
+          one component but differ in tint and copy. Non-blocking by
+          design (see lib.rs setup hook commentary): startup must not
+          block on a notice the user did not ask about. */}
+      {migrationNotice && (
+        <div
+          className="fixed bottom-6 left-6 z-50 rounded-lg overflow-hidden"
+          style={{
+            width: 'min(480px, calc(100vw - 48px))',
+            boxShadow: 'var(--shadow-dropdown)',
+          }}
+        >
+          <div
+            className="px-4 py-3 text-[13px] leading-relaxed"
+            style={{
+              background:
+                migrationNotice.kind === 'migrated'
+                  ? 'var(--color-success-bg)'
+                  : migrationNotice.kind === 'conflict'
+                    ? 'var(--color-warning-bg)'
+                    : 'var(--color-error-bg)',
+              color: 'var(--color-primary)',
+            }}
+          >
+            <div className="flex items-start gap-3">
+              <div className="flex-1">
+                <div className="font-medium mb-1">
+                  {migrationNotice.kind === 'migrated' && 'Data directory migrated'}
+                  {migrationNotice.kind === 'conflict' && 'Migration skipped — conflict'}
+                  {migrationNotice.kind === 'failed' && 'Migration failed'}
+                </div>
+                <div style={{ color: 'var(--color-secondary)' }}>{migrationNotice.message}</div>
+              </div>
+              <button
+                onClick={() => setMigrationNotice(null)}
+                className="px-2 py-0.5 text-[12px] rounded hover:bg-black/5 transition-colors shrink-0"
+                style={{ color: 'var(--color-secondary)' }}
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

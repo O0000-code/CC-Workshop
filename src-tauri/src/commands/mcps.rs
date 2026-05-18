@@ -575,7 +575,7 @@ fn combine_error_with_stderr(base: String, tail: Option<String>) -> String {
 
 /// Delete an MCP by moving it to the trash directory
 ///
-/// Instead of permanently deleting, moves the MCP config to ~/.ensemble/trash/mcps/
+/// Instead of permanently deleting, moves the MCP config to ~/.cc-workshop/trash/mcps/
 /// for easy recovery if needed.
 #[tauri::command]
 pub fn delete_mcp(mcp_id: String, ensemble_dir: String) -> Result<(), String> {

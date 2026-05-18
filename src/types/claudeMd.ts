@@ -26,7 +26,7 @@ export type ClaudeMdConflictResolution =
 
 /**
  * CLAUDE.md 文件信息
- * 存储在 ~/.ensemble/claude-md/ 中的被管理文件
+ * 存储在 ~/.cc-workshop/claude-md/ 中的被管理文件
  */
 export interface ClaudeMdFile {
   /** 唯一标识 (UUID) */

@@ -30,10 +30,10 @@ These are the primary modules you will work with inside CC Workshop. Each sectio
 
 | Concept | Description | Link |
 |---------|-------------|------|
-| **Skills** | Claude Code skill modules (markdown files that give Claude specialized capabilities). Managed in `~/.ensemble/skills/` with global or project-level scope. | [Usage Guide -- Skills](./usage.md#skills) |
-| **MCP Servers** | Model Context Protocol servers that extend Claude Code with additional tools and data sources. Configurations stored in `~/.ensemble/mcps/`. | [Usage Guide -- MCP Servers](./usage.md#mcp-servers) |
+| **Skills** | Claude Code skill modules (markdown files that give Claude specialized capabilities). Managed in `~/.cc-workshop/skills/` with global or project-level scope. | [Usage Guide -- Skills](./usage.md#skills) |
+| **MCP Servers** | Model Context Protocol servers that extend Claude Code with additional tools and data sources. Configurations stored in `~/.cc-workshop/mcps/`. | [Usage Guide -- MCP Servers](./usage.md#mcp-servers) |
 | **CLAUDE.md** | Context files that provide instructions to Claude Code at the global or project level. | [Usage Guide -- CLAUDE.md](./usage.md#claudemd) |
-| **Rules** | Modular `.md` instruction files under `.claude/rules/` that Claude Code loads to scope behaviour (e.g. coding conventions, review checklists). Managed in `~/.ensemble/rules/`. | [Usage Guide -- Rules](./usage.md#rules) |
+| **Rules** | Modular `.md` instruction files under `.claude/rules/` that Claude Code loads to scope behaviour (e.g. coding conventions, review checklists). Managed in `~/.cc-workshop/rules/`. | [Usage Guide -- Rules](./usage.md#rules) |
 | **Scenes** | Configuration bundles that combine multiple Skills, MCP Servers, CLAUDE.md files, and Rules into reusable templates. | [Usage Guide -- Scenes](./usage.md#scenes) |
 | **Projects** | Link Scenes to local project directories so configurations can be deployed with one click. | [Usage Guide -- Projects](./usage.md#projects) |
 

@@ -382,7 +382,7 @@ export interface UsageStats {
 
 /**
  * 应用持久化数据
- * 存储在 ~/.ensemble/data.json 中
+ * 存储在 ~/.cc-workshop/data.json 中
  *
  * Mirrors Rust `AppData` in `src-tauri/src/types.rs`. Note: `skills` and
  * `mcpServers` are NOT persisted in `data.json` — they are runtime-derived

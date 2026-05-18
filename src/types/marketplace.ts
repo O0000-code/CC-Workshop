@@ -279,7 +279,7 @@ export interface TrashedItemBrief {
 
 /**
  * Args for the `update_mcp_env_vars` IPC (B-P0-6 / E3-1). Persists the user's
- * filled stdio MCP env values to `~/.ensemble/mcps/<name>.json::env` so they
+ * filled stdio MCP env values to `~/.cc-workshop/mcps/<name>.json::env` so they
  * survive across restarts and propagate to Sync. Empty `env` clears the field.
  */
 export interface UpdateMcpEnvVarsPayload {

@@ -72,8 +72,8 @@ export interface SettingsState {
 
 // Default values
 const defaultSettings = {
-  skillSourceDir: '~/.ensemble/skills',
-  mcpSourceDir: '~/.ensemble/mcps',
+  skillSourceDir: '~/.cc-workshop/skills',
+  mcpSourceDir: '~/.cc-workshop/mcps',
   claudeConfigDir: '~/.claude',
   anthropicApiKey: '',
   // V2 Marketplace (D-Imp-12 / spec §3.5): default ON so newly installed

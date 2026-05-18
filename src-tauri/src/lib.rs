@@ -29,6 +29,42 @@ pub fn run() {
                 )?;
             }
 
+            // v2.3.0: legacy data directory migration from ~/.ensemble/ to
+            // ~/.cc-workshop/. MUST run before every other migration and
+            // before any data.json / settings.json read — get_app_data_dir()
+            // now resolves to ~/.cc-workshop/, but the user's data is still
+            // at ~/.ensemble/ until this migration moves it.
+            //
+            // The migration also rewrites every absolute-path string inside
+            // data.json (Skill::id == source_path invariant — types.rs:7-15)
+            // and settings.json defaults. Without this rewrite, all Skill /
+            // MCP metadata appears orphaned after the directory move and
+            // every Scene's skill_ids becomes silently dangling.
+            match utils::migration::migrate_legacy_data_dir() {
+                Ok(utils::migration::MigrationOutcome::Migrated) => {
+                    eprintln!("[Migration] data dir moved from ~/.ensemble/ to ~/.cc-workshop/");
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.emit("legacy-data-migrated", ());
+                    }
+                }
+                Ok(utils::migration::MigrationOutcome::Conflict) => {
+                    eprintln!(
+                        "[Migration] both ~/.ensemble/ and ~/.cc-workshop/ contain data — \
+                         manual resolution required"
+                    );
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.emit("legacy-data-conflict", ());
+                    }
+                }
+                Ok(utils::migration::MigrationOutcome::Skipped) => {}
+                Err(e) => {
+                    eprintln!("[Migration] legacy data dir migration FAILED: {e}");
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.emit("legacy-data-migration-failed", e);
+                    }
+                }
+            }
+
             // Run CLAUDE.md storage migration (from embedded content to independent files)
             if let Err(e) = migrate_claude_md_storage() {
                 eprintln!("[Migration] Failed to migrate CLAUDE.md storage: {}", e);

@@ -56,11 +56,16 @@ pub fn expand_path(path: &str) -> PathBuf {
 
 /// Get the application data directory
 ///
-/// Honours the `ENSEMBLE_DATA_DIR` environment variable when set (used for
-/// test isolation so integration tests do not touch `~/.ensemble/`).
+/// Honours `CC_WORKSHOP_DATA_DIR` (new, since v2.3.0) and `ENSEMBLE_DATA_DIR`
+/// (legacy, kept for back-compat) environment variables when set. Either is
+/// accepted; both can be present, the new name takes priority. This is used
+/// for test isolation so integration tests do not touch `~/.cc-workshop/`.
+///
+/// Default path (since v2.3.0): `~/.cc-workshop/`. Legacy `~/.ensemble/`
+/// data is migrated on first launch by `utils::migration::migrate_legacy_data_dir`.
 ///
 /// **Test safety guarantee**: when compiled under `cfg(test)`, this function
-/// **refuses to fall back to `~/.ensemble/`**. If `ENSEMBLE_DATA_DIR` is not
+/// **refuses to fall back to a real home-dir path**. If neither env var is
 /// set, it panics — loudly, instead of silently corrupting the developer's
 /// real data. Every test that touches disk MUST set the env var first
 /// (typically via `ScopedDataDir`).
@@ -71,6 +76,9 @@ pub fn expand_path(path: &str) -> PathBuf {
 /// is a footgun for *anyone* running `cargo test` on a machine that also runs
 /// the app.
 pub fn get_app_data_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("CC_WORKSHOP_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
     if let Ok(dir) = std::env::var("ENSEMBLE_DATA_DIR") {
         return PathBuf::from(dir);
     }
@@ -78,9 +86,9 @@ pub fn get_app_data_dir() -> PathBuf {
     #[cfg(test)]
     {
         panic!(
-            "get_app_data_dir() called without ENSEMBLE_DATA_DIR set during cargo test. \
-             Tests must use ScopedDataDir (or set ENSEMBLE_DATA_DIR explicitly) to avoid \
-             writing to the real ~/.ensemble/. See src-tauri/src/utils/path.rs comments."
+            "get_app_data_dir() called without CC_WORKSHOP_DATA_DIR or ENSEMBLE_DATA_DIR \
+             set during cargo test. Tests must use ScopedDataDir (or set the env var explicitly) \
+             to avoid writing to the real ~/.cc-workshop/. See src-tauri/src/utils/path.rs comments."
         );
     }
 
@@ -88,7 +96,7 @@ pub fn get_app_data_dir() -> PathBuf {
     {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".ensemble")
+            .join(".cc-workshop")
     }
 }
 

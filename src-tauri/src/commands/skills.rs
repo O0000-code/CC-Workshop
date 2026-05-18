@@ -70,7 +70,7 @@ pub fn get_skill(source_dir: String, claude_config_dir: String, skill_id: String
 /// (symlink, real dir, or even a broken symlink — `symlink_metadata` does
 /// not follow). Claude Code reads `~/.claude/skills/` directly, so its
 /// view of "global" matches this check. Returns "project" otherwise —
-/// meaning the Skill is only inside `~/.ensemble/` and deployment relies
+/// meaning the Skill is only inside `~/.cc-workshop/` and deployment relies
 /// on Scene → Project sync.
 fn derive_skill_scope(skill_name: &std::ffi::OsStr, claude_skills_dir: &std::path::Path) -> String {
     let candidate = claude_skills_dir.join(skill_name);
@@ -341,7 +341,7 @@ fn load_skill_metadata() -> std::collections::HashMap<String, SkillMetadata> {
 
 /// Delete a skill by moving it to the trash directory
 ///
-/// Instead of permanently deleting, moves the skill to ~/.ensemble/trash/skills/
+/// Instead of permanently deleting, moves the skill to ~/.cc-workshop/trash/skills/
 /// for easy recovery if needed.
 #[tauri::command]
 pub fn delete_skill(skill_id: String, ensemble_dir: String) -> Result<(), String> {

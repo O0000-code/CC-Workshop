@@ -43,7 +43,7 @@ export interface Rule {
   /** File content (runtime-populated; empty string in persisted form). */
   content: string;
 
-  /** Managed file path (`~/.ensemble/rules/{id}/<filename>.md`). */
+  /** Managed file path (`~/.cc-workshop/rules/{id}/<filename>.md`). */
   managedPath?: string;
 
   /**

@@ -11,7 +11,7 @@ import { useSettingsStore } from './settingsStore';
 // each entity type.
 //
 // Restore keying: Skills / MCPs / CLAUDE.md / Rules are identified by their
-// trash path (live on disk inside `~/.ensemble/trash/<kind>/`). Scenes and
+// trash path (live on disk inside `~/.cc-workshop/trash/<kind>/`). Scenes and
 // Projects are identified by `id` because their trash records live in
 // `data.json::trashed_scenes` / `trashed_projects` and have no on-disk path.
 
@@ -79,7 +79,7 @@ export const useTrashStore = create<TrashState>((set, get) => ({
     }
 
     const { skillSourceDir } = useSettingsStore.getState();
-    // Extract ensemble dir from skillSourceDir (e.g., "~/.ensemble/skills" -> "~/.ensemble")
+    // Extract ensemble dir from skillSourceDir (e.g., "~/.cc-workshop/skills" -> "~/.cc-workshop")
     const ensembleDir = skillSourceDir.replace('/skills', '');
 
     set({ isLoading: true, error: null });

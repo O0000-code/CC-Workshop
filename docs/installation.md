@@ -4,7 +4,7 @@
 
 - **Operating System**: macOS 12.0 (Monterey) or later
 - **Architecture**: Apple Silicon (M1/M2/M3/M4) or Intel x86_64
-- **Disk Space**: ~100MB for the application, plus data storage in `~/.ensemble/`
+- **Disk Space**: ~100MB for the application, plus data storage in `~/.cc-workshop/`
 - **Claude Code**: Must be installed and configured ([Claude Code](https://docs.anthropic.com/en/docs/claude-code))
 
 ## Option 1: Download Pre-built Release
@@ -90,10 +90,10 @@ This starts the Vite dev server on `http://localhost:1420` and launches the Taur
 
 ## First Launch
 
-When CC Workshop starts for the first time, it automatically creates its data directory at `~/.ensemble/` with the following structure:
+When CC Workshop starts for the first time, it automatically creates its data directory at `~/.cc-workshop/` with the following structure:
 
 ```
-~/.ensemble/
+~/.cc-workshop/
 ├── data.json           # Application data (categories, tags, scenes, projects)
 ├── settings.json       # User settings and preferences
 ├── skills/             # Managed skill files
@@ -125,10 +125,10 @@ To completely remove CC Workshop and all its data:
 3. Remove the data directory:
 
    ```bash
-   rm -rf ~/.ensemble
+   rm -rf ~/.cc-workshop
    ```
 
-**Warning**: Removing `~/.ensemble` will permanently delete all your managed Skills, MCP configurations, CLAUDE.md files, categories, tags, scenes, and project associations. This action cannot be undone.
+**Warning**: Removing `~/.cc-workshop` will permanently delete all your managed Skills, MCP configurations, CLAUDE.md files, categories, tags, scenes, and project associations. This action cannot be undone.
 
 Note: CC Workshop does not modify your original Claude Code configuration files (`~/.claude/`, `~/.claude.json`). Uninstalling CC Workshop will not affect your Claude Code setup, though any symlinks CC Workshop created in project directories will become broken and should be cleaned up manually.
 

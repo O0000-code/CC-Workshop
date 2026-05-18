@@ -669,7 +669,7 @@ pub fn restore_claude_md(trash_path: String) -> Result<(), String> {
 
 /// Restore a Rule from trash.
 ///
-/// Moves the trashed directory back to `~/.ensemble/rules/{id}/` and restores
+/// Moves the trashed directory back to `~/.cc-workshop/rules/{id}/` and restores
 /// the row in `data.json` from the directory's `info.json`. The restored
 /// Rule's `is_global` is always reset to `false` so trash-restore never
 /// silently re-writes `~/.claude/rules/<filename>.md`.
@@ -956,8 +956,8 @@ enum TrashKind {
 /// it as the record id. Two-step confirmation lives on the frontend; this
 /// IPC commits the deletion immediately on call (R2-9).
 ///
-/// Skill / CLAUDE.md / Rule = directory in `~/.ensemble/trash/<kind>/...`
-/// MCP                      = `.json` file in `~/.ensemble/trash/mcps/`
+/// Skill / CLAUDE.md / Rule = directory in `~/.cc-workshop/trash/<kind>/...`
+/// MCP                      = `.json` file in `~/.cc-workshop/trash/mcps/`
 /// Scene / Project          = record in `data.json::trashed_{scenes,projects}`
 ///
 /// Removing an entry that does not exist returns Ok(()) — idempotent, so

@@ -128,9 +128,9 @@ npm run tauri build
 
 ### Data Location
 
-CC Workshop stores its data in `~/.ensemble/`:
+CC Workshop stores its data in `~/.cc-workshop/`:
 ```
-~/.ensemble/
+~/.cc-workshop/
 ├── data.json           # Application data (skills, MCPs, scenes, projects, categories, tags, rules)
 ├── settings.json       # User preferences
 ├── skills/             # Managed skill directories

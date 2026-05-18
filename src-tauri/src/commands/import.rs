@@ -87,7 +87,7 @@ fn write_claude_json(config: &ClaudeJson) -> Result<(), String> {
 pub fn detect_existing_config(claude_config_dir: String) -> Result<ExistingConfig, String> {
     let claude_dir = expand_tilde(&claude_config_dir);
 
-    // Build a set of skill names already imported to ~/.ensemble/skills/
+    // Build a set of skill names already imported to ~/.cc-workshop/skills/
     // so we don't show them again in the import list
     let ensemble_skills_dir = crate::utils::get_ensemble_dir().join("skills");
     let already_imported_skills: std::collections::HashSet<String> = if ensemble_skills_dir.exists() {
@@ -128,7 +128,7 @@ pub fn detect_existing_config(claude_config_dir: String) -> Result<ExistingConfi
                     continue;
                 }
 
-                // Skip skills already imported to ~/.ensemble/skills/
+                // Skip skills already imported to ~/.cc-workshop/skills/
                 if already_imported_skills.contains(&skill_name) {
                     continue;
                 }
@@ -521,8 +521,8 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 /// Import existing configuration (non-destructive copy)
 ///
-/// This function copies skills to ~/.ensemble/skills/ and extracts MCP configs
-/// to ~/.ensemble/mcps/. It does NOT modify the original ~/.claude directory.
+/// This function copies skills to ~/.cc-workshop/skills/ and extracts MCP configs
+/// to ~/.cc-workshop/mcps/. It does NOT modify the original ~/.claude directory.
 #[tauri::command]
 pub fn import_existing_config(
     claude_config_dir: String,
@@ -654,7 +654,7 @@ fn copy_skill(item: &ImportItem, dest_dir: &Path) -> Result<(), String> {
 /// Extract MCP configuration and save as standalone JSON file
 ///
 /// This reads the MCP config from ~/.claude.json (primary) or ~/.claude/settings.json
-/// (fallback) and creates a standalone JSON file in ~/.ensemble/mcps/<name>.json
+/// (fallback) and creates a standalone JSON file in ~/.cc-workshop/mcps/<name>.json
 fn extract_mcp_config(
     item: &ImportItem,
     claude_path: &Path,
@@ -802,7 +802,7 @@ pub fn update_skill_scope(
 
     match scope.as_str() {
         "global" => {
-            // Create symlink in ~/.claude/skills/ pointing to ~/.ensemble/skills/<name>
+            // Create symlink in ~/.claude/skills/ pointing to ~/.cc-workshop/skills/<name>
             fs::create_dir_all(&claude_skills_dir).map_err(|e| e.to_string())?;
 
             // If target exists (could be old symlink or directory), handle accordingly
@@ -869,7 +869,7 @@ pub fn update_mcp_scope(
 ) -> Result<(), String> {
     let ensemble_path = expand_tilde(&ensemble_dir);
 
-    // Extract MCP name from mcp_id (mcp_id is the full path, e.g., ~/.ensemble/mcps/postgres.json)
+    // Extract MCP name from mcp_id (mcp_id is the full path, e.g., ~/.cc-workshop/mcps/postgres.json)
     let mcp_path = Path::new(&mcp_id);
     let mcp_filename = mcp_path
         .file_name()
@@ -1830,7 +1830,7 @@ pub fn open_accessibility_settings() -> Result<(), String> {
 
 /// Remove imported skills from source directory (~/.claude/skills/)
 ///
-/// After successfully importing skills to ~/.ensemble/skills/, this function
+/// After successfully importing skills to ~/.cc-workshop/skills/, this function
 /// removes the original symlinks/directories from ~/.claude/skills/
 #[tauri::command]
 pub fn remove_imported_skills(
@@ -1869,7 +1869,7 @@ pub fn remove_imported_skills(
 
 /// Remove imported MCPs from ~/.claude.json
 ///
-/// After successfully importing MCPs to ~/.ensemble/mcps/, this function
+/// After successfully importing MCPs to ~/.cc-workshop/mcps/, this function
 /// removes the original entries from ~/.claude.json mcpServers
 #[tauri::command]
 pub fn remove_imported_mcps(mcp_names: Vec<String>) -> Result<u32, String> {

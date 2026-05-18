@@ -184,7 +184,7 @@ const MCP_REGISTRY_PAGE_SIZE: u32 = 96;
 // 3. codeload tarball entry components (each path segment between `/`s)
 //
 // Without sanitisation, any of these can carry `..`, `/`, `\`, or a leading
-// `.`, causing `PathBuf::join(...)` to walk outside `~/.ensemble/skills/`
+// `.`, causing `PathBuf::join(...)` to walk outside `~/.cc-workshop/skills/`
 // (E1-1 review). `sanitize_resource_name` below is the single chokepoint
 // every install path calls before joining.
 //
@@ -313,7 +313,7 @@ fn skills_sh_request(url: &str) -> reqwest::RequestBuilder {
 // Cache directory
 // ============================================================================
 
-/// Ensure `~/.ensemble/marketplace-cache/` exists. Calls `get_app_data_dir`
+/// Ensure `~/.cc-workshop/marketplace-cache/` exists. Calls `get_app_data_dir`
 /// so the `cfg(test)` panic guard fires whenever tests forget to scope
 /// `ENSEMBLE_DATA_DIR` (R-2 / fallback-path-must-be-unreachable-in-test).
 ///
@@ -333,7 +333,7 @@ pub fn ensure_marketplace_cache_dir() -> Result<PathBuf, String> {
 //
 // V2 (2026-05-11) deletes the MCP catalog cache permanently. `cleanup_legacy_mcp_cache`
 // is invoked during app startup; it silently removes
-// `~/.ensemble/marketplace-cache/mcps-catalog-v2.json` if present. Failure is
+// `~/.cc-workshop/marketplace-cache/mcps-catalog-v2.json` if present. Failure is
 // ignored — the cache file becoming undeletable for some reason should not
 // block app launch, and the new IPCs do not depend on it being absent.
 
@@ -353,7 +353,7 @@ pub fn cleanup_legacy_mcp_cache() {
 // SSoT helpers (spec §11.1)
 // ============================================================================
 
-/// Returns `true` when `~/.ensemble/trash/skills/` contains an entry
+/// Returns `true` when `~/.cc-workshop/trash/skills/` contains an entry
 /// matching `skill_name` exactly or with the trash timestamp suffix
 /// (`<name>_YYYYMMDD_HHMMSS`). The third condition of the SSoT contract
 /// (PRD §7.4) — Trash presence — relies on this scan.
@@ -381,7 +381,7 @@ pub fn is_skill_in_trash(skill_name: &str) -> bool {
 }
 
 /// Mirror of [`is_skill_in_trash`] for MCPs. Trash entries are stored as
-/// `~/.ensemble/trash/mcps/<name>.json` (no timestamp) or
+/// `~/.cc-workshop/trash/mcps/<name>.json` (no timestamp) or
 /// `<name>_YYYYMMDD_HHMMSS.json`, so we match on either form.
 #[allow(dead_code)]
 pub fn is_mcp_in_trash(mcp_name: &str) -> bool {
@@ -473,7 +473,7 @@ fn find_mcp_trash_brief(mcp_name: &str) -> Option<TrashedItemBrief> {
 // ============================================================================
 //
 // Skills and MCPs are deleted by moving the on-disk artefact (a directory
-// for skills, a single `.json` for MCPs) into `~/.ensemble/trash/<kind>/`
+// for skills, a single `.json` for MCPs) into `~/.cc-workshop/trash/<kind>/`
 // and stripping the corresponding entry from `data.json::*_metadata`.
 // Without an extra step, RestoreFromTrash brings the files back but the
 // user's category / tags / icon are gone — directly contradicting the
@@ -2445,7 +2445,7 @@ pub async fn search_marketplace_mcps(
 //      MCP's *.json* file rather than `data.json`, taking the canonical
 //      lock keeps any concurrent metadata mutator (e.g. classify) from
 //      interleaving observable state).
-//   2. Reads `~/.ensemble/mcps/<name>.json` into `McpConfigFile`.
+//   2. Reads `~/.cc-workshop/mcps/<name>.json` into `McpConfigFile`.
 //   3. Replaces the `env` field with the supplied map (full replacement,
 //      not merge — V1 contract: "what the panel shows is what gets saved").
 //   4. Writes the updated JSON back atomically.
@@ -2479,7 +2479,7 @@ pub fn update_mcp_env_vars(
 // ============================================================================
 //
 // Companion to `update_mcp_env_vars` for HTTP MCPs. Same atomic
-// read-modify-write pattern on `~/.ensemble/mcps/<name>.json`. Used by
+// read-modify-write pattern on `~/.cc-workshop/mcps/<name>.json`. Used by
 // the detail panel after install when the user edits URL template
 // variables (re-substituting `{VAR}`) or rotates header values
 // (Authorization / X-API-Key). `original_url` is the upstream template
@@ -3121,7 +3121,7 @@ async fn finalize_skill_install(
 /// the resulting `.mcp.json` carries a static URL Claude Code can dial.
 ///
 /// `headers`: HTTP-only — values for `HttpMcpConfig.headers`. Written
-/// verbatim into `~/.ensemble/mcps/<name>.json` (so sync re-applies
+/// verbatim into `~/.cc-workshop/mcps/<name>.json` (so sync re-applies
 /// them to projects) and the `.mcp.json` `headers` field.
 #[tauri::command]
 pub async fn install_marketplace_mcp(

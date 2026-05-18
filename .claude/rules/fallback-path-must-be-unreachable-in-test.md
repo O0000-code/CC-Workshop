@@ -6,7 +6,7 @@ Any function that can write real files, hit real network, touch a real DB, or ca
 
 Test isolation is conventionally written as *positive guarantee*: "tests must set `ENSEMBLE_DATA_DIR=/tmp/...` before calling disk-writing functions". This depends on every test author and every SubAgent remembering the rule. In a project where multiple SubAgents touch the same code in parallel, that discipline is unenforceable. A single missed setup, a single transient unset during a parallel race, and the production path silently writes into the developer's real data directory.
 
-This is not theoretical. On 2026-05-04 in this project, a Rust integration test wrote test fixtures (categories named `A`, `B`, `C`, `new-0`, `new-7` with `#000000`/`#FFFFFF` colors) into the user's real `~/.ensemble/data.json`, replacing the user's hand-curated Categories, Tags, and Scenes. The user chose not to recover from Time Machine and rebuilt manually. The fix that made it impossible to repeat was a single `cfg(test)` panic in `get_app_data_dir()`.
+This is not theoretical. On 2026-05-04 in this project, a Rust integration test wrote test fixtures (categories named `A`, `B`, `C`, `new-0`, `new-7` with `#000000`/`#FFFFFF` colors) into the user's real `~/.cc-workshop/data.json`, replacing the user's hand-curated Categories, Tags, and Scenes. The user chose not to recover from Time Machine and rebuilt manually. The fix that made it impossible to repeat was a single `cfg(test)` panic in `get_app_data_dir()`.
 
 The principle: **convert positive guarantee into negative guarantee at the lowest level**. Make the production path *physically unreachable* under test build, not just *socially discouraged*.
 
@@ -29,7 +29,7 @@ pub fn get_app_data_dir() -> PathBuf {
     {
         panic!(
             "get_app_data_dir() called without ENSEMBLE_DATA_DIR set during cargo test. \
-             Tests must use ScopedDataDir to avoid writing to the real ~/.ensemble/."
+             Tests must use ScopedDataDir to avoid writing to the real ~/.cc-workshop/."
         );
     }
     #[cfg(not(test))]

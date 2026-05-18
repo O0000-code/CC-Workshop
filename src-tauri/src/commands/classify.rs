@@ -258,7 +258,7 @@ pub async fn auto_classify(
     });
 
     // Resolve which Claude model to use. The setting is a single source of
-    // truth read from `~/.ensemble/settings.json`; both this manual entry
+    // truth read from `~/.cc-workshop/settings.json`; both this manual entry
     // and the marketplace single-item entry (via the same `auto_classify`
     // function) honour the same value without each call-site re-deciding.
     //

@@ -449,17 +449,17 @@ Component styling example:
 
 ### Data Storage
 
-CC Workshop stores its data in `~/.ensemble/`:
+CC Workshop stores its data in `~/.cc-workshop/`:
 
 | Path | Purpose |
 |---|---|
-| `~/.ensemble/data.json` | Categories, tags, scenes, projects, metadata |
-| `~/.ensemble/settings.json` | Application settings (paths, API key, preferences) |
-| `~/.ensemble/skills/` | Skill files (each skill is a directory with `SKILL.md`) |
-| `~/.ensemble/mcps/` | MCP Server config files (`.json` files) |
-| `~/.ensemble/claude-md/` | Managed CLAUDE.md content files |
-| `~/.ensemble/rules/` | Managed Rule content files (each in `{id}/<filename>.md`) |
-| `~/.ensemble/trash/` | Soft-deleted items for recovery |
+| `~/.cc-workshop/data.json` | Categories, tags, scenes, projects, metadata |
+| `~/.cc-workshop/settings.json` | Application settings (paths, API key, preferences) |
+| `~/.cc-workshop/skills/` | Skill files (each skill is a directory with `SKILL.md`) |
+| `~/.cc-workshop/mcps/` | MCP Server config files (`.json` files) |
+| `~/.cc-workshop/claude-md/` | Managed CLAUDE.md content files |
+| `~/.cc-workshop/rules/` | Managed Rule content files (each in `{id}/<filename>.md`) |
+| `~/.cc-workshop/trash/` | Soft-deleted items for recovery |
 
 ### Registered Tauri Commands (Complete)
 

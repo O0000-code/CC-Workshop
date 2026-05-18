@@ -479,8 +479,8 @@ fn default_claude_md_distribution_path() -> ClaudeMdDistributionPath {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            skill_source_dir: "~/.ensemble/skills".to_string(),
-            mcp_source_dir: "~/.ensemble/mcps".to_string(),
+            skill_source_dir: "~/.cc-workshop/skills".to_string(),
+            mcp_source_dir: "~/.cc-workshop/mcps".to_string(),
             claude_config_dir: "~/.claude".to_string(),
             anthropic_api_key: None,
             // V2 marketplace contract (D-Imp-12 / 02_tech_spec L193): default
@@ -967,7 +967,7 @@ pub struct ClaudeMdFile {
     pub source_type: ClaudeMdType,
 
     /// File content - runtime populated from independent file
-    /// Stored as empty string in data.json, actual content read from ~/.ensemble/claude-md/{id}/CLAUDE.md
+    /// Stored as empty string in data.json, actual content read from ~/.cc-workshop/claude-md/{id}/CLAUDE.md
     #[serde(default)]
     pub content: String,
 
@@ -1195,7 +1195,7 @@ pub struct Rule {
 
     /// File content — runtime-populated from independent file. Stored as empty
     /// string in `data.json`; actual content lives at
-    /// `~/.ensemble/rules/{id}/<filename>.md`.
+    /// `~/.cc-workshop/rules/{id}/<filename>.md`.
     #[serde(default)]
     pub content: String,
 
@@ -1774,7 +1774,7 @@ pub struct TrashedItemBrief {
     pub deleted_at: String,
 }
 
-/// Cache-on-disk envelope for `~/.ensemble/marketplace-cache/{skills,mcps}-catalog.json`.
+/// Cache-on-disk envelope for `~/.cc-workshop/marketplace-cache/{skills,mcps}-catalog.json`.
 /// Generic over the catalog item type so the same code path serves Skills
 /// and MCPs (D-Imp-3 flat schema).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1822,8 +1822,8 @@ mod tests {
     #[test]
     fn test_app_settings_default() {
         let settings = AppSettings::default();
-        assert_eq!(settings.skill_source_dir, "~/.ensemble/skills");
-        assert_eq!(settings.mcp_source_dir, "~/.ensemble/mcps");
+        assert_eq!(settings.skill_source_dir, "~/.cc-workshop/skills");
+        assert_eq!(settings.mcp_source_dir, "~/.cc-workshop/mcps");
         assert_eq!(settings.claude_config_dir, "~/.claude");
         assert_eq!(settings.terminal_app, "Terminal");
         assert_eq!(settings.claude_command, "claude");

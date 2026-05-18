@@ -15,7 +15,7 @@ use walkdir::WalkDir;
 // Constants
 // ============================================================================
 
-/// Global backup directory (~/.ensemble/rules/global-backup/)
+/// Global backup directory (~/.cc-workshop/rules/global-backup/)
 fn get_rule_global_backup_dir() -> PathBuf {
     get_app_data_dir().join("rules").join("global-backup")
 }
@@ -24,17 +24,17 @@ fn get_rule_global_backup_dir() -> PathBuf {
 // Helper functions for independent file storage
 // ============================================================================
 
-/// Get Rule storage root directory (~/.ensemble/rules/)
+/// Get Rule storage root directory (~/.cc-workshop/rules/)
 fn get_rule_storage_dir() -> PathBuf {
     get_app_data_dir().join("rules")
 }
 
-/// Get directory for a specific Rule file (~/.ensemble/rules/{id}/)
+/// Get directory for a specific Rule file (~/.cc-workshop/rules/{id}/)
 fn get_rule_file_dir(id: &str) -> PathBuf {
     get_rule_storage_dir().join(id)
 }
 
-/// Get path to the Rule file (~/.ensemble/rules/{id}/<filename>.md)
+/// Get path to the Rule file (~/.cc-workshop/rules/{id}/<filename>.md)
 fn get_rule_file_path(id: &str, filename: &str) -> PathBuf {
     get_rule_file_dir(id).join(filename)
 }

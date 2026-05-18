@@ -979,7 +979,7 @@ fn read_installed_plugin_ids() -> HashSet<String> {
 /// these two `Vec<String>` markers (each shaped `"<plugin_id>|<item_name>"`)
 /// stay forever. On the *next* install of the same plugin, the
 /// Import-from-Plugins dialog reports every row as "Already imported" even
-/// though the `~/.ensemble/skills/<name>` symlinks went broken when the
+/// though the `~/.cc-workshop/skills/<name>` symlinks went broken when the
 /// plugin cache directory disappeared, leaving the user with no way to
 /// re-import.
 ///

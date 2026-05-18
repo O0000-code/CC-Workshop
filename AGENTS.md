@@ -8,7 +8,7 @@ and deploy these resources across projects.
 
 - **Platform**: macOS only (minimum macOS 12.0)
 - **Identifier**: `io.github.o0000-code.ensemble`
-- **Data directory**: `~/.ensemble/` (data.json, settings.json, skills/, mcps/, claude-md/)
+- **Data directory**: `~/.cc-workshop/` (data.json, settings.json, skills/, mcps/, claude-md/)
 
 ## Architecture
 

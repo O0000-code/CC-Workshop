@@ -4,7 +4,7 @@
 
 When you first launch CC Workshop, it will:
 
-1. Create the data directory at `~/.ensemble/`
+1. Create the data directory at `~/.cc-workshop/`
 2. Detect existing Skills from `~/.claude/skills/` and MCPs from `~/.claude.json`
 3. Offer to import detected configurations into CC Workshop's managed storage
 
@@ -16,9 +16,9 @@ We recommend importing your existing configurations to get started quickly.
 
 Skills are Claude Code's skill modules -- markdown files (each containing a `SKILL.md`) that provide Claude with specialized capabilities.
 
-- **Storage**: Managed in `~/.ensemble/skills/`
+- **Storage**: Managed in `~/.cc-workshop/skills/`
 - **Scope** (`global` | `project`):
-  - `global` -- A symlink is created in `~/.claude/skills/` pointing to the skill in `~/.ensemble/skills/`, making it active for all Claude Code sessions.
+  - `global` -- A symlink is created in `~/.claude/skills/` pointing to the skill in `~/.cc-workshop/skills/`, making it active for all Claude Code sessions.
   - `project` -- The skill is only deployed to specific projects when synced via a Scene. The symlink in `~/.claude/skills/` is removed if it existed.
 - **Import Sources**:
   - **Local Skills** from `~/.claude/skills/` (detected during first-time setup or via the import dialog)
@@ -38,7 +38,7 @@ Skills are Claude Code's skill modules -- markdown files (each containing a `SKI
 
 MCP (Model Context Protocol) Servers extend Claude Code with additional tools and data sources.
 
-- **Storage**: Configurations stored in `~/.ensemble/mcps/` (each as a standalone JSON file)
+- **Storage**: Configurations stored in `~/.cc-workshop/mcps/` (each as a standalone JSON file)
 - **Scope** (`global` | `project`):
   - `global` -- The MCP server entry is added to `~/.claude.json` under `mcpServers`, making it available to all Claude Code sessions.
   - `project` -- The MCP entry is removed from `~/.claude.json`. The MCP is only deployed to specific projects via a Scene, which writes a `.mcp.json` file in the project root.
@@ -102,7 +102,7 @@ Projects link Scenes to specific local directories, enabling one-click configura
 
 When you click "Sync" on a project, CC Workshop performs the following:
 
-1. **Skills deployment** -- Creates `<project>/.claude/skills/` and places symlinks pointing to each skill's source in `~/.ensemble/skills/`. Existing symlinks are cleaned before re-creating.
+1. **Skills deployment** -- Creates `<project>/.claude/skills/` and places symlinks pointing to each skill's source in `~/.cc-workshop/skills/`. Existing symlinks are cleaned before re-creating.
 2. **MCP configuration** -- Writes a `.mcp.json` file in the project root (`<project>/.mcp.json`) containing the MCP server configurations from the associated Scene.
 3. **CLAUDE.md distribution** -- If the Scene includes a CLAUDE.md file, it is written to the project at the configured distribution path (see Settings). Existing files are backed up before overwriting.
 4. **Rules distribution** -- If the Scene includes Rules, each Rule is copied to `<project>/.claude/rules/<filename>.md`. Existing files at the same filename are backed up before overwriting.
@@ -119,7 +119,7 @@ You can change the Scene associated with a project. The old configuration is cle
 
 CLAUDE.md files provide context and instructions to Claude Code at different levels. CC Workshop manages these files centrally.
 
-- **Storage**: Imported files are stored in `~/.ensemble/claude-md/`
+- **Storage**: Imported files are stored in `~/.cc-workshop/claude-md/`
 - **Source Types** (detected during scan):
   - `global` -- Found at `~/.claude/CLAUDE.md`
   - `project` -- Found at `./CLAUDE.md` or `./.claude/CLAUDE.md` in project directories
@@ -158,13 +158,13 @@ CLAUDE.md files can be distributed to projects in two ways:
 **Editing:**
 
 - Click on a CLAUDE.md file to view and edit its content, name, description, category, tags, and icon.
-- Content changes are saved to the managed copy in `~/.ensemble/claude-md/`.
+- Content changes are saved to the managed copy in `~/.cc-workshop/claude-md/`.
 
 ### Rules
 
 Rules are modular `.md` instruction files under `.claude/rules/` that Claude Code loads to scope behaviour -- coding conventions, review checklists, project-specific guardrails. A single project may have a dozen Rule files, each addressing one topic.
 
-- **Storage**: Imported files are stored in `~/.ensemble/rules/{id}/<filename>.md`. The original filename is preserved since Claude Code indexes Rules by filename; the displayed `name` can be renamed independently.
+- **Storage**: Imported files are stored in `~/.cc-workshop/rules/{id}/<filename>.md`. The original filename is preserved since Claude Code indexes Rules by filename; the displayed `name` can be renamed independently.
 - **Source scopes** (detected during scan):
   - `user` -- Found at `~/.claude/rules/**/*.md`
   - `project` -- Found at `<project>/.claude/rules/**/*.md` under default project directories
@@ -227,7 +227,7 @@ CC Workshop includes an in-app catalog for discovering and installing Skills and
 2. Click an item to open its detail panel; review the README, stars, summary, examples, and required environment variables (for MCPs).
 3. For MCPs with required environment variables, fill in the form before installing. Secret fields render as password inputs.
 4. For HTTP MCPs with URL template variables (`{VAR}`) or required headers, fill in the additional form that appears.
-5. Click **Install**. The item is added to your managed library (`~/.ensemble/skills/` or `~/.ensemble/mcps/`) and an Auto-Classify pass suggests a category.
+5. Click **Install**. The item is added to your managed library (`~/.cc-workshop/skills/` or `~/.cc-workshop/mcps/`) and an Auto-Classify pass suggests a category.
 6. If an item with the same name already exists (active or in Trash), CC Workshop offers **Replace** or **Restore from Trash** -- restoring round-trips the previous category, tags, and icon.
 
 **Updating MCP connection settings after install:**
@@ -236,7 +236,7 @@ The Marketplace detail panel for an installed MCP exposes a **Save connection se
 
 **Catalog caching:**
 
-Catalog responses are cached in `~/.ensemble/` with a 24-hour TTL. A background refresh runs on app launch and surfaces a sync indicator in the sidebar while in progress.
+Catalog responses are cached in `~/.cc-workshop/` with a 24-hour TTL. A background refresh runs on app launch and surfaces a sync indicator in the sidebar while in progress.
 
 ## Auto-Classification
 
@@ -300,7 +300,7 @@ CC Workshop supports launching Claude Code in multiple terminal applications:
 
 ## Trash and Recovery
 
-Deleted Skills, MCPs, CLAUDE.md files, and Rules are moved to a trash directory within `~/.ensemble/` and can be recovered.
+Deleted Skills, MCPs, CLAUDE.md files, and Rules are moved to a trash directory within `~/.cc-workshop/` and can be recovered.
 
 **Accessing Trash:**
 

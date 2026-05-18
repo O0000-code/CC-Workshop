@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-05-18
+
+### Changed
+
+- **Data directory renamed: `~/.ensemble/` → `~/.cc-workshop/`.** Automatic one-time migration on first launch — no user action required. Your installed Skills, MCPs, Categories, Tags, Scenes, Projects, CLAUDE.md, and Rules are moved atomically, and every absolute-path string inside `data.json` and `settings.json` (HashMap keys + Scene `skillIds` / `mcpIds` + per-entry `sourcePath`) is rewritten so the `Skill::id == sourcePath` invariant holds across the move. A pre-migration backup of `data.json` is kept at `~/.cc-workshop/data.json.pre-migration.bak` for one-shot inspection.
+- **Environment variable**: `CC_WORKSHOP_DATA_DIR` is the new name for test isolation and power-user overrides. The legacy `ENSEMBLE_DATA_DIR` is still honoured (back-compat), with `CC_WORKSHOP_DATA_DIR` taking priority when both are set.
+- **Breadcrumb left at old location**: `~/.ensemble/MOVED_TO_CC_WORKSHOP.txt` explains where your data went. The legacy directory contains nothing else and is safe to delete.
+
+### Edge cases handled
+
+- Plugin-sourced Skills (symlinks into `~/.claude/plugins/cache/`) are preserved as symlinks across the move (`cp -RP` in the cross-volume fallback).
+- Cross-volume `$HOME` (rename returns `EXDEV`): falls back to `cp -RP` + post-copy verification + `rm -rf`; refuses to delete the source unless the copy is verified.
+- Symlinked legacy directory (user-aliased `~/.ensemble` to an external volume): skip migration to preserve user intent.
+- Both `~/.ensemble/` and `~/.cc-workshop/` already populated: surface a non-blocking conflict notice; neither directory is modified.
+- Idempotent: re-running after a successful migration is an O(1) no-op (legacy dir contains only the breadcrumb).
+
+### Surfacing
+
+A dismissible bottom-left notice appears once per launch with the migration outcome (`migrated` / `conflict` / `failed`). Startup is never blocked — the notice is informational only.
+
 ## [2.2.0] - 2026-05-18
 
 ### Changed
@@ -103,7 +123,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Scenes include Rules**: multi-select Rules tab in the Create Scene modal; Project sync writes each selected Rule via batch distribute
 - **Category and Tag pages** include a Rules section alongside Skills, MCPs, and CLAUDE.md
 
-[Unreleased]: https://github.com/O0000-code/CC-Workshop/compare/v2.1.4...HEAD
+[Unreleased]: https://github.com/O0000-code/CC-Workshop/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/O0000-code/CC-Workshop/compare/v2.2.0...v2.3.0
+[2.2.0]: https://github.com/O0000-code/CC-Workshop/compare/v2.1.4...v2.2.0
 [2.1.4]: https://github.com/O0000-code/CC-Workshop/compare/v2.1.3...v2.1.4
 [2.1.3]: https://github.com/O0000-code/CC-Workshop/compare/v2.1.2...v2.1.3
 [2.1.2]: https://github.com/O0000-code/CC-Workshop/compare/v2.1.1...v2.1.2

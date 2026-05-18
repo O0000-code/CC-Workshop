@@ -207,13 +207,13 @@ export default function MainLayout() {
           await focusWindow();
           // Show permission alert and open System Settings
           const shouldOpen = window.confirm(
-            'To open terminal sessions with automation, please grant Accessibility permission to Ensemble.\n\n' +
+            'To open terminal sessions with automation, please grant Accessibility permission to CC Workshop.\n\n' +
               'Steps:\n' +
               '1. Click OK to open System Settings → Accessibility\n' +
               '2. Click the "+" button\n' +
-              '3. Navigate to /Applications and select Ensemble.app\n' +
-              '4. Enable the checkbox for Ensemble\n\n' +
-              'This is needed when Ensemble asks a terminal app to open a tab/window and run the launch command.',
+              '3. Navigate to /Applications and select CC Workshop.app\n' +
+              '4. Enable the checkbox for CC Workshop\n\n' +
+              'This is needed when CC Workshop asks a terminal app to open a tab/window and run the launch command.',
           );
           if (shouldOpen) {
             await safeInvoke('open_accessibility_settings', {});
@@ -228,7 +228,7 @@ export default function MainLayout() {
           const match = errorStr.match(/TerminalNotInstalled:([^\s"]+)/);
           const missing = match ? match[1] : 'the selected terminal';
           window.alert(
-            `${missing} doesn't appear to be installed on this Mac.\n\nOpen Ensemble Settings → Launch Configuration and pick a different terminal, or install ${missing}.`,
+            `${missing} doesn't appear to be installed on this Mac.\n\nOpen CC Workshop Settings → Launch Configuration and pick a different terminal, or install ${missing}.`,
           );
         } else {
           // Fall back to opening launcher on error - need to show window
@@ -278,7 +278,7 @@ export default function MainLayout() {
         await initApp();
 
         // Round 2 R2-2: `appStore.initApp` swallows IPC errors and writes
-        // them to `appStore.error`. The structured `EnsembleDirUnwritable:`
+        // them to `appStore.error`. The structured `CCWorkshopDirUnwritable:`
         // shape is fatal for app initialisation — every subsequent loader
         // would just fail the same way — so we surface it as `initError`
         // here and bail before the parallel load runs. Reading the latest
@@ -286,7 +286,7 @@ export default function MainLayout() {
         // captured at the top of this component is stale until the next
         // render.
         const postInitError = useAppStore.getState().error;
-        if (postInitError && postInitError.startsWith('EnsembleDirUnwritable:')) {
+        if (postInitError && postInitError.startsWith('CCWorkshopDirUnwritable:')) {
           setInitError(postInitError);
           setIsInitializing(false);
           return;
@@ -754,7 +754,7 @@ export default function MainLayout() {
       <div className="flex h-screen w-screen items-center justify-center bg-white">
         <div className="flex flex-col items-center gap-4">
           <Loader2 size={32} className="animate-spin text-zinc-400" />
-          <p className="text-sm text-zinc-500">Loading Ensemble...</p>
+          <p className="text-sm text-zinc-500">Loading CC Workshop...</p>
         </div>
       </div>
     );
@@ -763,20 +763,20 @@ export default function MainLayout() {
   // Show error state if initialization failed.
   //
   // Round 2 R2-2: when `~/.ensemble/` is owned by root (almost always
-  // because the user ran `sudo open Ensemble.app` once and the directory
+  // because the user ran `sudo open CC Workshop.app` once and the directory
   // ownership flipped), the backend `init_app_data` returns a structured
-  // error prefixed with `EnsembleDirUnwritable:`. We render a dedicated
+  // error prefixed with `CCWorkshopDirUnwritable:`. We render a dedicated
   // remediation pane in that case — the generic "Failed to Load" message
   // is correct but not actionable, and users keep relaunching expecting
   // a different outcome. The dedicated pane spells out the `chown`
   // command so they can copy-paste it into Terminal.
   if (initError) {
-    const isDirUnwritable = initError.startsWith('EnsembleDirUnwritable:');
+    const isDirUnwritable = initError.startsWith('CCWorkshopDirUnwritable:');
 
     if (isDirUnwritable) {
       // Extract the canonical chown command. The backend formats the
       // message as:
-      //   "EnsembleDirUnwritable: cannot write to <dir>. Hint: ...
+      //   "CCWorkshopDirUnwritable: cannot write to <dir>. Hint: ...
       //    Run: `sudo chown -R $(whoami) <dir>` in Terminal, ..."
       // We pull the backticked command out so the UI can present it as
       // a copy-able code block; fall back to the raw message if the
@@ -801,10 +801,10 @@ export default function MainLayout() {
               className="text-[16px] font-semibold"
               style={{ color: 'var(--color-error)' }}
             >
-              Ensemble can't write to its data directory
+              CC Workshop can't write to its data directory
             </h2>
             <p className="text-[13px] text-zinc-700">
-              This usually happens after launching Ensemble with{' '}
+              This usually happens after launching CC Workshop with{' '}
               <code className="px-1 rounded bg-zinc-100 text-zinc-800">sudo</code> once — the
               directory's owner becomes{' '}
               <code className="px-1 rounded bg-zinc-100 text-zinc-800">root</code> and normal

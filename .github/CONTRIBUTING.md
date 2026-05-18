@@ -1,4 +1,4 @@
-# Contributing to Ensemble
+# Contributing to CC Workshop
 
 Contributions are welcome. This guide covers setup, code style, and the PR process.
 
@@ -15,8 +15,8 @@ Contributions are welcome. This guide covers setup, code style, and the PR proce
 1. Fork the repository and clone your fork:
 
    ```bash
-   git clone https://github.com/YOUR_USERNAME/Ensemble.git
-   cd Ensemble
+   git clone https://github.com/YOUR_USERNAME/CC Workshop.git
+   cd CC Workshop
    ```
 
 2. Install dependencies:
@@ -42,7 +42,7 @@ Contributions are welcome. This guide covers setup, code style, and the PR proce
 ## Project Structure
 
 ```
-Ensemble/
+CC Workshop/
 ├── src/                    # React frontend
 │   ├── components/         # Reusable UI components
 │   ├── pages/              # Page components
@@ -138,10 +138,10 @@ docs(readme): update installation instructions
 
 Before submitting an issue, search existing issues to avoid duplicates.
 
-**Bug reports** should include: description, steps to reproduce, expected vs actual behavior, macOS version, Ensemble version, and screenshots if applicable.
+**Bug reports** should include: description, steps to reproduce, expected vs actual behavior, macOS version, CC Workshop version, and screenshots if applicable.
 
 **Feature requests** should include: the problem you're solving, proposed solution, and alternatives considered.
 
 ## License
 
-By contributing to Ensemble, you agree that your contributions will be licensed under the [MIT License](LICENSE).
+By contributing to CC Workshop, you agree that your contributions will be licensed under the [MIT License](LICENSE).

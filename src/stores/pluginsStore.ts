@@ -154,7 +154,7 @@ export const usePluginsStore = create<PluginsState>((set, get) => ({
   // Detect plugin Skills for import
   //
   // R2-10: call `cleanup_orphan_plugin_imports` before reading markers so
-  // any marker pointing at a plugin uninstalled outside Ensemble drops
+  // any marker pointing at a plugin uninstalled outside CC Workshop drops
   // out before we ask the backend to detect. Silent self-heal — the user
   // sees nothing unusual but reinstalling the same plugin no longer
   // shows "Already imported" with broken symlinks underneath.

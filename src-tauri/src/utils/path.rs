@@ -11,7 +11,7 @@ use unicode_normalization::UnicodeNormalization;
 /// two forms as equivalent for path resolution (normalisation-insensitive
 /// lookup), but Rust `String` equality is a raw byte comparison.
 ///
-/// Ensemble keys `data.json::skill_metadata` and `data.json::mcp_metadata`
+/// CC Workshop keys `data.json::skill_metadata` and `data.json::mcp_metadata`
 /// by `to_string_lossy()` of the disk path. If the same skill is at one
 /// point seen in NFC form (e.g. cloned from git with `core.precomposeUnicode`
 /// off) and later in NFD form (e.g. Finder rename), the two scans produce

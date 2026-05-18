@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 
 /// Returns the byte contents of every CLAUDE.md file currently managed by
-/// Ensemble (one entry per file). Used by `clear_project_config` to decide
+/// CC Workshop (one entry per file). Used by `clear_project_config` to decide
 /// whether a project-side CLAUDE.md is safe to remove: a project file is
 /// deletable iff its bytes match one of these managed contents.
 ///
@@ -25,7 +25,7 @@ fn ensemble_managed_claude_md_contents(app_data: &AppData) -> Vec<Vec<u8>> {
 
 /// True iff `path` exists, is readable, and its bytes match one of
 /// `managed_contents`. Any I/O error → false (preserve the file: we can't
-/// prove it is Ensemble-managed, so we must not delete it).
+/// prove it is CC Workshop-managed, so we must not delete it).
 fn matches_any_managed(path: &Path, managed_contents: &[Vec<u8>]) -> bool {
     match fs::read(path) {
         Ok(bytes) => managed_contents.iter().any(|m| m == &bytes),
@@ -34,7 +34,7 @@ fn matches_any_managed(path: &Path, managed_contents: &[Vec<u8>]) -> bool {
 }
 
 /// Returns the `name` field of every JSON file in `mcp_source_dir` that
-/// parses as `McpConfigFile`. These are the keys Ensemble would use when
+/// parses as `McpConfigFile`. These are the keys CC Workshop would use when
 /// writing entries into a project's `.mcp.json::mcpServers` HashMap;
 /// therefore they are the keys we are permitted to remove during Clear or
 /// when shrinking to an empty list.
@@ -57,7 +57,7 @@ fn ensemble_managed_mcp_names(mcp_source_dir: &str) -> HashSet<String> {
     names
 }
 
-/// Selectively remove Ensemble-managed entries from a project's
+/// Selectively remove CC Workshop-managed entries from a project's
 /// `.mcp.json::mcpServers`.
 ///
 /// Rules:
@@ -107,7 +107,7 @@ fn trim_managed_mcps_in_file(
     }
 
     if all_were_managed {
-        // Every key was Ensemble-managed and we just removed them all.
+        // Every key was CC Workshop-managed and we just removed them all.
         // The only top-level key is `mcpServers` (now empty) — the user
         // had no hand-written MCP content here. Safe to remove the file.
         // (If there were *other* top-level keys the user authored, we
@@ -134,7 +134,7 @@ pub fn write_mcp_config(project_path: String, mcp_servers: Vec<McpServer>) -> Re
     let project_dir = expand_path(&project_path);
     let mcp_path = project_dir.join(".mcp.json");
 
-    // If no MCP servers to write, trim only Ensemble-managed entries out
+    // If no MCP servers to write, trim only CC Workshop-managed entries out
     // of any existing `.mcp.json` rather than blowing away the whole file:
     // a user may have hand-written entries that must survive a Sync of an
     // empty Scene.
@@ -273,7 +273,7 @@ pub fn clear_project_config(projectPath: String) -> Result<(), String> {
     let settings = crate::commands::data::read_settings().unwrap_or_default();
 
     // Clear MCP config (.mcp.json in project root) — only remove
-    // Ensemble-managed entries. Hand-written entries in the same file
+    // CC Workshop-managed entries. Hand-written entries in the same file
     // must survive Clear.
     let mcp_path = project_dir.join(".mcp.json");
     let managed_mcp_names = ensemble_managed_mcp_names(&settings.mcp_source_dir);
@@ -296,9 +296,9 @@ pub fn clear_project_config(projectPath: String) -> Result<(), String> {
     }
 
     // Clear CLAUDE.md files (all possible distribution paths) — but only
-    // delete files whose **bytes match** one of the Ensemble-managed
+    // delete files whose **bytes match** one of the CC Workshop-managed
     // CLAUDE.md contents. A user-authored CLAUDE.md whose contents do
-    // not match anything Ensemble tracks must survive Clear.
+    // not match anything CC Workshop tracks must survive Clear.
     //
     // Best-effort: any unexpected I/O error preserves the file (we
     // can't prove it's managed, so we don't delete it).
@@ -313,11 +313,11 @@ pub fn clear_project_config(projectPath: String) -> Result<(), String> {
         }
     }
 
-    // Clear Ensemble-managed Rule files from <project>/.claude/rules/.
+    // Clear CC Workshop-managed Rule files from <project>/.claude/rules/.
     //
     // We only delete files whose filename matches a Rule currently tracked in
     // data.json — never the entire `rules/` directory — because users may
-    // hand-write project-local rules alongside the Ensemble-managed ones, and
+    // hand-write project-local rules alongside the CC Workshop-managed ones, and
     // a Sync should never wipe out unmanaged content. Silently skip on any
     // IO error: clearing is a best-effort operation and must not break the
     // primary clear flow (deleting skill symlinks / .mcp.json).

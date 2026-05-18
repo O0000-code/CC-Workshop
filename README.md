@@ -1,14 +1,14 @@
-# Ensemble
+# CC Workshop
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/O0000-code/Ensemble)](https://github.com/O0000-code/Ensemble/releases)
-[![macOS](https://img.shields.io/badge/macOS-12.0%2B-black?logo=apple)](https://github.com/O0000-code/Ensemble/releases)
+[![Release](https://img.shields.io/github/v/release/O0000-code/CC-Workshop)](https://github.com/O0000-code/CC-Workshop/releases)
+[![macOS](https://img.shields.io/badge/macOS-12.0%2B-black?logo=apple)](https://github.com/O0000-code/CC-Workshop/releases)
 
 A macOS desktop application for managing [Claude Code](https://docs.anthropic.com/en/docs/claude-code) configurations -- Skills, MCP Servers, CLAUDE.md files, and Rules -- with visual organization, one-click project deployment, and Finder integration.
 
 ## Overview
 
-As your collection of Claude Code Skills, MCP Servers, CLAUDE.md context files, and Rule instruction files grows, managing them through manual file editing becomes tedious and error-prone. Ensemble provides a native macOS interface to organize, bundle, and deploy these configurations to your projects.
+As your collection of Claude Code Skills, MCP Servers, CLAUDE.md context files, and Rule instruction files grows, managing them through manual file editing becomes tedious and error-prone. CC Workshop provides a native macOS interface to organize, bundle, and deploy these configurations to your projects.
 
 Core workflow:
 
@@ -18,7 +18,7 @@ Core workflow:
 4. **Deploy** Scenes to project folders via symlinks
 5. **Launch** Claude Code from Finder with the right configuration
 
-![Ensemble - Skills Management with Detail Panel](docs/screenshots/skill-detail.png)
+![CC Workshop - Skills Management with Detail Panel](docs/screenshots/skill-detail.png)
 
 <p align="center">
   <a href="docs/screenshots/claude-md-list.png"><img src="docs/screenshots/claude-md-list.png" width="32%" alt="CLAUDE.md Management" /></a>
@@ -79,7 +79,7 @@ Core workflow:
 - Group and sort options on every list page (by name, recency, or usage)
 
 ### Finder Integration
-- "Open with Ensemble" right-click Quick Action for folders in Finder
+- "Open with CC Workshop" right-click Quick Action for folders in Finder
 - Automatically syncs the project's Scene configuration and launches Claude Code
 - Configurable terminal: Terminal.app, iTerm2, Warp, Alacritty, or Ghostty
 - Customizable launch command
@@ -95,7 +95,7 @@ Core workflow:
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
 
 ### Download
-Download the latest `.dmg` from the [Releases](https://github.com/O0000-code/Ensemble/releases) page.
+Download the latest `.dmg` from the [Releases](https://github.com/O0000-code/CC-Workshop/releases) page.
 
 ### Build from Source
 
@@ -104,8 +104,8 @@ Requirements:
 - Rust 1.77+
 
 ```bash
-git clone https://github.com/O0000-code/Ensemble.git
-cd Ensemble
+git clone https://github.com/O0000-code/CC-Workshop.git
+cd CC Workshop
 
 npm install
 
@@ -120,7 +120,7 @@ npm run tauri build
 
 ### Quick Start
 
-1. **Launch Ensemble** -- on first launch, it detects existing Skills and MCPs and offers to import them
+1. **Launch CC Workshop** -- on first launch, it detects existing Skills and MCPs and offers to import them
 2. **Organize** -- add categories and tags, or use Auto Classify
 3. **Create a Scene** -- bundle related Skills, MCPs, CLAUDE.md files, and Rules
 4. **Add a Project** -- select a folder and assign a Scene
@@ -128,7 +128,7 @@ npm run tauri build
 
 ### Data Location
 
-Ensemble stores its data in `~/.ensemble/`:
+CC Workshop stores its data in `~/.ensemble/`:
 ```
 ~/.ensemble/
 ├── data.json           # Application data (skills, MCPs, scenes, projects, categories, tags, rules)

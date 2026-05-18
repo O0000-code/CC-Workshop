@@ -84,7 +84,7 @@ export interface RuleScanItem {
   /** Last modified time (ISO 8601). */
   modifiedAt: string;
 
-  /** Whether already imported into Ensemble. */
+  /** Whether already imported into CC Workshop. */
   isImported: boolean;
 
   /** Corresponding `Rule.id` if imported. */

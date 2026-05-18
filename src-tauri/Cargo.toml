@@ -1,17 +1,17 @@
 [package]
-name = "ensemble"
-version = "2.1.4"
+name = "cc-workshop"
+version = "2.2.0"
 description = "Manage Claude Code Skills, MCP Servers, CLAUDE.md, and Rule files"
 authors = ["O0000-code"]
 license = "MIT"
-repository = "https://github.com/O0000-code/Ensemble"
+repository = "https://github.com/O0000-code/CC-Workshop"
 edition = "2021"
 rust-version = "1.77.2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
-name = "ensemble_lib"
+name = "cc_workshop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

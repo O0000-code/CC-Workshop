@@ -1,5 +1,5 @@
 # =============================================================================
-# Ensemble Tauri Desktop App -- CI Workflow
+# CC Workshop Tauri Desktop App -- CI Workflow
 # Trigger: PR push / main branch push / manual trigger
 # Runner: Ubuntu (frontend tests and Rust tests both run on Linux)
 # =============================================================================

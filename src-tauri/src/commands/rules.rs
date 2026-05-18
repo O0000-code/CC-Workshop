@@ -356,7 +356,7 @@ fn is_excluded_dir(entry: &walkdir::DirEntry) -> bool {
 // Import commands
 // ============================================================================
 
-/// Import a Rule file into Ensemble management.
+/// Import a Rule file into CC Workshop management.
 #[tauri::command]
 pub fn import_rule(options: RuleImportOptions) -> Result<RuleImportResult, String> {
     let source_path = expand_path(&options.source_path);

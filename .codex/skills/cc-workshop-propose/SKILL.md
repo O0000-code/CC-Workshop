@@ -1,13 +1,13 @@
 ---
 name: ensemble-propose
-description: Deep analysis of the Ensemble Tauri desktop app to proactively identify improvement opportunities across frontend (React/TypeScript) and backend (Rust). Creates Linear issues tagged ai-proposed for human review. Use when asked to research, propose, or suggest improvements for the Ensemble project. Do not use for bug patrol or issue implementation.
+description: Deep analysis of the CC Workshop Tauri desktop app to proactively identify improvement opportunities across frontend (React/TypeScript) and backend (Rust). Creates Linear issues tagged ai-proposed for human review. Use when asked to research, propose, or suggest improvements for the CC Workshop project. Do not use for bug patrol or issue implementation.
 ---
 
-# Ensemble Research & Propose
+# CC Workshop Research & Propose
 
 ## Overview
 
-Act as a **product-minded engineer** for the Ensemble Tauri 2 desktop application. Your role is NOT to find bugs (Patrol does that) or implement features (Implement does that). Your role is to deeply analyze the dual-language codebase, think about the product holistically, and propose well-researched improvements that a human can review and approve.
+Act as a **product-minded engineer** for the CC Workshop Tauri 2 desktop application. Your role is NOT to find bugs (Patrol does that) or implement features (Implement does that). Your role is to deeply analyze the dual-language codebase, think about the product holistically, and propose well-researched improvements that a human can review and approve.
 
 **Core Philosophy**: Depth over breadth. 1-2 thoroughly analyzed, actionable proposals are worth far more than 10 surface-level suggestions. Each proposal must demonstrate genuine code-level understanding across both the React frontend and Rust backend, and provide a concrete implementation path.
 
@@ -27,7 +27,7 @@ Act as a **product-minded engineer** for the Ensemble Tauri 2 desktop applicatio
   - `src-tauri/src/utils/` -- Utility modules (parser.rs, path.rs)
   - `src-tauri/src/types.rs` -- Shared Rust type definitions
   - `src-tauri/src/lib.rs` -- App setup and command registration
-- **Repo**: https://github.com/O0000-code/Ensemble.git
+- **Repo**: https://github.com/O0000-code/CC-Workshop.git
 
 Read `AGENTS.md` in the project root for full conventions before starting analysis.
 
@@ -35,7 +35,7 @@ Read `AGENTS.md` in the project root for full conventions before starting analys
 
 ### 1) Prepare
 
-- Verify you are in the Ensemble project directory (`Ensemble2/`).
+- Verify you are in the CC Workshop project directory (`CC Workshop2/`).
 - Run `git fetch origin main` and `git log --oneline -20` to understand recent development direction.
 - Read `AGENTS.md` for project conventions.
 - Note today's date and the analysis dimension(s) you will focus on this run.
@@ -190,8 +190,8 @@ If a proposal fails any criterion, either strengthen it or discard it. Never cre
 **CRITICAL RULES:**
 - You MUST actually call the MCP tools. Do NOT fabricate or hallucinate tool call results.
 - If an MCP tool call fails, report the failure honestly. Do NOT pretend it succeeded.
-- Use `list_teams` to find your team ID. Use `list_projects` to find the "Ensemble" project.
-- **If the "Ensemble" project does not exist, create it** using `save_project` with name "Ensemble" and description "Ensemble Tauri desktop app - AI-assisted autonomous development workflow".
+- Use `list_teams` to find your team ID. Use `list_projects` to find the "CC Workshop" project.
+- **If the "CC Workshop" project does not exist, create it** using `save_project` with name "CC Workshop" and description "CC Workshop Tauri desktop app - AI-assisted autonomous development workflow".
 - **ALWAYS include `projectId`** when creating issues to ensure they are assigned to the correct project.
 - After calling `save_issue`, check the returned result for the issue ID and URL to confirm success.
 
@@ -211,7 +211,7 @@ Use `list_issue_labels` to find IDs for the following labels. If any don't exist
 Tool: mcp__linear-server__save_issue
 Parameters:
   teamId: (from list_teams)
-  projectId: (from list_projects, "Ensemble" project)
+  projectId: (from list_projects, "CC Workshop" project)
   title: "[AI-Propose] {specific description}"
   description: {full proposal from Step 4}
   labelIds: [ai-proposed ID, type:* ID, optional layer/dimension tag IDs]
@@ -238,7 +238,7 @@ Parameters:
 After all proposals are created (or if no proposals met the quality gate), output a structured summary:
 
 ```
-## Research & Propose Report: Ensemble
+## Research & Propose Report: CC Workshop
 - Date: {YYYY-MM-DD HH:MM}
 - Dimensions Analyzed: {list}
 - Files Read: {frontend count} frontend, {backend count} backend

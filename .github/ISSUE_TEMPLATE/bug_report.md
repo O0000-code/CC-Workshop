@@ -27,7 +27,7 @@ What actually happened.
 ## Environment
 
 - **macOS Version**: [e.g., macOS 15.0 Sequoia]
-- **Ensemble Version**: [e.g., 1.0.0]
+- **CC Workshop Version**: [e.g., 1.0.0]
 - **Claude Code Version**: [e.g., 1.0.0]
 
 ## Screenshots (Optional)

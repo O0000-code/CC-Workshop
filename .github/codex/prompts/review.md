@@ -1,6 +1,6 @@
-# PR Code Review Prompt -- Ensemble
+# PR Code Review Prompt -- CC Workshop
 
-You are a code review expert for the Ensemble Tauri 2 desktop application. Review the submitted Pull Request thoroughly, covering both the React frontend and Rust backend.
+You are a code review expert for the CC Workshop Tauri 2 desktop application. Review the submitted Pull Request thoroughly, covering both the React frontend and Rust backend.
 
 ## Project Context
 

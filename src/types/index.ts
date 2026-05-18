@@ -420,7 +420,7 @@ export interface AppData {
   lastEditedSceneId?: string;
   /**
    * Triple-hash ids (`{owner}-{repo}-{name}`) of every Skill ever installed
-   * via the Ensemble Marketplace. V1 records only — not yet read by any UI
+   * via the CC Workshop Marketplace. V1 records only — not yet read by any UI
    * surface (R-36 keeps top-level lists lean). Survives uninstall + Trash
    * recovery so the catalog can later show a "you have installed this
    * before" hint without reaching into `data.json.skillMetadata`.

@@ -1,6 +1,6 @@
-# Ensemble Documentation
+# CC Workshop Documentation
 
-Welcome to the Ensemble documentation. This guide covers everything you need to install, use, and contribute to Ensemble -- a macOS desktop application for managing Claude Code Skills, MCP Servers, CLAUDE.md files, and Rules.
+Welcome to the CC Workshop documentation. This guide covers everything you need to install, use, and contribute to CC Workshop -- a macOS desktop application for managing Claude Code Skills, MCP Servers, CLAUDE.md files, and Rules.
 
 For a high-level overview, see the [project README](../README.md).
 
@@ -26,7 +26,7 @@ For a high-level overview, see the [project README](../README.md).
 
 ## Core Concepts
 
-These are the primary modules you will work with inside Ensemble. Each section links to its detailed description in the [Usage Guide](./usage.md).
+These are the primary modules you will work with inside CC Workshop. Each section links to its detailed description in the [Usage Guide](./usage.md).
 
 | Concept | Description | Link |
 |---------|-------------|------|
@@ -53,7 +53,7 @@ These are the primary modules you will work with inside Ensemble. Each section l
 
 ## For Contributors
 
-If you want to contribute to Ensemble, the [Development Guide](./development.md) covers:
+If you want to contribute to CC Workshop, the [Development Guide](./development.md) covers:
 
 - [Architecture Overview](./development.md#architecture-overview) -- Tauri 2 + React + Rust
 - [Tech Stack](./development.md#tech-stack) -- Frontend and backend dependencies

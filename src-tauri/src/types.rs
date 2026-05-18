@@ -300,7 +300,7 @@ pub struct AppData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_edited_scene_id: Option<String>,
     /// Triple-hash ids (`{owner}-{repo}-{name}`) of every Skill ever installed
-    /// via the Ensemble Marketplace. Survives uninstall + Trash recovery to
+    /// via the CC Workshop Marketplace. Survives uninstall + Trash recovery to
     /// give the catalog a "you have installed this before" hint. V1 records
     /// only; not yet read by any UI surface (R-36 keeps top-level lists lean).
     #[serde(default)]
@@ -517,7 +517,7 @@ pub struct McpConfigFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// HTTP request headers for HTTP-type MCP servers
-    /// (Authorization, X-API-Key, etc.). Persisted on the Ensemble
+    /// (Authorization, X-API-Key, etc.). Persisted on the CC Workshop
     /// side so re-syncing the same MCP into a new project re-applies
     /// them; Claude Code's `.mcp.json` schema accepts the same shape.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -535,7 +535,7 @@ pub struct McpConfigFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub marketplace: Option<String>,
     /// Marketplace upstream provenance (persisted on the JSON file when this
-    /// MCP was installed from the Ensemble Marketplace). See
+    /// MCP was installed from the CC Workshop Marketplace). See
     /// [`Skill::marketplace_source`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marketplace_source: Option<MarketplaceSource>,
@@ -774,7 +774,7 @@ pub struct DetectedPluginSkill {
     pub path: String,
     /// Plugin version
     pub version: String,
-    /// Whether already imported to Ensemble
+    /// Whether already imported to CC Workshop
     pub is_imported: bool,
 }
 
@@ -807,7 +807,7 @@ pub struct DetectedPluginMcp {
     pub path: String,
     /// Plugin version
     pub version: String,
-    /// Whether already imported to Ensemble
+    /// Whether already imported to CC Workshop
     pub is_imported: bool,
 }
 
@@ -1567,7 +1567,7 @@ pub struct MarketplaceSkillItem {
     #[serde(default)]
     pub stars: u32,
     /// Upstream-declared categories (for display only; not merged into the
-    /// Ensemble Categories taxonomy per D-15).
+    /// CC Workshop Categories taxonomy per D-15).
     #[serde(default)]
     pub categories: Vec<String>,
     #[serde(default)]

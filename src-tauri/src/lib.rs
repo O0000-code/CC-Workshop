@@ -197,7 +197,7 @@ pub fn run() {
             plugins::import_plugin_mcps,
             plugins::check_plugins_enabled,
             // R2-10 (bug-audit-2026-05-15): clean up orphan markers for
-            // plugins uninstalled outside Ensemble
+            // plugins uninstalled outside CC Workshop
             plugins::cleanup_orphan_plugin_imports,
             // CLAUDE.md commands
             claude_md::scan_claude_md_files,

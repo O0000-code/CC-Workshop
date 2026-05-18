@@ -1,4 +1,4 @@
-# Safety Rules — Ensemble
+# Safety Rules — CC Workshop
 
 ## Blocked Commands
 Never execute the following commands:

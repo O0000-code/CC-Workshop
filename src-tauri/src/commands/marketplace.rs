@@ -67,7 +67,7 @@
 //!
 //! A single `reqwest::Client` lives behind a `OnceLock` (D-Imp-10). It
 //! ships with a 15s timeout, gzip decompression, and a `User-Agent` matching
-//! `Ensemble/<version>` for non-skills.sh callers (the skills.sh helper
+//! `CC Workshop/<version>` for non-skills.sh callers (the skills.sh helper
 //! overrides UA to a browser fingerprint).
 //!
 //! ## verify-third-party-behavior-firsthand
@@ -230,7 +230,7 @@ fn sanitize_resource_name(name: &str) -> Result<String, String> {
 // whose `url` field is empty or still contains a `{VAR}` placeholder (e.g.
 // the catalog template had `https://example.com/{TOKEN}` and the user did
 // not fill in `TOKEN`). The install / update would succeed, the MCP would
-// appear in the Ensemble UI, but Claude Code's runtime resolution of the
+// appear in the CC Workshop UI, but Claude Code's runtime resolution of the
 // URL would fail silently. `validate_http_mcp_url` is the single chokepoint
 // every HTTP MCP write path now calls *before* `fs::write` so the failure
 // surfaces as a user-actionable error rather than a half-broken config.
@@ -271,7 +271,7 @@ fn validate_http_mcp_url(url: &str) -> Result<(), String> {
 static MARKETPLACE_HTTP: OnceLock<reqwest::Client> = OnceLock::new();
 
 /// Lazily-initialised global HTTP client. Reuses connections, sets a
-/// User-Agent matching Ensemble's GitHub project (R-40 / R-47 friendly
+/// User-Agent matching CC Workshop's GitHub project (R-40 / R-47 friendly
 /// citizen), and applies a 15s timeout so a hung upstream cannot block
 /// the IPC indefinitely.
 pub fn marketplace_http() -> &'static reqwest::Client {
@@ -284,9 +284,9 @@ pub fn marketplace_http() -> &'static reqwest::Client {
             // transparent decoder. Verified 2026-05-10 via curl.
             .gzip(true)
             .user_agent(concat!(
-                "Ensemble/",
+                "CCWorkshop/",
                 env!("CARGO_PKG_VERSION"),
-                " (+https://github.com/O0000-code/Ensemble)"
+                " (+https://github.com/O0000-code/CC-Workshop)"
             ))
             .build()
             .expect("reqwest Client builds with no failures from constants")
@@ -1897,7 +1897,7 @@ pub async fn get_marketplace_skill_readme(
 // Single api.github.com call to `/repos/<owner>/<repo>` to read the
 // `stargazers_count` field, then cache it under (owner, repo) for
 // REPO_STATS_CACHE_TTL_SECS. Surface in the detail panel as a trust
-// signal alongside `Installs` (Ensemble's `find-skills` install button
+// signal alongside `Installs` (CC Workshop's `find-skills` install button
 // already gives users one-click install — the upstream skills.sh detail
 // page surfaces stars + installs together; we mirror that pairing).
 //

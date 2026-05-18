@@ -877,7 +877,7 @@ pub fn update_mcp_scope(
         .ok_or("Invalid MCP ID")?;
     let mcp_name = mcp_filename.trim_end_matches(".json");
 
-    // Read MCP configuration from Ensemble
+    // Read MCP configuration from CC Workshop
     let mcp_config_path = ensemble_path.join("mcps").join(mcp_filename);
     if !mcp_config_path.exists() {
         return Err(format!("MCP config not found: {}", mcp_name));
@@ -949,18 +949,18 @@ pub fn install_quick_action() -> Result<String, String> {
     let services_dir = home.join("Library/Services");
 
     // R2-8c: resolve the running binary at install time rather than
-    // hardcoding `/Applications/Ensemble.app/...`. Users who install
-    // Ensemble.app to `~/Applications/` (no admin rights on work
+    // hardcoding `/Applications/CC Workshop.app/...`. Users who install
+    // CC Workshop.app to `~/Applications/` (no admin rights on work
     // machines) previously got a silently broken Quick Action.
     let current_exe = std::env::current_exe()
-        .map_err(|e| format!("Failed to resolve Ensemble binary path: {}", e))?;
+        .map_err(|e| format!("Failed to resolve CC Workshop binary path: {}", e))?;
     let binary_path_str = current_exe.to_string_lossy().to_string();
     let escaped_binary_path = xml_escape_for_plist(&binary_path_str);
 
     // Ensure Services directory exists
     fs::create_dir_all(&services_dir).map_err(|e| e.to_string())?;
 
-    let workflow_path = services_dir.join("Open with Ensemble.workflow");
+    let workflow_path = services_dir.join("Open with CC Workshop.workflow");
     let contents_dir = workflow_path.join("Contents");
 
     // Remove existing workflow if present
@@ -982,7 +982,7 @@ pub fn install_quick_action() -> Result<String, String> {
             <key>NSMenuItem</key>
             <dict>
                 <key>default</key>
-                <string>Open with Ensemble</string>
+                <string>Open with CC Workshop</string>
             </dict>
             <key>NSMessage</key>
             <string>runWorkflowAsService</string>
@@ -1391,7 +1391,7 @@ fn run_ghostty_applescript(applescript: &str, open_mode: &str) -> Result<(), Str
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if open_mode == "tab" {
         return Err(format!(
-            "Failed to launch Ghostty in New Tab mode. Ghostty New Tab requires Ghostty 1.3.0 or newer with macOS Automation permission for Ensemble. {stderr}"
+            "Failed to launch Ghostty in New Tab mode. Ghostty New Tab requires Ghostty 1.3.0 or newer with macOS Automation permission for CC Workshop. {stderr}"
         ));
     }
 
@@ -1528,7 +1528,7 @@ fn ghostty_supports_native_applescript(version: &str) -> bool {
 //     "No such file or directory" Rust error.
 //   - Ghostty hardcoded `/Applications/Ghostty.app` path (handled in
 //     `installed_ghostty_version` above).
-//   - install_quick_action hardcoded `/Applications/Ensemble.app` path
+//   - install_quick_action hardcoded `/Applications/CC Workshop.app` path
 //     (handled in `install_quick_action`).
 //
 // `validate_terminal_app` is the new pre-flight: SettingsPage calls it

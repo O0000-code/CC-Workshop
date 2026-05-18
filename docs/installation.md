@@ -9,10 +9,10 @@
 
 ## Option 1: Download Pre-built Release
 
-1. Go to the [Releases](https://github.com/O0000-code/Ensemble/releases) page
+1. Go to the [Releases](https://github.com/O0000-code/CC-Workshop/releases) page
 2. Download the latest `.dmg` file for your architecture
-3. Open the DMG and drag **Ensemble** to your Applications folder
-4. Launch Ensemble from Applications
+3. Open the DMG and drag **CC Workshop** to your Applications folder
+4. Launch CC Workshop from Applications
 
 ## Option 2: Build from Source
 
@@ -52,8 +52,8 @@ Install the following tools before building:
 
 ```bash
 # Clone the repository
-git clone https://github.com/O0000-code/Ensemble.git
-cd Ensemble
+git clone https://github.com/O0000-code/CC-Workshop.git
+cd CC Workshop
 
 # Install Node.js dependencies
 npm install
@@ -73,10 +73,10 @@ After a successful build, the artifacts are located at:
 
 | Artifact | Path |
 |----------|------|
-| macOS App Bundle | `src-tauri/target/release/bundle/macos/Ensemble.app` |
-| DMG Installer | `src-tauri/target/release/bundle/dmg/Ensemble_<version>_<arch>.dmg` |
+| macOS App Bundle | `src-tauri/target/release/bundle/macos/CC Workshop.app` |
+| DMG Installer | `src-tauri/target/release/bundle/dmg/CC Workshop_<version>_<arch>.dmg` |
 
-You can copy `Ensemble.app` directly to your `/Applications` folder, or open the generated DMG.
+You can copy `CC Workshop.app` directly to your `/Applications` folder, or open the generated DMG.
 
 ### Development Mode
 
@@ -90,7 +90,7 @@ This starts the Vite dev server on `http://localhost:1420` and launches the Taur
 
 ## First Launch
 
-When Ensemble starts for the first time, it automatically creates its data directory at `~/.ensemble/` with the following structure:
+When CC Workshop starts for the first time, it automatically creates its data directory at `~/.ensemble/` with the following structure:
 
 ```
 ~/.ensemble/
@@ -105,23 +105,23 @@ When Ensemble starts for the first time, it automatically creates its data direc
     └── claude-md/
 ```
 
-On first launch, Ensemble will also create default categories (Development, Writing, Analysis) and offer to import any existing Skills and MCP configurations from your Claude Code setup (`~/.claude/` and `~/.claude.json`).
+On first launch, CC Workshop will also create default categories (Development, Writing, Analysis) and offer to import any existing Skills and MCP configurations from your Claude Code setup (`~/.claude/` and `~/.claude.json`).
 
 ## Verification
 
-After installation, verify Ensemble is working correctly:
+After installation, verify CC Workshop is working correctly:
 
 1. Launch the application
 2. You should see the main interface with sidebar navigation
-3. If you have existing Claude Code configurations, Ensemble will offer to import them
+3. If you have existing Claude Code configurations, CC Workshop will offer to import them
 4. Check **Settings** to review and configure your preferences
 
 ## Uninstallation
 
-To completely remove Ensemble and all its data:
+To completely remove CC Workshop and all its data:
 
 1. Quit the application (right-click the Dock icon and select **Quit**, or press `Cmd+Q`)
-2. Delete `Ensemble.app` from your Applications folder
+2. Delete `CC Workshop.app` from your Applications folder
 3. Remove the data directory:
 
    ```bash
@@ -130,10 +130,10 @@ To completely remove Ensemble and all its data:
 
 **Warning**: Removing `~/.ensemble` will permanently delete all your managed Skills, MCP configurations, CLAUDE.md files, categories, tags, scenes, and project associations. This action cannot be undone.
 
-Note: Ensemble does not modify your original Claude Code configuration files (`~/.claude/`, `~/.claude.json`). Uninstalling Ensemble will not affect your Claude Code setup, though any symlinks Ensemble created in project directories will become broken and should be cleaned up manually.
+Note: CC Workshop does not modify your original Claude Code configuration files (`~/.claude/`, `~/.claude.json`). Uninstalling CC Workshop will not affect your Claude Code setup, though any symlinks CC Workshop created in project directories will become broken and should be cleaned up manually.
 
 To also remove the Finder Quick Action (if installed):
 
    ```bash
-   rm -rf ~/Library/Services/Open\ with\ Ensemble.workflow
+   rm -rf ~/Library/Services/Open\ with\ CC Workshop.workflow
    ```

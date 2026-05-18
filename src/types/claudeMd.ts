@@ -12,7 +12,7 @@ export type ClaudeMdType = 'global' | 'project' | 'local';
  * CLAUDE.md 分发目标路径
  */
 export type ClaudeMdDistributionPath =
-  | '.claude/CLAUDE.md'   // 默认
+  | '.claude/CLAUDE.md' // 默认
   | 'CLAUDE.md'
   | 'CLAUDE.local.md';
 
@@ -20,9 +20,9 @@ export type ClaudeMdDistributionPath =
  * 冲突解决策略
  */
 export type ClaudeMdConflictResolution =
-  | 'overwrite'   // 覆盖
-  | 'backup'      // 备份后覆盖
-  | 'skip';       // 跳过
+  | 'overwrite' // 覆盖
+  | 'backup' // 备份后覆盖
+  | 'skip'; // 跳过
 
 /**
  * CLAUDE.md 文件信息
@@ -86,7 +86,7 @@ export interface ClaudeMdScanItem {
   /** 最后修改时间 (ISO 8601) */
   modifiedAt: string;
 
-  /** 是否已导入 (在 Ensemble 管理中) */
+  /** 是否已导入 (在 CC Workshop 管理中) */
   isImported: boolean;
 
   /** 如果已导入，对应的 ClaudeMdFile ID */

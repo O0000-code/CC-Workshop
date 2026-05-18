@@ -1,19 +1,19 @@
 ---
 name: ensemble-patrol
-description: Run a comprehensive QA patrol on the Ensemble Tauri desktop app. Use when asked to check Tauri project health, run tests, lint code, or audit for issues. Do not use for iOS projects.
+description: Run a comprehensive QA patrol on the CC Workshop Tauri desktop app. Use when asked to check Tauri project health, run tests, lint code, or audit for issues. Do not use for iOS projects.
 ---
 
-# Ensemble Tauri Project Patrol
+# CC Workshop Tauri Project Patrol
 
 ## Overview
 
-Perform a comprehensive quality audit on the Ensemble Tauri 2 desktop application, covering both the React frontend and Rust backend.
+Perform a comprehensive quality audit on the CC Workshop Tauri 2 desktop application, covering both the React frontend and Rust backend.
 
 ## Workflow
 
 ### 1) Prepare
 
-- Verify you are in the Ensemble project directory (`Ensemble2/`).
+- Verify you are in the CC Workshop project directory (`CC Workshop2/`).
 - Run `git fetch origin main` to ensure you have the latest state.
 - Note the current branch and HEAD commit for the patrol report.
 
@@ -94,8 +94,8 @@ Perform a comprehensive quality audit on the Ensemble Tauri 2 desktop applicatio
 **CRITICAL RULES:**
 - You MUST actually call the MCP tools. Do NOT fabricate or hallucinate tool call results.
 - If an MCP tool call fails, report the failure honestly. Do NOT pretend it succeeded.
-- Use `list_teams` to find your team ID. Use `list_projects` to find the "Ensemble" project.
-- **If the "Ensemble" project does not exist, create it** using `save_project` with name "Ensemble" and description "Ensemble Tauri desktop app - AI-assisted autonomous development workflow".
+- Use `list_teams` to find your team ID. Use `list_projects` to find the "CC Workshop" project.
+- **If the "CC Workshop" project does not exist, create it** using `save_project` with name "CC Workshop" and description "CC Workshop Tauri desktop app - AI-assisted autonomous development workflow".
 - **ALWAYS include `projectId`** when creating issues to ensure they are assigned to the correct project.
 - After calling `save_issue`, check the returned result for the issue ID and URL to confirm success.
 
@@ -107,7 +107,7 @@ For each issue discovered, create a Linear Issue using the Linear MCP:
 Tool: mcp__linear-server__save_issue
 Parameters:
   teamId: (use list_teams to find the team ID)
-  projectId: (use list_projects to find "Ensemble" project ID; if not found, create it first with save_project)
+  projectId: (use list_projects to find "CC Workshop" project ID; if not found, create it first with save_project)
   title: "[AI-Patrol] {concise description of issue}"
   description: |
     ## Source
@@ -122,19 +122,19 @@ Parameters:
 
     ## Suggested Fix
     {brief suggestion if applicable}
-  labelIds: (use list_issue_labels to find IDs for: "Ensemble" (create if not exists), "Bug" or "Improvement", "ai-discovered", "needs-triage")
+  labelIds: (use list_issue_labels to find IDs for: "CC Workshop" (create if not exists), "Bug" or "Improvement", "ai-discovered", "needs-triage")
   priority: {1=Urgent for test failures, 2=High for build/security issues, 3=Medium for lint errors, 4=Low for TODOs}
 ```
 
 #### If no issues are found:
 
-Output: **"No issues found. Ensemble project is healthy."**
+Output: **"No issues found. CC Workshop project is healthy."**
 
 #### Patrol Summary
 
 Generate a structured summary:
 ```
-## Patrol Report: Ensemble
+## Patrol Report: CC Workshop
 - Date: {YYYY-MM-DD HH:MM}
 - Status: {healthy / warnings / critical}
 - Frontend Tests: {passed}/{total} passed, {failed} failed

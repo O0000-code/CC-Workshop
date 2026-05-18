@@ -1,8 +1,8 @@
-# Ensemble -- AI Agent Project Guide
+# CC Workshop -- AI Agent Project Guide
 
 ## Project Overview
 
-Ensemble is a **Tauri 2** desktop application for managing Claude Code Skills, MCP Servers,
+CC Workshop is a **Tauri 2** desktop application for managing Claude Code Skills, MCP Servers,
 and CLAUDE.md configuration files. It provides a unified GUI to organize, import, export,
 and deploy these resources across projects.
 
@@ -18,7 +18,7 @@ a React frontend (UI + state) via Tauri IPC commands.
 ### Directory Map
 
 ```
-Ensemble2/
+CC Workshop2/
 ├── src/                        # React frontend
 │   ├── components/             # UI components (10 groups: common, layout, skills, mcps, ...)
 │   ├── pages/                  # Page components (12 pages)
@@ -135,8 +135,8 @@ npx tsc --noEmit && cd src-tauri && cargo test
 ### Linear Project Binding
 
 - Use Linear MCP to dynamically discover team and project information
-- All issues MUST be assigned to the "Ensemble" project (create it if it doesn't exist)
-- All issues MUST include an "Ensemble" label for proper routing (create it if it doesn't exist)
+- All issues MUST be assigned to the "CC Workshop" project (create it if it doesn't exist)
+- All issues MUST include an "CC Workshop" label for proper routing (create it if it doesn't exist)
 - Do NOT hardcode any Linear IDs — always resolve them dynamically via MCP tools
 
 ### Dual-Language Awareness (TypeScript + Rust)

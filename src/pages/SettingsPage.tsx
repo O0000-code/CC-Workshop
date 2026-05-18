@@ -21,7 +21,7 @@ import type { ClassifyModel } from '@/types';
 // ============================================================================
 // Settings Page
 // ============================================================================
-// Central configuration hub for Ensemble application.
+// Central configuration hub for CC Workshop application.
 // Includes CLAUDE.md, Launch Configuration, and About sections.
 
 // ============================================================================
@@ -635,7 +635,7 @@ export function SettingsPage() {
                 <div className="flex flex-col gap-0.5">
                   <span className="text-[13px] font-medium text-[#18181B]">Finder Integration</span>
                   <span className="text-xs text-[#71717A]">
-                    Right-click 'Open with Ensemble' in Finder
+                    Right-click 'Open with CC Workshop' in Finder
                   </span>
                 </div>
                 <div className="flex items-center gap-2.5">
@@ -746,7 +746,7 @@ export function SettingsPage() {
                 </div>
                 {/* Info Text */}
                 <div className="flex flex-col gap-0.5">
-                  <span className="text-sm font-semibold text-[#18181B]">Ensemble</span>
+                  <span className="text-sm font-semibold text-[#18181B]">CC Workshop</span>
                   <span className="text-xs text-[#71717A]">Version 0.0.1 (Build 1)</span>
                 </div>
               </div>

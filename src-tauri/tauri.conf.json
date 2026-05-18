@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Ensemble",
-  "version": "2.1.4",
-  "identifier": "io.github.o0000-code.ensemble",
+  "productName": "CC Workshop",
+  "version": "2.2.0",
+  "identifier": "io.github.o0000-code.ccworkshop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Ensemble",
+        "title": "CC Workshop",
         "width": 1440,
         "height": 900,
         "minWidth": 1280,

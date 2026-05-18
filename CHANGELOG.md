@@ -7,19 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-05-18
+
+### Changed
+
+- **Renamed: Ensemble → CC Workshop.** The product, GitHub repo, Bundle ID, Cargo crate, and npm package all renamed in a single coordinated change. The old GitHub URL `O0000-code/Ensemble` automatically redirects to `O0000-code/CC-Workshop`, so existing references (X posts, shared links) continue to resolve. The `~/.ensemble/` data directory is intentionally preserved — your installed Skills, MCPs, Categories, Tags, Scenes, Projects, CLAUDE.md, and Rules are not touched. The previous app at `/Applications/Ensemble.app` will need to be replaced manually with the new `/Applications/CC Workshop.app`; both Bundle IDs are different so they will coexist if the old one is not removed.
+
 ## [2.1.4] - 2026-05-16
 
 ### Fixed
 
 #### Filesystem & Startup
 - Skill / MCP ids normalise to Unicode NFC (macOS Finder rename creates NFD; git clone / Linux scp / iCloud creates NFC; previously tracked as separate entries) -- a one-shot migration rewrites existing `data.json` keys
-- Startup `~/.ensemble/` writability probe with structured `EnsembleDirUnwritable:` error and a `chown` hint in a dedicated alertdialog (previously a silent fallback to empty AppData)
-- Quick Action uses `std::env::current_exe()` instead of hard-coded `/Applications/Ensemble.app`
+- Startup `~/.ensemble/` writability probe with structured `CCWorkshopDirUnwritable:` error and a `chown` hint in a dedicated alertdialog (previously a silent fallback to empty AppData)
+- Quick Action uses `std::env::current_exe()` instead of hard-coded `/Applications/CC Workshop.app`
 
 #### Plugin Install & Trash
 - Plugin import returns structured `PluginImportResult` with per-item reasons; partial failures surface as a red banner inside the modal
 - Empty Trash button + per-row permanent delete on every Trash Recovery tab (with inline confirm overlays)
-- Plugin marker orphan cleanup on detect -- re-installed plugins are visible again after Ensemble notices the previous install was wiped
+- Plugin marker orphan cleanup on detect -- re-installed plugins are visible again after CC Workshop notices the previous install was wiped
 
 #### Sync, Input & Reliability
 - HTTP MCP install / update rejects empty URLs and unresolved `{VAR}` placeholders
@@ -35,13 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - AppleScript injection guard for Terminal.app and iTerm launch paths -- project paths and Claude argv are now escaped before AppleScript interpolation, matching the existing Warp and Ghostty paths
 - GitHub `owner` / `repo` validation in marketplace skill install -- the codeload URL is built from sanitized identifiers; unexpected characters in the catalog `source` field abort before any network request
 - MCP Registry `registryType` allowlist -- unknown registry types no longer fall through to treating the package identifier as a binary to spawn
-- Child-process environment isolation for `fetch_mcp_tools` so API keys present in Ensemble's parent shell do not leak to third-party MCP servers
+- Child-process environment isolation for `fetch_mcp_tools` so API keys present in CC Workshop's parent shell do not leak to third-party MCP servers
 
 ### Fixed (data integrity)
 
 - Atomic `data.json` writes with last-known-good recovery -- power loss / disk full / process kill during a write can no longer corrupt the canonical app state
-- File lock on `~/.claude.json` writes -- concurrent updates from Ensemble and Claude Code itself no longer race and drop user-added MCP entries
-- `clear_project_config` removes only Ensemble-managed CLAUDE.md / `.mcp.json` / Rules; user-authored files at the same paths are no longer touched
+- File lock on `~/.claude.json` writes -- concurrent updates from CC Workshop and Claude Code itself no longer race and drop user-added MCP entries
+- `clear_project_config` removes only CC Workshop-managed CLAUDE.md / `.mcp.json` / Rules; user-authored files at the same paths are no longer touched
 - Trash restore round-trips full metadata (category, tags, icon, scope, usage stats) for Skills, MCP Servers, CLAUDE.md, Rules, **and Scenes / Projects** -- the previous version lost the curated metadata and Scenes / Projects could not be restored at all
 - `claude_md` scan includes `.claude/CLAUDE.md` (the dotfile filter was previously too aggressive, hiding the most common location)
 - Ownership mismatch on `~/.ensemble/` is reported instead of silently falling back to a different data directory
@@ -93,16 +99,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Per-Rule `Set as Global` toggle writes to `~/.claude/rules/<filename>.md`; any number of Rules can be global simultaneously
   - Edits to a globally-active Rule propagate to `~/.claude/rules/<filename>.md` immediately (no re-toggle required)
   - Distribute a Rule to a project at `<project>/.claude/rules/<filename>.md` (Claude Code's only scanned location for project Rules)
-  - Soft-delete to trash; restore from Settings; clearing a project's config removes only Ensemble-managed Rule filenames (user-authored `.md` files in the same directory are never touched)
+  - Soft-delete to trash; restore from Settings; clearing a project's config removes only CC Workshop-managed Rule filenames (user-authored `.md` files in the same directory are never touched)
 - **Scenes include Rules**: multi-select Rules tab in the Create Scene modal; Project sync writes each selected Rule via batch distribute
 - **Category and Tag pages** include a Rules section alongside Skills, MCPs, and CLAUDE.md
 
-[Unreleased]: https://github.com/O0000-code/Ensemble/compare/v2.1.4...HEAD
-[2.1.4]: https://github.com/O0000-code/Ensemble/compare/v2.1.3...v2.1.4
-[2.1.3]: https://github.com/O0000-code/Ensemble/compare/v2.1.2...v2.1.3
-[2.1.2]: https://github.com/O0000-code/Ensemble/compare/v2.1.1...v2.1.2
-[2.1.1]: https://github.com/O0000-code/Ensemble/compare/v2.1.0...v2.1.1
-[2.1.0]: https://github.com/O0000-code/Ensemble/compare/v2.0.0...v2.1.0
+[Unreleased]: https://github.com/O0000-code/CC-Workshop/compare/v2.1.4...HEAD
+[2.1.4]: https://github.com/O0000-code/CC-Workshop/compare/v2.1.3...v2.1.4
+[2.1.3]: https://github.com/O0000-code/CC-Workshop/compare/v2.1.2...v2.1.3
+[2.1.2]: https://github.com/O0000-code/CC-Workshop/compare/v2.1.1...v2.1.2
+[2.1.1]: https://github.com/O0000-code/CC-Workshop/compare/v2.1.0...v2.1.1
+[2.1.0]: https://github.com/O0000-code/CC-Workshop/compare/v2.0.0...v2.1.0
 
 ## [2.0.0] - 2026-05-12
 
@@ -210,7 +216,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Clear and re-sync as needed
 
 #### System Integration
-- **Finder Quick Action**: Right-click "Open with Ensemble" for folders in Finder
+- **Finder Quick Action**: Right-click "Open with CC Workshop" for folders in Finder
 - **Terminal Selection**: Support for Terminal.app, iTerm2, Warp, and Alacritty
 - **Configuration Sync**: Symlink-based Skills deployment and MCP config generation
 
@@ -228,5 +234,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Zustand state management
 - Native macOS window with custom titlebar
 
-[2.0.0]: https://github.com/O0000-code/Ensemble/compare/v1.0.0...v2.0.0
-[1.0.0]: https://github.com/O0000-code/Ensemble/releases/tag/v1.0.0
+[2.0.0]: https://github.com/O0000-code/CC-Workshop/compare/v1.0.0...v2.0.0
+[1.0.0]: https://github.com/O0000-code/CC-Workshop/releases/tag/v1.0.0

@@ -45,7 +45,7 @@ const scopeConfig = {
  * ScopeSelector component for selecting the installation scope of Skills/MCPs.
  *
  * - Global: Symlinked to ~/.claude, available in all projects
- * - Project: Managed by Ensemble, available via Scenes
+ * - Project: Managed by CC Workshop, available via Scenes
  */
 export function ScopeSelector({
   value,

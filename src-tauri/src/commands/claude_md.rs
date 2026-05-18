@@ -312,7 +312,7 @@ fn is_excluded_dir(entry: &walkdir::DirEntry) -> bool {
 // Import commands
 // ============================================================================
 
-/// Import a CLAUDE.md file to Ensemble management
+/// Import a CLAUDE.md file to CC Workshop management
 ///
 /// # Arguments
 /// * `options` - Import options

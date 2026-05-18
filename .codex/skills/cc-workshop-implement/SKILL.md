@@ -1,21 +1,21 @@
 ---
 name: ensemble-implement
-description: Scan Linear for agent-ready issues in the Ensemble project, pick the highest priority one, implement it following TDD, verify with frontend and backend tests/lint, and create a PR. Use when asked to implement issues, fix bugs, or develop features for the Ensemble Tauri desktop app. Do not use for iOS projects.
+description: Scan Linear for agent-ready issues in the CC Workshop project, pick the highest priority one, implement it following TDD, verify with frontend and backend tests/lint, and create a PR. Use when asked to implement issues, fix bugs, or develop features for the CC Workshop Tauri desktop app. Do not use for iOS projects.
 version: 1.0.0
 ---
 
-# Ensemble Issue Implementation
+# CC Workshop Issue Implementation
 
 ## Overview
 
-Autonomously discover, claim, implement, and deliver a single agent-ready Issue from the Ensemble Linear project. This skill covers the full cycle: query Linear for work, write code via TDD across React frontend and Rust backend, verify all checks, and submit a Pull Request.
+Autonomously discover, claim, implement, and deliver a single agent-ready Issue from the CC Workshop Linear project. This skill covers the full cycle: query Linear for work, write code via TDD across React frontend and Rust backend, verify all checks, and submit a Pull Request.
 
 ## Project Context
 
 - **Frontend**: React 18 + TypeScript 5.9 + Tailwind CSS 4 + Zustand 5
 - **Backend**: Tauri 2.9 + Rust (edition 2021)
 - **Testing**: Vitest + @testing-library/react (frontend), cargo test (backend)
-- **Repo**: https://github.com/O0000-code/Ensemble.git
+- **Repo**: https://github.com/O0000-code/CC-Workshop.git
 
 Read `AGENTS.md` for the full project conventions before starting.
 
@@ -27,19 +27,19 @@ Read `AGENTS.md` for the full project conventions before starting.
 - You MUST actually call the MCP tools. Do NOT fabricate or hallucinate tool call results.
 - If an MCP tool call fails, report the failure honestly. Do NOT pretend it succeeded.
 - Use `list_teams` to find your team ID dynamically. NEVER hardcode team IDs.
-- Use `list_projects` to find the "Ensemble" project. NEVER hardcode project IDs.
+- Use `list_projects` to find the "CC Workshop" project. NEVER hardcode project IDs.
 - Use `list_issue_labels` to find label IDs dynamically. NEVER hardcode label IDs.
 
 Query Linear for issues ready for agent implementation:
 
 1. Use `list_teams` to get the team ID.
-2. Use `list_projects` to find the "Ensemble" project ID.
-3. Use `list_issue_labels` to find the IDs for labels: `agent-ready` and `Ensemble`.
-4. Use `list_issues` with filters to find issues that have the `agent-ready` label AND belong to the Ensemble project.
+2. Use `list_projects` to find the "CC Workshop" project ID.
+3. Use `list_issue_labels` to find the IDs for labels: `agent-ready` and `CC Workshop`.
+4. Use `list_issues` with filters to find issues that have the `agent-ready` label AND belong to the CC Workshop project.
 5. Sort results by priority (1=Urgent is highest, 4=Low is lowest).
 6. Select the single highest-priority issue.
 
-**If no agent-ready issues are found**: report "No pending agent-ready issues in Ensemble" and **exit immediately**. Do NOT proceed further.
+**If no agent-ready issues are found**: report "No pending agent-ready issues in CC Workshop" and **exit immediately**. Do NOT proceed further.
 
 ### 2) Read the Issue
 
@@ -178,7 +178,7 @@ Closes {issue_identifier}"
 ### Dynamic Linear Strategy
 - **NEVER hardcode any Linear IDs** (team IDs, project IDs, label IDs, status IDs). Always discover them dynamically using `list_teams`, `list_projects`, `list_issue_labels`, `list_issue_statuses`.
 - **If a required label does not exist**, create it using `create_issue_label` before proceeding.
-- **If the "Ensemble" project does not exist**, create it using `save_project` with name "Ensemble" and description "Ensemble Tauri desktop app - AI-assisted autonomous development workflow".
+- **If the "CC Workshop" project does not exist**, create it using `save_project` with name "CC Workshop" and description "CC Workshop Tauri desktop app - AI-assisted autonomous development workflow".
 - **ALWAYS include `projectId`** when creating or updating issues.
 - After calling `save_issue`, check the returned result for the issue ID and URL to confirm success.
 

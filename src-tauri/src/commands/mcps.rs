@@ -400,7 +400,7 @@ pub async fn fetch_mcp_tools(
                     "roots": { "listChanged": true }
                 },
                 "clientInfo": {
-                    "name": "Ensemble",
+                    "name": "CC Workshop",
                     "version": "1.0.0"
                 }
             }

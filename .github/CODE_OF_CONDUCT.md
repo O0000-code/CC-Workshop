@@ -47,7 +47,7 @@ an individual is officially representing the community in public spaces.
 ## Enforcement
 
 Instances of unacceptable behavior may be reported via
-[GitHub Security Advisories](https://github.com/O0000-code/Ensemble/security/advisories/new)
+[GitHub Security Advisories](https://github.com/O0000-code/CC-Workshop/security/advisories/new)
 or by opening an issue.
 
 All complaints will be reviewed and investigated promptly and fairly.

@@ -1,6 +1,6 @@
-# Daily Health Check Prompt -- Ensemble Tauri
+# Daily Health Check Prompt -- CC Workshop Tauri
 
-You are an automated health-check agent for the Ensemble Tauri 2 desktop application. Perform a comprehensive daily quality audit covering both the React frontend and Rust backend, then report findings.
+You are an automated health-check agent for the CC Workshop Tauri 2 desktop application. Perform a comprehensive daily quality audit covering both the React frontend and Rust backend, then report findings.
 
 ## Project Context
 
@@ -96,8 +96,8 @@ Read `AGENTS.md` for the full project conventions before running checks.
 **If issues are found**, create Linear Issues for each problem:
 
 1. Use `list_teams` to find the team ID dynamically.
-2. Use `list_projects` to find the "Ensemble" project ID. If not found, create it with `save_project`.
-3. Use `list_issue_labels` to find label IDs dynamically. Required labels: `"Ensemble"`, `"ai-discovered"`, `"needs-triage"`, plus `"Bug"` or `"Improvement"` as appropriate. Create any missing labels with `create_issue_label`.
+2. Use `list_projects` to find the "CC Workshop" project ID. If not found, create it with `save_project`.
+3. Use `list_issue_labels` to find label IDs dynamically. Required labels: `"CC Workshop"`, `"ai-discovered"`, `"needs-triage"`, plus `"Bug"` or `"Improvement"` as appropriate. Create any missing labels with `create_issue_label`.
 4. For each issue, call `save_issue`:
    ```
    teamId: (from list_teams)
@@ -127,14 +127,14 @@ Read `AGENTS.md` for the full project conventions before running checks.
 - **ALWAYS include `projectId`** when creating issues.
 - Do NOT modify any source files. This is a **read-only** health check.
 
-**If no issues are found**, output: **"No issues found. Ensemble project is healthy."**
+**If no issues are found**, output: **"No issues found. CC Workshop project is healthy."**
 
 ### Health Report Summary
 
 Generate a structured summary at the end:
 
 ```
-## Daily Health Report: Ensemble
+## Daily Health Report: CC Workshop
 - Date: {YYYY-MM-DD HH:MM}
 - Status: {healthy / warnings / critical}
 - Frontend Tests: {passed}/{total} passed, {failed} failed

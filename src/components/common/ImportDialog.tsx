@@ -25,9 +25,7 @@ function CustomCheckbox({ checked, onChange }: { checked: boolean; onChange: () 
       type="button"
       onClick={onChange}
       className={`w-4 h-4 rounded flex items-center justify-center flex-shrink-0 transition-colors ${
-        checked
-          ? 'bg-[#18181B]'
-          : 'border-[1.5px] border-[#D4D4D8]'
+        checked ? 'bg-[#18181B]' : 'border-[1.5px] border-[#D4D4D8]'
       }`}
     >
       {checked && <Check className="w-2.5 h-2.5 text-white" strokeWidth={3} />}
@@ -59,7 +57,7 @@ export function ImportDialog() {
         closeImportDialog();
       }
     },
-    [closeImportDialog, isImporting]
+    [closeImportDialog, isImporting],
   );
 
   // Disable body scroll when modal is open
@@ -89,8 +87,8 @@ export function ImportDialog() {
   // Show import result after completion
   if (importResult) {
     const totalImported = importResult.imported.skills + importResult.imported.mcps;
-    const skippedCount = importResult.errors.filter(e => e.includes('already exists')).length;
-    const otherErrors = importResult.errors.filter(e => !e.includes('already exists'));
+    const skippedCount = importResult.errors.filter((e) => e.includes('already exists')).length;
+    const otherErrors = importResult.errors.filter((e) => !e.includes('already exists'));
 
     // Determine the title and message based on the result
     let title = 'Import Complete';
@@ -103,7 +101,7 @@ export function ImportDialog() {
       message = `Imported ${importResult.imported.skills} skill${importResult.imported.skills !== 1 ? 's' : ''} and ${importResult.imported.mcps} MCP${importResult.imported.mcps !== 1 ? 's' : ''}`;
     } else if (skippedCount > 0 && otherErrors.length === 0) {
       title = 'Already Up to Date';
-      message = `All ${skippedCount} item${skippedCount > 1 ? 's' : ''} already exist in Ensemble`;
+      message = `All ${skippedCount} item${skippedCount > 1 ? 's' : ''} already exist in CC Workshop`;
     } else {
       title = 'Import Failed';
       message = 'No items could be imported';
@@ -136,10 +134,16 @@ export function ImportDialog() {
           <div className="p-6">
             {/* Status indicator */}
             <div className="flex items-center gap-3 mb-4">
-              <CheckCircle className={`w-8 h-8 flex-shrink-0 ${isSuccess ? 'text-green-500' : 'text-[#71717A]'}`} />
+              <CheckCircle
+                className={`w-8 h-8 flex-shrink-0 ${isSuccess ? 'text-green-500' : 'text-[#71717A]'}`}
+              />
               <div>
                 <h3 className="font-medium text-[#18181B]">
-                  {isSuccess ? (totalImported > 0 ? 'Import Successful' : 'No Changes Needed') : 'Import Failed'}
+                  {isSuccess
+                    ? totalImported > 0
+                      ? 'Import Successful'
+                      : 'No Changes Needed'
+                    : 'Import Failed'}
                 </h3>
                 <p className="text-sm text-[#71717A]">{message}</p>
               </div>
@@ -151,9 +155,7 @@ export function ImportDialog() {
                 <p className="text-sm text-[#1E40AF]">
                   <strong>Backup created at:</strong>
                 </p>
-                <code className="text-xs text-[#1E40AF] break-all">
-                  {importResult.backupPath}
-                </code>
+                <code className="text-xs text-[#1E40AF] break-all">{importResult.backupPath}</code>
               </div>
             )}
 
@@ -161,7 +163,9 @@ export function ImportDialog() {
             {skippedCount > 0 && totalImported > 0 && (
               <div className="bg-[#F5F5F5] p-4 rounded-lg mb-4">
                 <p className="text-sm text-[#71717A]">
-                  {skippedCount} item{skippedCount > 1 ? 's were' : ' was'} skipped because {skippedCount > 1 ? 'they' : 'it'} already exist{skippedCount === 1 ? 's' : ''} in Ensemble.
+                  {skippedCount} item{skippedCount > 1 ? 's were' : ' was'} skipped because{' '}
+                  {skippedCount > 1 ? 'they' : 'it'} already exist{skippedCount === 1 ? 's' : ''} in
+                  CC Workshop.
                 </p>
               </div>
             )}
@@ -321,7 +325,8 @@ export function ImportDialog() {
                   <div className="flex flex-col gap-0.5">
                     {detectedConfig.mcps.map((mcp) => {
                       // For MCPs, sourcePath is empty string by default
-                      const sourcePath = mcp.scope === 'local' && mcp.projectPath ? mcp.projectPath : '';
+                      const sourcePath =
+                        mcp.scope === 'local' && mcp.projectPath ? mcp.projectPath : '';
                       const selected = isItemSelected('mcp', mcp.name, sourcePath);
                       return (
                         <div
@@ -383,7 +388,10 @@ export function ImportDialog() {
         {/* Modal Footer */}
         <div className="flex items-center justify-between py-4 px-6 border-t border-[#E5E5E5] flex-shrink-0">
           {/* Info Icon */}
-          <Tooltip content="Items will be copied to ~/.ensemble/ for centralized management" position="top">
+          <Tooltip
+            content="Items will be copied to ~/.ensemble/ for centralized management"
+            position="top"
+          >
             <div className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-[#FAFAFA] cursor-pointer">
               <Info className="w-4 h-4 text-[#A1A1AA]" />
             </div>

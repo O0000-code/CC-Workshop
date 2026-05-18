@@ -20,7 +20,7 @@ fn main() {
         }
     }
 
-    ensemble_lib::run();
+    cc_workshop_lib::run();
 }
 // Force rebuild 1770042641
 // Force rebuild 1770043106

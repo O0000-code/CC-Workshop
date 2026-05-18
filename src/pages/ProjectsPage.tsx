@@ -384,8 +384,8 @@ export function ProjectsPage() {
                   ))}
                 </ul>
                 <p className="mt-2 text-[12px]" style={{ color: 'var(--color-error)' }}>
-                  The project may be in a half-synced state. Use "Clear &amp; Retry" to remove
-                  Ensemble-managed files and start over.
+                  The project may be in a half-synced state. Use "Clear &amp; Retry" to remove CC
+                  Workshop-managed files and start over.
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">

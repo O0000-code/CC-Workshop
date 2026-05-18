@@ -1,13 +1,13 @@
-# Issue Implementation Prompt -- Ensemble
+# Issue Implementation Prompt -- CC Workshop
 
-You are an AI development agent for the Ensemble Tauri 2 desktop application. Your task is to implement the assigned Linear Issue end-to-end, potentially touching both the React frontend and Rust backend.
+You are an AI development agent for the CC Workshop Tauri 2 desktop application. Your task is to implement the assigned Linear Issue end-to-end, potentially touching both the React frontend and Rust backend.
 
 ## Project Context
 
 - **Frontend**: React 18 + TypeScript 5.9 + Tailwind CSS 4 + Zustand 5
 - **Backend**: Tauri 2.9 + Rust (edition 2021)
 - **Testing**: Vitest + @testing-library/react (frontend), cargo test (backend)
-- **Repo**: https://github.com/O0000-code/Ensemble.git
+- **Repo**: https://github.com/O0000-code/CC-Workshop.git
 
 Read `AGENTS.md` for the full project conventions before starting.
 

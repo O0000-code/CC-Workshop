@@ -2,11 +2,11 @@
 
 ## First-Time Setup
 
-When you first launch Ensemble, it will:
+When you first launch CC Workshop, it will:
 
 1. Create the data directory at `~/.ensemble/`
 2. Detect existing Skills from `~/.claude/skills/` and MCPs from `~/.claude.json`
-3. Offer to import detected configurations into Ensemble's managed storage
+3. Offer to import detected configurations into CC Workshop's managed storage
 
 We recommend importing your existing configurations to get started quickly.
 
@@ -100,7 +100,7 @@ Projects link Scenes to specific local directories, enabling one-click configura
 
 **Sync Process:**
 
-When you click "Sync" on a project, Ensemble performs the following:
+When you click "Sync" on a project, CC Workshop performs the following:
 
 1. **Skills deployment** -- Creates `<project>/.claude/skills/` and places symlinks pointing to each skill's source in `~/.ensemble/skills/`. Existing symlinks are cleaned before re-creating.
 2. **MCP configuration** -- Writes a `.mcp.json` file in the project root (`<project>/.mcp.json`) containing the MCP server configurations from the associated Scene.
@@ -109,7 +109,7 @@ When you click "Sync" on a project, Ensemble performs the following:
 
 **Clearing Configuration:**
 
-Click "Clear Config" on a project to remove all deployed configuration: skill symlinks, `.mcp.json`, any distributed CLAUDE.md files (from all three possible paths), and the Rule `.md` files in `<project>/.claude/rules/` whose filenames match Ensemble-managed Rules. User-authored Rule files in the same directory are never touched.
+Click "Clear Config" on a project to remove all deployed configuration: skill symlinks, `.mcp.json`, any distributed CLAUDE.md files (from all three possible paths), and the Rule `.md` files in `<project>/.claude/rules/` whose filenames match CC Workshop-managed Rules. User-authored Rule files in the same directory are never touched.
 
 **Changing Scenes:**
 
@@ -117,7 +117,7 @@ You can change the Scene associated with a project. The old configuration is cle
 
 ### CLAUDE.md
 
-CLAUDE.md files provide context and instructions to Claude Code at different levels. Ensemble manages these files centrally.
+CLAUDE.md files provide context and instructions to Claude Code at different levels. CC Workshop manages these files centrally.
 
 - **Storage**: Imported files are stored in `~/.ensemble/claude-md/`
 - **Source Types** (detected during scan):
@@ -130,7 +130,7 @@ CLAUDE.md files provide context and instructions to Claude Code at different lev
 1. Navigate to **CLAUDE.md** in the sidebar.
 2. Click "Scan" to discover CLAUDE.md files on your system. The scanner checks specified paths and optionally the home directory.
 3. Review the scan results, which show discovered files with their type, size, modification date, and a content preview.
-4. Import selected files into Ensemble's managed storage.
+4. Import selected files into CC Workshop's managed storage.
 
 **Setting a File as Global:**
 
@@ -173,7 +173,7 @@ Rules are modular `.md` instruction files under `.claude/rules/` that Claude Cod
 
 1. Navigate to **Rules** in the sidebar.
 2. Click "Scan" to discover Rule files on your system.
-3. Review the scan results and import selected files into Ensemble's managed storage.
+3. Review the scan results and import selected files into CC Workshop's managed storage.
 
 **Setting a Rule as Global:**
 
@@ -198,7 +198,7 @@ The distribution path is fixed -- Claude Code only scans `.claude/rules/` for pr
 
 ### Categories and Tags
 
-Ensemble supports organizing Skills, MCPs, CLAUDE.md files, and Rules with categories and tags.
+CC Workshop supports organizing Skills, MCPs, CLAUDE.md files, and Rules with categories and tags.
 
 - **Categories** -- Each item can belong to one category. Categories have names and colors, and can be nested one level deep (subcategories appear indented under a parent). Navigate to a category in the sidebar to view all items in that category and its subcategories.
 - **Tags** -- Each item can have multiple tags. Tags are single lowercase words. Navigate to a tag in the sidebar to view all items with that tag.
@@ -215,7 +215,7 @@ Preferences are persisted per page. Plugin-installed items sort to the bottom wi
 
 ## Marketplace
 
-Ensemble includes an in-app catalog for discovering and installing Skills and MCP Servers without leaving the app.
+CC Workshop includes an in-app catalog for discovering and installing Skills and MCP Servers without leaving the app.
 
 **Skill Marketplace** mirrors the [skills.sh](https://skills.sh) community catalog. Each entry shows install counts, topic filters, GitHub stars, and an AI-generated summary alongside the full upstream README.
 
@@ -228,7 +228,7 @@ Ensemble includes an in-app catalog for discovering and installing Skills and MC
 3. For MCPs with required environment variables, fill in the form before installing. Secret fields render as password inputs.
 4. For HTTP MCPs with URL template variables (`{VAR}`) or required headers, fill in the additional form that appears.
 5. Click **Install**. The item is added to your managed library (`~/.ensemble/skills/` or `~/.ensemble/mcps/`) and an Auto-Classify pass suggests a category.
-6. If an item with the same name already exists (active or in Trash), Ensemble offers **Replace** or **Restore from Trash** -- restoring round-trips the previous category, tags, and icon.
+6. If an item with the same name already exists (active or in Trash), CC Workshop offers **Replace** or **Restore from Trash** -- restoring round-trips the previous category, tags, and icon.
 
 **Updating MCP connection settings after install:**
 
@@ -240,7 +240,7 @@ Catalog responses are cached in `~/.ensemble/` with a 24-hour TTL. A background 
 
 ## Auto-Classification
 
-Ensemble can automatically categorize your Skills, MCPs, and CLAUDE.md files using AI.
+CC Workshop can automatically categorize your Skills, MCPs, and CLAUDE.md files using AI.
 
 **How It Works:**
 
@@ -265,23 +265,23 @@ Each item receives:
 
 ## Finder Integration (macOS)
 
-Ensemble includes a macOS Finder Quick Action that lets you right-click folders and interact with Ensemble directly.
+CC Workshop includes a macOS Finder Quick Action that lets you right-click folders and interact with CC Workshop directly.
 
 **Installation:**
 
 1. Go to **Settings** > **Launch Configuration**.
 2. Click "Reinstall" next to "Finder Integration".
-3. The Quick Action is installed at `~/Library/Services/Open with Ensemble.workflow`.
+3. The Quick Action is installed at `~/Library/Services/Open with CC Workshop.workflow`.
 
 **Usage:**
 
 1. Right-click any folder in Finder.
-2. Select **Quick Actions** > **Open with Ensemble**.
-3. Ensemble receives the folder path and either launches Claude Code directly (if the folder has a configured Scene/Project) or shows the launcher dialog.
+2. Select **Quick Actions** > **Open with CC Workshop**.
+3. CC Workshop receives the folder path and either launches Claude Code directly (if the folder has a configured Scene/Project) or shows the launcher dialog.
 
 ## Terminal Support
 
-Ensemble supports launching Claude Code in multiple terminal applications:
+CC Workshop supports launching Claude Code in multiple terminal applications:
 
 | Terminal | Notes |
 |----------|-------|
@@ -313,7 +313,7 @@ After restoring items, the Skills, MCPs, and CLAUDE.md lists are automatically r
 
 ## Plugin Support
 
-Ensemble can detect and import Skills and MCPs from Claude Code plugins (installed via the Claude Code plugin system).
+CC Workshop can detect and import Skills and MCPs from Claude Code plugins (installed via the Claude Code plugin system).
 
 - Detected plugin Skills come from plugin directories containing `SKILL.md` files.
 - Detected plugin MCPs come from plugin directories containing `.mcp.json` files.

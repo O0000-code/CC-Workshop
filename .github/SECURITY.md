@@ -2,9 +2,9 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in Ensemble, please report it responsibly.
+If you discover a security vulnerability in CC Workshop, please report it responsibly.
 
-**Email**: Open a private security advisory via [GitHub Security Advisories](https://github.com/O0000-code/Ensemble/security/advisories/new).
+**Email**: Open a private security advisory via [GitHub Security Advisories](https://github.com/O0000-code/CC-Workshop/security/advisories/new).
 
 Please include:
 - Description of the vulnerability
@@ -20,7 +20,7 @@ Please include:
 
 ## Scope
 
-Ensemble is a local-only macOS desktop application. The following are in scope:
+CC Workshop is a local-only macOS desktop application. The following are in scope:
 
 - Local file system access beyond intended scope
 - Configuration injection or tampering

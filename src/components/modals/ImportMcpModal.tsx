@@ -461,7 +461,7 @@ export function ImportMcpModal({ isOpen, onClose, onImportComplete }: ImportMcpM
             <div className="flex items-center justify-between py-4 px-6 border-t border-[#E5E5E5]">
               {/* Info Button */}
               <Tooltip
-                content="Scans ~/.claude.json for configured MCP servers. Heads up: imported entries are removed from ~/.claude.json and managed by Ensemble, so they will no longer live in your Claude account config."
+                content="Scans ~/.claude.json for configured MCP servers. Heads up: imported entries are removed from ~/.claude.json and managed by CC Workshop, so they will no longer live in your Claude account config."
                 position="top"
                 maxWidth={320}
               >

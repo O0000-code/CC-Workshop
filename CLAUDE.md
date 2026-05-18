@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Ensemble is a macOS desktop app for managing Claude Code configurations (Skills, MCP Servers, CLAUDE.md files, Rules). Built with Tauri 2 (Rust backend) + React/TypeScript frontend. It imports configs from `~/.claude/` and `~/.claude.json`, organizes them with categories/tags, bundles them into Scenes, and deploys Scenes to projects via symlinks and `.mcp.json` files.
+CC Workshop is a macOS desktop app for managing Claude Code configurations (Skills, MCP Servers, CLAUDE.md files, Rules). Built with Tauri 2 (Rust backend) + React/TypeScript frontend. It imports configs from `~/.claude/` and `~/.claude.json`, organizes them with categories/tags, bundles them into Scenes, and deploys Scenes to projects via symlinks and `.mcp.json` files.
 
 ## Commands
 
@@ -81,7 +81,7 @@ macOS-standard: close hides the window (app stays in background). Dock icon clic
 
 ## Core Entities & Mental Model
 
-Ensemble 是 Claude Code 配置的**编排层**——不解析也不运行 Skill / MCP,只做"采集 → 管理 → 重新部署"。
+CC Workshop 是 Claude Code 配置的**编排层**——不解析也不运行 Skill / MCP,只做"采集 → 管理 → 重新部署"。
 
 ### 三条数据流
 
@@ -120,7 +120,7 @@ CLAUDE.md / Rule 没有这一维度,只有 "managed" 和 "global" 两态。**Rul
 - **Scene → Project 的反向防御**: ScenesPage 删 Scene 前查 `projects.filter(p => p.sceneId === id)`,有引用就 alert 阻止 — 正常情况下 `project.sceneId` 不会悬垂
 - **Markdown 渲染统一**: Skill instructions / CLAUDE.md content / Rule content 都走 `MarkdownBody`(react-markdown + remark-gfm,无 syntax highlight)
 - **HTTP MCP `command` 缺失**: 靠 `#[serde(default)]` 容忍,保住整个 `mcpServers` HashMap 解析(任何一条 entry 解析失败整个 HashMap 全废)
-- **MCP scope 两套语义**: `~/.claude.json` 里的 `user / local` **不等于** Ensemble 的 `global / project`——`update_mcp_scope` 控制是否写入 `~/.claude.json::mcpServers`
+- **MCP scope 两套语义**: `~/.claude.json` 里的 `user / local` **不等于** CC Workshop 的 `global / project`——`update_mcp_scope` 控制是否写入 `~/.claude.json::mcpServers`
 - **详情面板双实现并存**: Skills / MCPs 主页是 inline detail,`SkillDetailPanel` / `McpDetailPanel` 组件只服务 CategoryPage / TagPage —— 改一处别忘另一处
 - **Clear 比 Sync 保守**: 三条 CLAUDE.md 路径无差别全删(与 distributionPath 设置无关);`.claude/rules/` 只删 filename 命中 `data.json::rules` 集合的文件(不误删用户手写 .md);并兼容清理 legacy `settings.local.json::mcpServers`
 

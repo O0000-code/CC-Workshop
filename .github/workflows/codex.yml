@@ -1,11 +1,11 @@
 # DEFERRED: Requires OPENAI_API_KEY GitHub Secret. Workflow will fail without it.
 # =============================================================================
-# Ensemble Tauri 桌面应用 -- Codex Action 配置
+# CC Workshop Tauri 桌面应用 -- Codex Action 配置
 # 技术栈: React 18 + TypeScript + Tailwind CSS 4 + Tauri 2 + Rust + Vite 6
 # 路径: .github/workflows/codex.yml
 # =============================================================================
 
-name: Codex - Ensemble
+name: Codex - CC Workshop
 
 on:
   # PR 代码审查

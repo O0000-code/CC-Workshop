@@ -501,12 +501,12 @@ pub fn init_app_data() -> Result<(), String> {
     // structured, actionable error instead of letting downstream IPCs
     // fail individually with bare "Permission denied (os error 13)".
     //
-    // Common trigger: user once ran `sudo open /Applications/Ensemble.app`
+    // Common trigger: user once ran `sudo open /Applications/CC Workshop.app`
     // (often after a Gatekeeper warning), which flips `~/.ensemble/` to
     // `root:wheel`; on the next normal launch every `write_app_data` fails
     // and the UI shows a blank sidebar with no diagnostic.
     //
-    // The error prefix `EnsembleDirUnwritable:` is matched by the
+    // The error prefix `CCWorkshopDirUnwritable:` is matched by the
     // frontend (`MainLayout.tsx`) to render a dedicated remediation pane
     // with the chown command the user must run. The hint text contains
     // the actual directory path so a user with `ENSEMBLE_DATA_DIR` set to
@@ -520,11 +520,11 @@ pub fn init_app_data() -> Result<(), String> {
             }
             Err(e) => {
                 return Err(format!(
-                    "EnsembleDirUnwritable: cannot write to {}. \
-                     Hint: if you ever opened Ensemble via `sudo`, the \
+                    "CCWorkshopDirUnwritable: cannot write to {}. \
+                     Hint: if you ever opened CC Workshop via `sudo`, the \
                      directory may now be owned by root. Run: \
                      `sudo chown -R $(whoami) {}` in Terminal, then \
-                     restart Ensemble. (Underlying error: {})",
+                     restart CC Workshop. (Underlying error: {})",
                     app_dir.display(),
                     app_dir.display(),
                     e
@@ -1059,7 +1059,7 @@ fn mcp_metadata_populatedness(m: &crate::types::McpMetadata) -> u32 {
 /// (git default) or NFD (Finder rename); a `HashMap<String, _>` keyed by
 /// raw byte sequences treats the two forms as distinct entries even
 /// though APFS resolves them to the same file. The result before this
-/// migration: a user opens Ensemble after copying a CJK-named skill from
+/// migration: a user opens CC Workshop after copying a CJK-named skill from
 /// git, sets its category, and every subsequent restart silently reverts
 /// the category to Uncategorized because `parse_skill_file` produced a
 /// fresh NFC key that did not match the on-disk NFD key.

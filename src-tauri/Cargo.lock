@@ -512,6 +512,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "cc-workshop"
+version = "2.2.0"
+dependencies = [
+ "chrono",
+ "dirs 5.0.1",
+ "flate2",
+ "log",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tar",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-log",
+ "tauri-plugin-shell",
+ "tauri-plugin-single-instance",
+ "tempfile",
+ "tokio",
+ "unicode-normalization",
+ "urlencoding",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
 name = "cesu8"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -978,33 +1005,6 @@ name = "endi"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
-
-[[package]]
-name = "ensemble"
-version = "2.1.4"
-dependencies = [
- "chrono",
- "dirs 5.0.1",
- "flate2",
- "log",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "tar",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-log",
- "tauri-plugin-shell",
- "tauri-plugin-single-instance",
- "tempfile",
- "tokio",
- "unicode-normalization",
- "urlencoding",
- "uuid",
- "walkdir",
-]
 
 [[package]]
 name = "enumflags2"

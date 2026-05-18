@@ -1,5 +1,5 @@
 # ============================================================
-# Ensemble Tauri 项目 — Codex 安全配置
+# CC Workshop Tauri 项目 — Codex 安全配置
 # 适用权限级别: Level 2 (PR Creator)
 # ============================================================
 
@@ -22,7 +22,7 @@ set = { NODE_ENV = "development" }
 url = "https://mcp.linear.app/mcp"
 
 # 项目信任级别
-[projects."/Users/bo/Documents/Development/Ensemble/Ensemble2"]
+[projects."/Users/bo/Documents/Development/CC Workshop/CC Workshop2"]
 trust_level = "trusted"
 
 # 会话历史

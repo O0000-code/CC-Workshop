@@ -1,9 +1,9 @@
-//! Plugin detection and import commands for Ensemble
+//! Plugin detection and import commands for CC Workshop
 //!
 //! This module provides commands to:
 //! - Detect installed Claude Code plugins
 //! - Detect Skills and MCPs within plugins
-//! - Import plugin Skills and MCPs to Ensemble
+//! - Import plugin Skills and MCPs to CC Workshop
 
 #![allow(dead_code)]
 
@@ -692,7 +692,7 @@ pub fn detect_plugin_mcps(imported_plugin_mcps: Vec<String>) -> Result<Vec<Detec
     Ok(detected_mcps)
 }
 
-/// Import plugin Skills to Ensemble (creates symlinks, does NOT delete source)
+/// Import plugin Skills to CC Workshop (creates symlinks, does NOT delete source)
 ///
 /// Creates symlinks from dest_dir to the plugin skill directories. Returns
 /// a `PluginImportResult` with the import keys that succeeded *and* a
@@ -788,7 +788,7 @@ pub fn import_plugin_skills(
     })
 }
 
-/// Import plugin MCPs to Ensemble (extracts MCP config, does NOT delete source)
+/// Import plugin MCPs to CC Workshop (extracts MCP config, does NOT delete source)
 ///
 /// Reads .mcp.json from plugins and creates standalone JSON files in dest_dir.
 /// Returns a `PluginImportResult` with the import keys that succeeded *and*

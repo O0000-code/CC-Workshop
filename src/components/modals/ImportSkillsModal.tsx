@@ -454,7 +454,7 @@ export function ImportSkillsModal({ isOpen, onClose, onImportComplete }: ImportS
             <div className="flex items-center justify-between py-4 px-6 border-t border-[#E5E5E5]">
               {/* Info Button */}
               <Tooltip
-                content="Scans ~/.claude/skills/ and ~/.agents/skills/ for available Skills. Heads up: imported Skills are moved into Ensemble's managed folder (~/.ensemble/skills/) and removed from their original location, so they will no longer live under your Claude account directory."
+                content="Scans ~/.claude/skills/ and ~/.agents/skills/ for available Skills. Heads up: imported Skills are moved into CC Workshop's managed folder (~/.ensemble/skills/) and removed from their original location, so they will no longer live under your Claude account directory."
                 position="top"
                 maxWidth={320}
               >

@@ -1,6 +1,6 @@
 # Design Language
 
-This Rule defines Ensemble's visual and motion design language. Any code, spec, or document that affects what the user sees or how things move MUST conform. The standard is Apple / Linear / Things 3 — macOS-native restraint with physical-grade motion. "Looks fine" is not the bar.
+This Rule defines CC Workshop's visual and motion design language. Any code, spec, or document that affects what the user sees or how things move MUST conform. The standard is Apple / Linear / Things 3 — macOS-native restraint with physical-grade motion. "Looks fine" is not the bar.
 
 ## When this applies
 

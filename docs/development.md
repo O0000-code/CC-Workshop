@@ -1,13 +1,13 @@
 # Development Guide
 
-This guide provides everything you need to start contributing to Ensemble. All technical details (directory structures, versions, commands, code patterns) are verified against the actual codebase.
+This guide provides everything you need to start contributing to CC Workshop. All technical details (directory structures, versions, commands, code patterns) are verified against the actual codebase.
 
 ## Architecture Overview
 
-Ensemble is a desktop application built with [Tauri 2](https://tauri.app/), combining a Rust backend with a React frontend. It manages Claude Code Skills, MCP Servers, CLAUDE.md files, Scenes, and Projects.
+CC Workshop is a desktop application built with [Tauri 2](https://tauri.app/), combining a Rust backend with a React frontend. It manages Claude Code Skills, MCP Servers, CLAUDE.md files, Scenes, and Projects.
 
 ```
-Ensemble/
+CC Workshop/
 ├── src/                       # React frontend (TypeScript)
 │   ├── App.tsx                # Root component with routing
 │   ├── main.tsx               # Application entry point
@@ -83,8 +83,8 @@ xcode-select --install
 
 ```bash
 # Clone repository
-git clone https://github.com/O0000-code/Ensemble.git
-cd Ensemble
+git clone https://github.com/O0000-code/CC-Workshop.git
+cd CC Workshop
 
 # Install dependencies
 npm install
@@ -449,7 +449,7 @@ Component styling example:
 
 ### Data Storage
 
-Ensemble stores its data in `~/.ensemble/`:
+CC Workshop stores its data in `~/.ensemble/`:
 
 | Path | Purpose |
 |---|---|
@@ -542,7 +542,7 @@ npm run tauri build
 ```
 
 Outputs:
-- `src-tauri/target/release/Ensemble` -- Release binary
+- `src-tauri/target/release/CC Workshop` -- Release binary
 - `src-tauri/target/release/bundle/dmg/` -- macOS DMG installer
 - `src-tauri/target/release/bundle/macos/` -- macOS `.app` bundle
 
@@ -595,6 +595,6 @@ Defined in `tauri.conf.json`:
 
 When reporting bugs, please include:
 - macOS version
-- Ensemble version (currently 2.1.0)
+- CC Workshop version (currently 2.1.0)
 - Steps to reproduce
 - Expected vs actual behavior

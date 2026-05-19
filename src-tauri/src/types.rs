@@ -479,7 +479,7 @@ fn default_claude_md_distribution_path() -> ClaudeMdDistributionPath {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            skill_source_dir: "~/.cc-workshop/skills".to_string(),
+            skill_source_dir: "/Users/feng/.agents/skill-library".to_string(),
             mcp_source_dir: "~/.cc-workshop/mcps".to_string(),
             claude_config_dir: "~/.claude".to_string(),
             anthropic_api_key: None,
@@ -1822,7 +1822,7 @@ mod tests {
     #[test]
     fn test_app_settings_default() {
         let settings = AppSettings::default();
-        assert_eq!(settings.skill_source_dir, "~/.cc-workshop/skills");
+        assert_eq!(settings.skill_source_dir, "/Users/feng/.agents/skill-library");
         assert_eq!(settings.mcp_source_dir, "~/.cc-workshop/mcps");
         assert_eq!(settings.claude_config_dir, "~/.claude");
         assert_eq!(settings.terminal_app, "Terminal");

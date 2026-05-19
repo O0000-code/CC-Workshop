@@ -70,9 +70,12 @@ export interface SettingsState {
   hasApiKey: () => boolean;
 }
 
+export const LOCAL_SKILL_SOURCE_DIR = '~/.cc-workshop/skills';
+export const SKILL_MANAGER_LIBRARY_DIR = '/Users/feng/.agents/skill-library';
+
 // Default values
 const defaultSettings = {
-  skillSourceDir: '~/.cc-workshop/skills',
+  skillSourceDir: SKILL_MANAGER_LIBRARY_DIR,
   mcpSourceDir: '~/.cc-workshop/mcps',
   claudeConfigDir: '~/.claude',
   anthropicApiKey: '',

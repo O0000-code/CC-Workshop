@@ -12,6 +12,7 @@ import {
   useScenesStore,
   useProjectsStore,
 } from '@/stores';
+import { LOCAL_SKILL_SOURCE_DIR, SKILL_MANAGER_LIBRARY_DIR } from '@/stores/settingsStore';
 import { useClaudeMdStore } from '@/stores/claudeMdStore';
 import { useRulesStore } from '@/stores/rulesStore';
 import Modal from '@/components/common/Modal';
@@ -266,15 +267,18 @@ export function SettingsPage() {
     terminalApp,
     claudeCommand,
     warpOpenMode,
+    skillSourceDir,
     claudeMdDistributionPath,
     autoClassifyNewItems,
     classifyModel,
     setTerminalApp,
     setClaudeCommand,
     setWarpOpenMode,
+    setSkillSourceDir,
     setClaudeMdDistributionPath,
     setAutoClassifyNewItems,
     setClassifyModel,
+    selectDirectory,
   } = useSettingsStore();
 
   // Get reload functions from stores to refresh data after recovery / reset
@@ -294,6 +298,12 @@ export function SettingsPage() {
   // terminal is active. Avoids the awkward sentence-start lowercase brand
   // ("cmux Open Mode") that the per-brand label flavor would produce.
   const terminalOpenModeLabel = 'Open new sessions as';
+  const skillSourceKind =
+    skillSourceDir === SKILL_MANAGER_LIBRARY_DIR
+      ? 'skill-manager canonical library'
+      : skillSourceDir === LOCAL_SKILL_SOURCE_DIR
+        ? 'CC Workshop local library'
+        : 'Custom source';
 
   // R2-8e: validate the user-selected terminal app whenever it changes.
   // `null` = not yet checked (initial mount / between checks), so we
@@ -333,6 +343,16 @@ export function SettingsPage() {
       loadProjects(),
     ]);
   }, [loadSkills, loadMcps, loadClaudeMdFiles, loadRules, loadScenes, loadProjects]);
+
+  const handleUseSkillManagerSource = useCallback(async () => {
+    setSkillSourceDir(SKILL_MANAGER_LIBRARY_DIR);
+    await loadSkills();
+  }, [loadSkills, setSkillSourceDir]);
+
+  const handleChooseSkillSource = useCallback(async () => {
+    await selectDirectory('skill');
+    await loadSkills();
+  }, [loadSkills, selectDirectory]);
 
   // Reset every auto-classify-produced classification (categories, tags,
   // and all item ↔ classification links). Items themselves stay; their
@@ -530,6 +550,28 @@ export function SettingsPage() {
           <section>
             <SectionHeader title="Storage" description="Manage application data and storage" />
             <Card>
+              {/* Skill Source Directory */}
+              <Row>
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <span className="text-[13px] font-medium text-[#18181B]">
+                    Skill Source Directory
+                  </span>
+                  <span className="text-xs text-[#71717A]">{skillSourceKind}</span>
+                  <span className="max-w-[380px] truncate font-mono text-[11px] text-[#A1A1AA]">
+                    {skillSourceDir}
+                  </span>
+                </div>
+                <div className="flex shrink-0 items-center gap-3">
+                  <ActionButton
+                    onClick={handleUseSkillManagerSource}
+                    disabled={skillSourceDir === SKILL_MANAGER_LIBRARY_DIR}
+                  >
+                    Use skill-manager
+                  </ActionButton>
+                  <ActionButton onClick={handleChooseSkillSource}>Choose...</ActionButton>
+                </div>
+              </Row>
+
               {/* Deleted Items */}
               <Row noBorder>
                 <div className="flex flex-col gap-0.5">

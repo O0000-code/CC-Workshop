@@ -1854,10 +1854,15 @@ export const useMarketplaceStore = create<MarketplaceState>()(
           );
           if (tripleMatch) return true;
         }
-        // Name fallback for resources installed before the marketplace path
-        // existed (or installed locally with a colliding name).
+        // Name fallback — only consider local skills WITHOUT a
+        // `marketplaceSource` (legacy / local / plugin installs). Skills that
+        // already carry a marketplaceSource have been claimed by a specific
+        // upstream and must triple-match; otherwise installing skill X from
+        // anthropics/skills would falsely mark every other source's X as
+        // installed (the marketplace surfaces multiple repos with the same
+        // skill name).
         const target = normalizeName(item.name);
-        return skills.some((s) => normalizeName(s.name) === target);
+        return skills.some((s) => !s.marketplaceSource && normalizeName(s.name) === target);
       },
 
       isMcpInstalled: (item) => {
@@ -1873,8 +1878,11 @@ export const useMarketplaceStore = create<MarketplaceState>()(
             m.marketplaceSource?.name === item.name,
         );
         if (tripleMatch) return true;
+        // Name fallback — same reasoning as `isSkillInstalled`: only consider
+        // MCPs without a marketplaceSource so installing one upstream's MCP
+        // doesn't shadow same-named entries from other authors.
         const target = normalizeName(item.name);
-        return mcps.some((m) => normalizeName(m.name) === target);
+        return mcps.some((m) => !m.marketplaceSource && normalizeName(m.name) === target);
       },
 
       getVisibleSkills: () => {

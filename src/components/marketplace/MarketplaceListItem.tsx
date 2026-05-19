@@ -122,19 +122,38 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
   const isOfficialSkill =
     itemType === 'skill' && (item as MarketplaceSkillItem).isOfficial === true;
 
-  // Secondary line under the name. For skill V2 internal-API items the
-  // upstream description is empty — fall back to the upstream `source`
-  // (`anthropics/skills`) so the row always carries one piece of secondary
-  // identifying info. V1 / MCP items use `description` (truncated).
-  const secondaryText = useMemo(() => {
+  // Secondary line under the name.
+  //   - Skill V2 internal-API items: upstream description is empty, fall back
+  //     to upstream `source` (`anthropics/skills`) so the row always carries
+  //     one piece of secondary identifying info.
+  //   - MCP items: prepend `author` (GitHub owner) + middle dot to the
+  //     description so users can tell first-party (`modelcontextprotocol`)
+  //     from third-party publishers at a glance. The dot uses #D4D4D8 (one
+  //     zinc step lighter than the surrounding #71717A) so it reads as a
+  //     separator, not a glyph. Returned as a ReactNode (not a string) so
+  //     the dot's color override can live in its own span.
+  const secondaryContent = useMemo<React.ReactNode>(() => {
     if (itemType === 'skill') {
       const skillItem = item as MarketplaceSkillItem;
       const desc = skillItem.description?.trim();
       if (desc) return truncateToFirstSentence(desc, 100);
       return skillItem.source ?? '';
     }
-    const desc = (item as MarketplaceMcpItem).description?.trim();
-    return truncateToFirstSentence(desc ?? '', 100);
+    const mcpItem = item as MarketplaceMcpItem;
+    const desc = truncateToFirstSentence(mcpItem.description?.trim() ?? '', 100);
+    const author = mcpItem.author?.trim() ?? '';
+    if (!author && !desc) return '';
+    if (!author) return desc;
+    if (!desc) return author;
+    return (
+      <>
+        {author}
+        <span className="mx-1.5 text-[#D4D4D8]" aria-hidden="true">
+          ·
+        </span>
+        {desc}
+      </>
+    );
   }, [item, itemType]);
 
   // Right-section container transition: collapse immediately, expand with
@@ -296,9 +315,9 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
               </Badge>
             )}
           </span>
-          {secondaryText && (
+          {secondaryContent && (
             <span className="text-xs font-normal text-[#71717A] truncate max-w-[600px]">
-              {secondaryText}
+              {secondaryContent}
             </span>
           )}
         </div>
@@ -317,13 +336,17 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
           </span>
         )}
 
-        {/* MCP type badge — only present for itemType === 'mcp'. Sits between
-            popularity and the install control so the install action stays
-            the rightmost / most-prominent affordance. */}
+        {/* MCP type label — plain text, no chip. Sits between popularity and
+            the install control so the install action stays the rightmost /
+            most-prominent affordance. Visual weight matches `popularity`
+            (11px / #A1A1AA / normal) so the right section reads as a single
+            "info ··· action" lane with only the Install button carrying
+            colour — the prior `Badge` chip created a competing grey block
+            that fought the Install button for attention. */}
         {mcpType && (
-          <Badge variant="neutral" showDot={false}>
+          <span className="text-[11px] font-normal text-[#A1A1AA]">
             {mcpType === 'stdio' ? 'stdio' : 'HTTP'}
-          </Badge>
+          </span>
         )}
 
         {trailingControl}

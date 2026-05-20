@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect, useMemo } from 'react';
-import { MoreHorizontal, Trash2, Puzzle } from 'lucide-react';
+import { MoreHorizontal, Trash2, Puzzle, AlertCircle } from 'lucide-react';
 import { ICON_MAP, CategoryTreeDropdown } from '@/components/common';
+import { CornerBadge } from '@/components/common/CornerBadge';
 import { truncateToFirstSentence } from '@/utils/text';
 import { McpServer } from '@/types';
 import { getCategoryColor as getCategoryColorFromName } from '@/utils/constants';
@@ -223,15 +224,23 @@ export const McpListItem: React.FC<McpListItemProps> = ({
                 style={{ transition: `color ${TRANSITION_BASE}` }}
               />
             </div>
-            {/* Plugin Badge */}
-            {isPluginSource && (
-              <div
-                className="absolute flex items-center justify-center w-4 h-4 bg-[#3B82F6] rounded-lg border-2 border-white"
-                style={{ right: '-4px', top: '-4px' }}
-              >
-                <Puzzle className="w-2 h-2 text-white" />
-              </div>
-            )}
+            {/* Corner badge — priority: needsConfig (warning, actionable) ▸
+                plugin (accent, identity). Only one renders; the slot does
+                not stack (10 §E1). needsConfig wins because "fill missing
+                env" is user-actionable; the plugin badge is identity-only
+                and the same info still surfaces in the detail panel. In
+                practice plugin-sourced MCPs do not carry `required_env_vars`
+                (only the marketplace install path writes them), so the
+                plugin badge is rarely preempted (10 §E3). */}
+            {mcp.needsConfig ? (
+              <CornerBadge
+                icon={AlertCircle}
+                tone="warning"
+                tooltip="Configuration required — fill missing environment variables"
+              />
+            ) : isPluginSource ? (
+              <CornerBadge icon={Puzzle} tone="accent" tooltip="From plugin" />
+            ) : null}
           </div>
 
           {/* Info */}

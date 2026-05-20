@@ -187,6 +187,27 @@ export interface McpsSearchState {
   query: string;
 }
 
+/** Secondary GitHub-Search results state. Toggled by the user clicking the
+ *  "Search GitHub" fallback CTA when the Anthropic Registry search returns
+ *  too few results. `null` = CTA not yet clicked for the current query;
+ *  non-null = either loading or finished. `hasFetched=true` distinguishes
+ *  "actively loading" from "finished (with or without results)" so the UI
+ *  can decide between rendering loading state, empty-results message, or
+ *  the result section.
+ *
+ *  Mirrors the dispatch + stale-guard pattern of `McpsSearchState`, but
+ *  without cursor-based pagination (GitHub Search returns a single bounded
+ *  result set per query). Items reuse `MarketplaceMcpItem` — backend
+ *  GitHub-Search items carry `mcpType: 'unknown'` + optional
+ *  `uncertaintyHint` so the UI can render an attention badge. */
+export interface McpsGithubSearchState {
+  query: string;
+  items: MarketplaceMcpItem[];
+  loading: boolean;
+  error: string | null;
+  hasFetched: boolean;
+}
+
 // ----- UI state shapes -----------------------------------------------------
 
 export interface MarketplaceCollisionModalState {
@@ -293,6 +314,21 @@ export interface MarketplaceState {
   /** `null` = listing mode (show `mcpsListing.items`). Non-null = search
    *  mode (show `mcpsSearch.items`). */
   mcpsSearch: McpsSearchState | null;
+  /** Secondary GitHub-Search results — only populated when the user clicks
+   *  the fallback CTA. `null` = CTA never triggered for the current query
+   *  (or just cleared). Cleared automatically when the user changes the
+   *  query, clears the search, or switches view. Items use the same
+   *  `MarketplaceMcpItem` type as the Registry results; backend tags
+   *  GitHub-Search items with `marketplaceSource.source === 'github_search'`
+   *  + `mcpType: 'unknown'` + optional `uncertaintyHint`. */
+  mcpsGithubSearch: McpsGithubSearchState | null;
+  /** AI install failure context (raw `claude -p` stdout dump). Keyed by
+   *  marketplace item id. Written by `aiInstallFromGithub` when install
+   *  fails, read by the (future) interactive fallback X2 patch — currently
+   *  unread by any UI but persisted alongside the user-facing error so the
+   *  X2 patch can present a "Open in Claude Code" debugging flow without
+   *  re-running the AI step. Memory-only, not persisted. */
+  aiInstallFailureContexts: Record<string, string>;
 
   // Per-item progress (cross-view persistence; keyed by item React key —
   // `getSkillItemKey(item)` for skills, `item.id` for MCPs)
@@ -388,6 +424,27 @@ export interface MarketplaceState {
   searchMcpsPrevPage: () => Promise<void>;
   /** Exit search mode (re-show listing + recently-updated). */
   clearMcpsSearch: () => void;
+
+  /** Run a secondary GitHub-Search query when the user clicks the
+   *  "Search GitHub" fallback CTA. Dispatches to
+   *  `search_marketplace_mcps_github`. Items returned are typed as
+   *  `MarketplaceMcpItem` with `mcpType: 'unknown'` (resolved at AI install
+   *  time) and an optional `uncertaintyHint`. Sets `hasFetched=true` once
+   *  the call returns (regardless of result count) so the UI can switch
+   *  from CTA to results section. */
+  triggerGithubSearch: (query: string) => Promise<void>;
+  /** Reset `mcpsGithubSearch` to `null`. Called automatically from
+   *  `searchMcps` / `clearMcpsSearch` / `setMcpsView` so the GitHub section
+   *  vanishes whenever the user changes their primary search context. */
+  clearGithubSearch: () => void;
+  /** Install an MCP that originated from `triggerGithubSearch`. Spawns the
+   *  AI install path (`ai_install_from_github`); GitHub-Search items lack
+   *  `stdioConfig`/`httpConfig`, so the regular `installMcp` flow would
+   *  fail. Mirrors `installMcp`'s progress / failure UX (installingItemIds
+   *  + installFailedItems), and additionally records the AI failure dump
+   *  to `aiInstallFailureContexts` for the future interactive-fallback
+   *  patch. */
+  aiInstallFromGithub: (item: MarketplaceMcpItem) => Promise<void>;
   /** Backwards-compat: existing pages call `refreshCatalog('skills')`; the
    *  MCP branch is now a no-op (we just rerun the page-1 fetch). */
   refreshCatalog: (source: 'skills' | 'mcps') => Promise<void>;
@@ -558,6 +615,8 @@ export const useMarketplaceStore = create<MarketplaceState>()(
 
       mcpsListing: initialMcpsListing,
       mcpsSearch: null,
+      mcpsGithubSearch: null,
+      aiInstallFailureContexts: {},
 
       installingItemIds: new Set<string>(),
       installFailedItems: {},
@@ -1194,10 +1253,13 @@ export const useMarketplaceStore = create<MarketplaceState>()(
         if (get().mcpsListing.view === view && get().mcpsListing.items.length > 0) return;
         // Clear any active search so the switch is unambiguous (the search
         // path is its own dispatch — switching view inside search would be
-        // confusing). Caller can re-search after.
+        // confusing). Caller can re-search after. The secondary GitHub
+        // section follows the primary search context — view switch always
+        // collapses it.
         if (get().mcpsSearch !== null) {
           set({ mcpsSearch: null });
         }
+        set({ mcpsGithubSearch: null });
         await get().loadMcpsFirstPage(view);
       },
 
@@ -1207,6 +1269,10 @@ export const useMarketplaceStore = create<MarketplaceState>()(
           get().clearMcpsSearch();
           return;
         }
+        // Always collapse the secondary GitHub section on a new primary
+        // search — debounce-driven re-search must not leave stale GitHub
+        // hits below new Anthropic results.
+        set({ mcpsGithubSearch: null });
         if (!isTauri()) {
           set({
             mcpsSearch: {
@@ -1376,7 +1442,201 @@ export const useMarketplaceStore = create<MarketplaceState>()(
         }
       },
 
-      clearMcpsSearch: () => set({ mcpsSearch: null }),
+      clearMcpsSearch: () => set({ mcpsSearch: null, mcpsGithubSearch: null }),
+
+      triggerGithubSearch: async (query) => {
+        const trimmed = query.trim();
+        if (trimmed.length === 0) {
+          set({ mcpsGithubSearch: null });
+          return;
+        }
+        if (!isTauri()) {
+          set({
+            mcpsGithubSearch: {
+              query: trimmed,
+              items: [],
+              loading: false,
+              error: 'Browser preview mode — run `npm run tauri dev` to load the marketplace.',
+              hasFetched: true,
+            },
+          });
+          return;
+        }
+        set({
+          mcpsGithubSearch: {
+            query: trimmed,
+            items: [],
+            loading: true,
+            error: null,
+            hasFetched: false,
+          },
+        });
+        try {
+          const resp = await safeInvoke<MarketplaceMcpItem[]>('search_marketplace_mcps_github', {
+            query: trimmed,
+          });
+          // Backend returns `Vec<MarketplaceMcpItem>` (never null), but
+          // safeInvoke types it nullable to defend against the browser
+          // preview fallback. Treat null as "no results" rather than throw,
+          // mirroring the empty-array case.
+          const items = resp ?? [];
+          set((state) => {
+            // Stale-response guard: a newer primary search may have wiped
+            // mcpsGithubSearch to null, or a second triggerGithubSearch may
+            // have queued behind this one. In either case, the in-flight
+            // response no longer applies.
+            if (!state.mcpsGithubSearch || state.mcpsGithubSearch.query !== trimmed) return state;
+            return {
+              mcpsGithubSearch: {
+                query: trimmed,
+                items,
+                loading: false,
+                error: null,
+                hasFetched: true,
+              },
+            };
+          });
+        } catch (error) {
+          const message = typeof error === 'string' ? error : String(error);
+          console.error('Failed to GitHub-search mcps:', error);
+          set((state) => {
+            if (!state.mcpsGithubSearch || state.mcpsGithubSearch.query !== trimmed) return state;
+            return {
+              mcpsGithubSearch: {
+                query: trimmed,
+                items: [],
+                loading: false,
+                error: message,
+                hasFetched: true,
+              },
+            };
+          });
+        }
+      },
+
+      clearGithubSearch: () => set({ mcpsGithubSearch: null }),
+
+      aiInstallFromGithub: async (item) => {
+        if (!isTauri()) {
+          console.warn('MarketplaceStore: Cannot AI-install MCP in browser mode');
+          return;
+        }
+
+        // Same as installMcp — ensure trashedItems is loaded so the
+        // backend's NameCollision detection can return an accurate brief
+        // (R4 §6.2). AI install also returns NameCollision before paying
+        // any AI cost.
+        if (useTrashStore.getState().trashedItems === null) {
+          await useTrashStore.getState().loadTrashedItems();
+        }
+
+        set((state) => ({
+          installingItemIds: new Set([...state.installingItemIds, item.id]),
+          installFailedItems: (() => {
+            const next = { ...state.installFailedItems };
+            delete next[item.id];
+            return next;
+          })(),
+          aiInstallFailureContexts: (() => {
+            const next = { ...state.aiInstallFailureContexts };
+            delete next[item.id];
+            return next;
+          })(),
+        }));
+
+        try {
+          const outcome = await safeInvoke<InstallOutcome>('ai_install_from_github', {
+            item,
+            conflictAction: null,
+          });
+          if (!outcome) {
+            throw new Error('Backend returned no install outcome');
+          }
+          switch (outcome.kind) {
+            case 'installed': {
+              await useMcpsStore.getState().loadMcps();
+              set((state) => {
+                const installing = new Set([...state.installingItemIds]);
+                installing.delete(item.id);
+                const classifying = new Set([...state.classifyingItemIds, item.id]);
+                const classifyFailed = new Set([...state.classifyFailedItemIds]);
+                classifyFailed.delete(item.id);
+                return {
+                  installingItemIds: installing,
+                  classifyingItemIds: classifying,
+                  classifyFailedItemIds: classifyFailed,
+                };
+              });
+              get().showShortcutBanner(outcome.skillId, 'mcp');
+              break;
+            }
+            case 'nameCollision': {
+              // Backend cannot currently execute Replace / RestoreFromTrash
+              // through the AI install path (Phase A note). The user must
+              // manually trash or rename the colliding MCP first, then
+              // re-run. Surface as inline error rather than the regular
+              // NameCollision modal (whose Replace button would fail with
+              // a backend "not supported" reason on retry).
+              set((state) => {
+                const installing = new Set([...state.installingItemIds]);
+                installing.delete(item.id);
+                const localOrTrashSummary = outcome.hasLocal
+                  ? 'a local MCP'
+                  : outcome.hasTrashed
+                    ? 'a trashed MCP'
+                    : 'an existing MCP';
+                return {
+                  installingItemIds: installing,
+                  installFailedItems: {
+                    ...state.installFailedItems,
+                    [item.id]: {
+                      error: `Name collides with ${localOrTrashSummary}. Resolve the name collision first, then retry.`,
+                      attemptedAt: new Date().toISOString(),
+                    },
+                  },
+                };
+              });
+              break;
+            }
+            case 'failed': {
+              set((state) => {
+                const installing = new Set([...state.installingItemIds]);
+                installing.delete(item.id);
+                const nextContexts = { ...state.aiInstallFailureContexts };
+                if (outcome.aiFailureContext) {
+                  nextContexts[item.id] = outcome.aiFailureContext;
+                }
+                return {
+                  installingItemIds: installing,
+                  installFailedItems: {
+                    ...state.installFailedItems,
+                    [item.id]: {
+                      error: outcome.reason,
+                      attemptedAt: new Date().toISOString(),
+                    },
+                  },
+                  aiInstallFailureContexts: nextContexts,
+                };
+              });
+              break;
+            }
+          }
+        } catch (error) {
+          const message = typeof error === 'string' ? error : String(error);
+          console.error('aiInstallFromGithub failed:', error);
+          set((state) => {
+            const installing = new Set([...state.installingItemIds]);
+            installing.delete(item.id);
+            return {
+              installingItemIds: installing,
+              installFailedItems: {
+                ...state.installFailedItems,
+                [item.id]: { error: message, attemptedAt: new Date().toISOString() },
+              },
+            };
+          });
+        }
+      },
 
       refreshCatalog: async (source) => {
         if (!isTauri()) {

@@ -215,6 +215,28 @@ fn parse_mcp_file(
     // "Missing required env vars" hints without rehydrating the catalog.
     let required_env_vars = metadata.and_then(|m| m.required_env_vars.clone());
 
+    // Phase A (marketplace GitHub Search + AI install): derive `needs_config`
+    // from `(required_env_vars, config.env)` so list / detail UIs can render a
+    // warning corner badge ("Configuration required") without re-walking the
+    // spec list themselves. True iff at least one declared spec name has a
+    // missing or whitespace-only value in the user-facing `env` map. HTTP
+    // MCPs have `required_env_vars=None` (env requirements live in headers /
+    // url_variables) and therefore `needs_config=false`. Matches the "missing
+    // env" probe used by `ProjectConfigPanel.tsx:80` so corner-badge state and
+    // panel state stay aligned (10 §B.2 SSoT goal).
+    let needs_config = required_env_vars
+        .as_ref()
+        .map(|specs| {
+            let env_map = config.env.as_ref();
+            specs.iter().any(|spec| {
+                env_map
+                    .and_then(|m| m.get(&spec.name))
+                    .map(|v| v.trim().is_empty())
+                    .unwrap_or(true)
+            })
+        })
+        .unwrap_or(false);
+
     // Scope is DERIVED from `~/.claude.json::mcpServers` at scan time
     // (not read from `McpMetadata.scope`). The metadata field still
     // exists for `data.json` backward compat but is no longer the
@@ -259,6 +281,7 @@ fn parse_mcp_file(
         plugin_enabled,
         marketplace_source,
         required_env_vars,
+        needs_config,
     };
 
     Ok(mcp)

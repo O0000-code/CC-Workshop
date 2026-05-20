@@ -190,6 +190,15 @@ const MCP_REGISTRY_PAGE_SIZE: u32 = 96;
 //
 // Allowed chars: ASCII letters, digits, `_`, `-`, `.`. Length: 1..=64.
 // First char must NOT be `.` (rejects dotfiles and `..`).
+/// Public-to-crate wrapper around [`sanitize_resource_name`]. Lets
+/// `commands::marketplace_github::ai_install_from_github` (Phase A) share
+/// the exact same security gate without duplicating the alphabet check.
+/// The inner function stays private to the module so non-install code
+/// can't bypass the rule by importing it directly.
+pub(crate) fn sanitize_marketplace_name(name: &str) -> Result<String, String> {
+    sanitize_resource_name(name)
+}
+
 fn sanitize_resource_name(name: &str) -> Result<String, String> {
     if name.is_empty() {
         return Err("Resource name is empty".to_string());
@@ -437,7 +446,7 @@ fn find_skill_trash_brief(skill_name: &str) -> Option<TrashedItemBrief> {
     None
 }
 
-fn find_mcp_trash_brief(mcp_name: &str) -> Option<TrashedItemBrief> {
+pub(crate) fn find_mcp_trash_brief(mcp_name: &str) -> Option<TrashedItemBrief> {
     let trash_dir = get_app_data_dir().join("trash").join("mcps");
     if !trash_dir.exists() {
         return None;
@@ -1535,6 +1544,7 @@ fn envelope_to_item(
         mcp_type,
         stdio_config,
         http_config,
+        uncertainty_hint: None,
     })
 }
 
@@ -1591,21 +1601,34 @@ async fn fetch_registry_page(
     updated_since: Option<&str>,
 ) -> Result<(Vec<MarketplaceMcpItem>, Option<String>), String> {
     let url = build_registry_url(cursor, limit, search, updated_since);
+    eprintln!("[fetch_registry_page] GET {}", url);
     let resp = marketplace_http()
         .get(&url)
         .header("Accept", "application/json")
         .send()
         .await
-        .map_err(|e| format!("Network error: {}", e))?;
-    if !resp.status().is_success() {
-        return Err(format!("MCP Registry HTTP {}", resp.status()));
+        .map_err(|e| {
+            eprintln!("[fetch_registry_page] network err: {}", e);
+            format!("Network error: {}", e)
+        })?;
+    let status = resp.status();
+    eprintln!("[fetch_registry_page] status {}", status);
+    if !status.is_success() {
+        return Err(format!("MCP Registry HTTP {}", status));
     }
     let body = resp
         .text()
         .await
-        .map_err(|e| format!("Read MCP Registry body: {}", e))?;
+        .map_err(|e| {
+            eprintln!("[fetch_registry_page] body read err: {}", e);
+            format!("Read MCP Registry body: {}", e)
+        })?;
+    eprintln!("[fetch_registry_page] body bytes={}", body.len());
     let parsed: RegistryListResponse = serde_json::from_str(&body)
-        .map_err(|e| format!("Parse MCP Registry response: {}", e))?;
+        .map_err(|e| {
+            eprintln!("[fetch_registry_page] parse err: {} | body[0..500]={}", e, &body.chars().take(500).collect::<String>());
+            format!("Parse MCP Registry response: {}", e)
+        })?;
     let next_cursor = parsed
         .metadata
         .and_then(|m| m.next_cursor)
@@ -2295,6 +2318,7 @@ fn build_mcp_seed_items() -> Vec<MarketplaceMcpItem> {
                     required_env_vars: env_vars,
                 }),
                 http_config: None,
+                uncertainty_hint: None,
             }
         })
         .collect()
@@ -2409,16 +2433,21 @@ pub async fn search_marketplace_mcps(
     limit: u32,
 ) -> Result<McpsPageResponse, String> {
     let trimmed = query.trim();
+    eprintln!("[search_marketplace_mcps] query={:?} cursor={:?} limit={}", trimmed, cursor, limit);
     if trimmed.is_empty() {
         return Err("Query must be non-empty".to_string());
     }
     match fetch_registry_page(cursor.as_deref(), limit, Some(trimmed), None).await {
-        Ok((items, next_cursor)) => Ok(McpsPageResponse {
-            has_more: next_cursor.is_some(),
-            items,
-            next_cursor,
-        }),
+        Ok((items, next_cursor)) => {
+            eprintln!("[search_marketplace_mcps] OK items={} next_cursor={:?}", items.len(), next_cursor);
+            Ok(McpsPageResponse {
+                has_more: next_cursor.is_some(),
+                items,
+                next_cursor,
+            })
+        },
         Err(e) => {
+            eprintln!("[search_marketplace_mcps] FAILED: {}", e);
             let _ = app.emit(
                 "marketplace:upstream-error",
                 serde_json::json!({"source": "mcps", "error": e}),
@@ -2876,6 +2905,7 @@ pub async fn install_marketplace_skill(
         Err(e) => {
             return Ok(InstallOutcome::Failed {
                 reason: format!("Invalid resource name: {}", e),
+                ai_failure_context: None,
             });
         }
     };
@@ -2890,6 +2920,7 @@ pub async fn install_marketplace_skill(
         if !target_dir.starts_with(&canonical_parent) {
             return Ok(InstallOutcome::Failed {
                 reason: format!("Refused: target outside skills_dir: {}", target_dir.display()),
+                ai_failure_context: None,
             });
         }
     }
@@ -2941,11 +2972,13 @@ pub async fn install_marketplace_skill(
         if !src.exists() {
             return Ok(InstallOutcome::Failed {
                 reason: format!("Trash path no longer exists: {}", trash_path),
+                ai_failure_context: None,
             });
         }
         if target_dir.exists() {
             return Ok(InstallOutcome::Failed {
                 reason: "Live entry exists; pick Replace instead of Restore.".to_string(),
+                ai_failure_context: None,
             });
         }
         fs::rename(&src, &target_dir).map_err(|e| format!("restore from trash: {}", e))?;
@@ -2963,6 +2996,7 @@ pub async fn install_marketplace_skill(
                 "Cannot derive owner/repo from item.source={:?}, item.owner={:?}, item.repo={:?}",
                 item.source, item.owner, item.repo
             ),
+            ai_failure_context: None,
         });
     }
     // Audit 2026-05-15 (R4 F1 / master P0-5): sanitize the owner / repo
@@ -2978,6 +3012,7 @@ pub async fn install_marketplace_skill(
         Err(e) => {
             return Ok(InstallOutcome::Failed {
                 reason: format!("Invalid owner segment: {}", e),
+                ai_failure_context: None,
             });
         }
     };
@@ -2986,6 +3021,7 @@ pub async fn install_marketplace_skill(
         Err(e) => {
             return Ok(InstallOutcome::Failed {
                 reason: format!("Invalid repo segment: {}", e),
+                ai_failure_context: None,
             });
         }
     };
@@ -3019,6 +3055,7 @@ pub async fn install_marketplace_skill(
             let _ = fs::remove_dir_all(&target_dir);
             return Ok(InstallOutcome::Failed {
                 reason: format!("Could not install skill: {}", e),
+                ai_failure_context: None,
             });
         }
     };
@@ -3030,6 +3067,7 @@ pub async fn install_marketplace_skill(
         let _ = fs::remove_dir_all(&target_dir);
         return Ok(InstallOutcome::Failed {
             reason: "Install completed but no SKILL.md / README.md in target dir".to_string(),
+            ai_failure_context: None,
         });
     }
 
@@ -3137,6 +3175,7 @@ pub async fn install_marketplace_mcp(
         Err(e) => {
             return Ok(InstallOutcome::Failed {
                 reason: format!("Invalid resource name: {}", e),
+                ai_failure_context: None,
             });
         }
     };
@@ -3147,6 +3186,7 @@ pub async fn install_marketplace_mcp(
         if !target_path.starts_with(&canonical_parent) {
             return Ok(InstallOutcome::Failed {
                 reason: format!("Refused: target outside mcps_dir: {}", target_path.display()),
+                ai_failure_context: None,
             });
         }
     }
@@ -3193,11 +3233,13 @@ pub async fn install_marketplace_mcp(
         if !src.exists() {
             return Ok(InstallOutcome::Failed {
                 reason: format!("Trash path no longer exists: {}", trash_path),
+                ai_failure_context: None,
             });
         }
         if target_path.exists() {
             return Ok(InstallOutcome::Failed {
                 reason: "Live entry exists; pick Replace instead of Restore.".to_string(),
+                ai_failure_context: None,
             });
         }
         fs::rename(&src, &target_path).map_err(|e| format!("restore from trash: {}", e))?;
@@ -3309,11 +3351,12 @@ pub async fn install_marketplace_mcp(
     if mcp_type.as_deref() == Some("http") {
         if let Some(u) = url.as_deref() {
             if let Err(reason) = validate_http_mcp_url(u) {
-                return Ok(InstallOutcome::Failed { reason });
+                return Ok(InstallOutcome::Failed { reason, ai_failure_context: None });
             }
         } else {
             return Ok(InstallOutcome::Failed {
                 reason: "URL is missing for HTTP MCP install.".to_string(),
+                ai_failure_context: None,
             });
         }
     }
@@ -3339,6 +3382,7 @@ pub async fn install_marketplace_mcp(
         Err(e) => {
             return Ok(InstallOutcome::Failed {
                 reason: format!("serialize McpConfigFile: {}", e),
+                ai_failure_context: None,
             });
         }
     };
@@ -3346,16 +3390,33 @@ pub async fn install_marketplace_mcp(
         let _ = fs::remove_file(&target_path);
         return Ok(InstallOutcome::Failed {
             reason: format!("write MCP config: {}", e),
+            ai_failure_context: None,
         });
     }
 
     finalize_mcp_install(app, &item, target_path).await
 }
 
-async fn finalize_mcp_install(
+pub(crate) async fn finalize_mcp_install(
     app: AppHandle,
     item: &MarketplaceMcpItem,
     target_path: std::path::PathBuf,
+) -> Result<InstallOutcome, String> {
+    finalize_mcp_install_with_source(app, item, target_path, "mcp_registry").await
+}
+
+/// Variant of [`finalize_mcp_install`] that lets the caller stamp a custom
+/// `MarketplaceSource.source` discriminator on the persisted metadata. The
+/// default path (`install_marketplace_mcp`) hardcodes `"mcp_registry"`; AI
+/// install (`commands::marketplace_github::ai_install_from_github`) passes
+/// `"github_search"` so future "refresh-by-source" code paths can tell the
+/// two channels apart. All other behaviour (snapshot recovery, env-var
+/// persistence, auto-classify) is identical.
+pub(crate) async fn finalize_mcp_install_with_source(
+    app: AppHandle,
+    item: &MarketplaceMcpItem,
+    target_path: std::path::PathBuf,
+    source: &str,
 ) -> Result<InstallOutcome, String> {
     let mcp_id = target_path.to_string_lossy().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -3400,7 +3461,7 @@ async fn finalize_mcp_install(
             item.author.clone()
         };
         entry.marketplace_source = Some(MarketplaceSource {
-            source: "mcp_registry".to_string(),
+            source: source.to_string(),
             owner: item.author.clone(),
             repo: mcp_repo,
             name: item.name.clone(),
@@ -3860,6 +3921,7 @@ mod tests {
                 mcp_type: mcp_type.into(),
                 stdio_config: None,
                 http_config: None,
+                uncertainty_hint: None,
             }
         }
 

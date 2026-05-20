@@ -189,10 +189,22 @@ export interface MarketplaceMcpItem {
   keywords?: string[];
   /** Publisher-curated example snippets (Quick start / Docker compose / …). */
   examples?: McpExample[];
-  /** Discriminator for stdio vs HTTP. The matching config field is non-null. */
-  mcpType: 'stdio' | 'http';
+  /** Discriminator for stdio vs HTTP. `'unknown'` only appears on items from
+   *  the GitHub Search data source — the AI install path resolves the real
+   *  transport at install time and the item is replaced in the local cache
+   *  with one carrying a concrete `mcpType`. */
+  mcpType: 'stdio' | 'http' | 'unknown';
   stdioConfig?: StdioMcpConfig;
   httpConfig?: HttpMcpConfig;
+  /**
+   * Soft "Auto-detected — verify before install" hint surfaced as a corner
+   * badge by `<MarketplaceListItem>` when the item came from the GitHub
+   * Search secondary path (`marketplaceSource.source === 'github_search'`)
+   * and the fingerprint filter marked it as `Uncertain` rather than
+   * `Certain`. Mirror of Rust `MarketplaceMcpItem.uncertainty_hint`.
+   * Absent for Anthropic Registry / local-seed items.
+   */
+  uncertaintyHint?: string;
 }
 
 /** A single publisher-curated example snippet attached to an MCP server.
@@ -266,7 +278,18 @@ export type InstallOutcome =
       hasLocal: boolean;
       hasTrashed?: TrashedItemBrief;
     }
-  | { kind: 'failed'; reason: string };
+  | {
+      kind: 'failed';
+      reason: string;
+      /**
+       * Free-form AI-install failure context: the `notes` field returned by
+       * `claude -p` structured_output when `success=false`, or the parser
+       * diagnostic when the AI output failed validation. Surfaces only on
+       * `ai_install_from_github` failures; absent for regular install
+       * failures. Mirror of Rust `InstallOutcome::Failed.ai_failure_context`.
+       */
+      aiFailureContext?: string;
+    };
 
 export interface TrashedItemBrief {
   name: string;

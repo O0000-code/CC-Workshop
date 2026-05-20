@@ -166,6 +166,7 @@ function buildMcp(overrides: Partial<McpServer> = {}): McpServer {
     providedTools: [],
     createdAt: '2026-01-01T00:00:00Z',
     usageCount: 0,
+    needsConfig: false,
     ...overrides,
   };
 }

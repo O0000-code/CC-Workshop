@@ -3,7 +3,7 @@ pub mod types;
 mod utils;
 
 use commands::claude_md::migrate_claude_md_storage;
-use commands::{classify, claude_md, config, data, dialog, import, marketplace, mcps, plugins, rules, skills, symlink, trash, usage};
+use commands::{classify, claude_md, config, data, dialog, import, marketplace, marketplace_github, mcps, plugins, rules, skills, symlink, trash, usage};
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -146,23 +146,39 @@ pub fn run() {
 
             Ok(())
         })
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            // 检查是否有 --launch 参数
-            if let Some(launch_index) = args.iter().position(|a| a == "--launch") {
-                if let Some(path) = args.get(launch_index + 1) {
-                    // 尝试获取主窗口并发送事件
-                    // 注意：不调用 set_focus()，让前端决定是否需要显示窗口
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.emit("second-instance-launch", path.clone());
-                    } else {
-                        let windows = app.webview_windows();
-                        if let Some((_, window)) = windows.into_iter().next() {
-                            let _ = window.emit("second-instance-launch", path.clone());
+        // single_instance plugin: dev mode 不启用,避免开发体验问题:
+        //   1. production /Applications/CC Workshop.app 被 launchd 唤起时拦截 dev binary
+        //   2. dev hot-reload 切 binary 时新 binary 被旧 binary 拦截
+        //   3. 多 dev session(workshop + 测试)需要并行运行
+        // release build 仍启用,保留生产单实例语义 + Finder Quick Action --launch 行为
+        .plugin({
+            #[cfg(not(debug_assertions))]
+            {
+                tauri_plugin_single_instance::init(|app, args, _cwd| {
+                    // 检查是否有 --launch 参数
+                    if let Some(launch_index) = args.iter().position(|a| a == "--launch") {
+                        if let Some(path) = args.get(launch_index + 1) {
+                            // 尝试获取主窗口并发送事件
+                            // 注意：不调用 set_focus()，让前端决定是否需要显示窗口
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.emit("second-instance-launch", path.clone());
+                            } else {
+                                let windows = app.webview_windows();
+                                if let Some((_, window)) = windows.into_iter().next() {
+                                    let _ = window.emit("second-instance-launch", path.clone());
+                                }
+                            }
                         }
                     }
-                }
+                })
             }
-        }))
+            #[cfg(debug_assertions)]
+            {
+                // dev mode no-op plugin: 一个空 builder 把 single_instance 的位置填上
+                // 但不注册任何 callback,使得 dev binary 不被任何已运行实例拦截
+                tauri::plugin::Builder::<tauri::Wry>::new("single-instance-disabled-in-dev").build()
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             // Skills commands
             skills::scan_skills,
@@ -317,6 +333,11 @@ pub fn run() {
             marketplace::auto_classify_marketplace_item,
             marketplace::refresh_marketplace_cache,
             marketplace::update_mcp_env_vars,
+            // Phase A (`marketplace-extension/07_implementation_plan.md`):
+            // GitHub Search fallback data source + AI-inference install for
+            // MCPs not in the Anthropic Registry.
+            marketplace_github::search_marketplace_mcps_github,
+            marketplace_github::ai_install_from_github,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -122,6 +122,14 @@ export interface McpServer {
    * via the marketplace.
    */
   requiredEnvVars?: EnvVarSpec[];
+  /**
+   * Backend-derived flag: `true` when `requiredEnvVars` has at least one entry
+   * whose value in `env` is missing or empty. Derived inside `parse_mcp_file`
+   * on every scan so the UI does not have to re-walk specs (10 §B.2). Mirror
+   * of Rust `McpServer.needs_config`. Defaults to `false` (mirrors Rust
+   * `#[serde(default)]`) so older payloads decode cleanly.
+   */
+  needsConfig: boolean;
 }
 
 export interface Tool {

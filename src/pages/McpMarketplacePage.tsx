@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Plug, Loader2, WifiOff, Copy, Check, Search } from 'lucide-react';
+import { Plug, Loader2, WifiOff, Copy, Check, Search, Github, AlertTriangle } from 'lucide-react';
 import { PageHeader, SlidePanel } from '@/components/layout';
 import { Button, EmptyState, ICON_MAP } from '@/components/common';
 import { MarketplaceListItem } from '@/components/marketplace/MarketplaceListItem';
@@ -139,6 +139,7 @@ export function McpMarketplacePage() {
   // ----- Marketplace store slice -----
   const mcpsListing = useMarketplaceStore((s) => s.mcpsListing);
   const mcpsSearch = useMarketplaceStore((s) => s.mcpsSearch);
+  const mcpsGithubSearch = useMarketplaceStore((s) => s.mcpsGithubSearch);
   const selectedMcpItemId = useMarketplaceStore((s) => s.selectedMcpItemId);
   const collisionModalState = useMarketplaceStore((s) => s.collisionModalState);
 
@@ -150,6 +151,8 @@ export function McpMarketplacePage() {
   const searchMcpsNextPage = useMarketplaceStore((s) => s.searchMcpsNextPage);
   const searchMcpsPrevPage = useMarketplaceStore((s) => s.searchMcpsPrevPage);
   const clearMcpsSearch = useMarketplaceStore((s) => s.clearMcpsSearch);
+  const triggerGithubSearch = useMarketplaceStore((s) => s.triggerGithubSearch);
+  const aiInstallFromGithub = useMarketplaceStore((s) => s.aiInstallFromGithub);
   const selectMcpItem = useMarketplaceStore((s) => s.selectMcpItem);
   const installMcp = useMarketplaceStore((s) => s.installMcp);
   const isMcpInstalled = useMarketplaceStore((s) => s.isMcpInstalled);
@@ -215,11 +218,17 @@ export function McpMarketplacePage() {
 
   // ----- Selected detail item -----
   // The selected id is keyed by `item.id`; look it up in the currently-
-  // visible source (listing or search results).
+  // visible source (listing or search results) — or, when in search mode,
+  // the GitHub-Search secondary results, so clicking a GitHub row opens
+  // its detail panel rather than triggering the "missing → auto-close"
+  // effect below.
   const selectedItem = useMemo<MarketplaceMcpItem | null>(() => {
     if (!selectedMcpItemId) return null;
-    return visibleItems.find((m) => m.id === selectedMcpItemId) ?? null;
-  }, [visibleItems, selectedMcpItemId]);
+    const fromVisible = visibleItems.find((m) => m.id === selectedMcpItemId);
+    if (fromVisible) return fromVisible;
+    const fromGithub = mcpsGithubSearch?.items.find((m) => m.id === selectedMcpItemId);
+    return fromGithub ?? null;
+  }, [visibleItems, mcpsGithubSearch, selectedMcpItemId]);
 
   // Close the detail panel when the selected item disappears from view
   // (e.g. user clicked Next page while the panel for an old-page item was
@@ -875,14 +884,39 @@ export function McpMarketplacePage() {
         >
           Previous
         </Button>
-        <span className="text-[11px] text-[#71717A]">
+        <span className="text-[11px] text-[#71717A] inline-flex items-center gap-1.5">
           {isLoadingPage ? (
-            <span className="inline-flex items-center gap-1.5">
+            <>
               <Loader2 className="h-3 w-3 animate-spin" />
               Loading...
-            </span>
+            </>
           ) : (
-            middleLabel
+            <>
+              <span>{middleLabel}</span>
+              {isSearchMode &&
+                mcpsSearch !== null &&
+                (mcpsGithubSearch === null ? (
+                  <>
+                    <span className="text-[#D4D4D8]">·</span>
+                    <button
+                      type="button"
+                      onClick={() => void triggerGithubSearch(mcpsSearch.query)}
+                      className="inline-flex items-center gap-1 text-[#52525B] hover:text-[#18181B] transition-colors cursor-pointer"
+                    >
+                      <Search className="h-3 w-3" />
+                      Search GitHub
+                    </button>
+                  </>
+                ) : mcpsGithubSearch.loading ? (
+                  <>
+                    <span className="text-[#D4D4D8]">·</span>
+                    <span className="inline-flex items-center gap-1 text-[#A1A1AA]">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Searching GitHub...
+                    </span>
+                  </>
+                ) : null)}
+            </>
           )}
         </span>
         <Button
@@ -970,13 +1004,52 @@ export function McpMarketplacePage() {
                 line above; this section just holds the list + pagination. */}
             <section>
               {showFilterEmpty ? (
-                <div className="flex h-full items-center justify-center py-12">
-                  <EmptyState
-                    icon={<Search className="h-12 w-12" />}
-                    title={`No results for "${mcpsSearch.query}"`}
-                    description="Search matches MCP server names exactly. Try a different keyword."
-                  />
-                </div>
+                // Two-mode layout:
+                //   • Before user clicks "Search GitHub" (`mcpsGithubSearch === null`)
+                //     → centered EmptyState with action button.
+                //   • After click → top-anchored EmptyState (title + description
+                //     stay above) followed by the GitHub section. Keeps the
+                //     EmptyState's failure-context visible while results scroll
+                //     in below; matches the spec rule "GitHub section takes
+                //     over original position".
+                mcpsGithubSearch === null ? (
+                  <div className="flex h-full items-center justify-center py-12">
+                    <EmptyState
+                      icon={<Search className="h-12 w-12" />}
+                      title={`No results for "${mcpsSearch.query}"`}
+                      description="Search matches MCP server names exactly. Try a different keyword."
+                      action={
+                        <Button
+                          variant="secondary"
+                          size="small"
+                          onClick={() => void triggerGithubSearch(mcpsSearch.query)}
+                        >
+                          Search GitHub
+                        </Button>
+                      }
+                    />
+                  </div>
+                ) : (
+                  <div className="flex flex-col">
+                    <EmptyState
+                      icon={<Search className="h-12 w-12" />}
+                      title={`No results for "${mcpsSearch.query}"`}
+                      description="Search matches MCP server names exactly. Try a different keyword."
+                    />
+                    <McpGithubFallback
+                      isSearchMode={isSearchMode}
+                      primaryQuery={mcpsSearch?.query ?? ''}
+                      primaryHasResults={visibleItems.length > 0}
+                      primaryLoading={isLoadingPage && visibleItems.length === 0}
+                      mcpsGithubSearch={mcpsGithubSearch}
+                      onTrigger={triggerGithubSearch}
+                      onInstall={aiInstallFromGithub}
+                      selectedMcpItemId={selectedMcpItemId}
+                      onSelectItem={handleSelectItem}
+                      isMcpInstalled={isMcpInstalled}
+                    />
+                  </div>
+                )
               ) : isLoadingPage && visibleItems.length === 0 ? (
                 <div className="flex items-center justify-center py-12">
                   <Loader2 className="h-6 w-6 animate-spin text-[#A1A1AA]" />
@@ -996,6 +1069,26 @@ export function McpMarketplacePage() {
                       />
                     ))}
                   </div>
+
+                  {/* GitHub fallback — CTA when no GitHub fetch yet,
+                      section when GitHub fetch has returned. Only renders
+                      in search mode (otherwise there is no query to
+                      forward). Sits between the Anthropic list and the
+                      Anthropic pagination so the pagination controls keep
+                      their existing semantics (prev/next page through
+                      Registry results only). */}
+                  <McpGithubFallback
+                    isSearchMode={isSearchMode}
+                    primaryQuery={mcpsSearch?.query ?? ''}
+                    primaryHasResults={visibleItems.length > 0}
+                    primaryLoading={isLoadingPage && visibleItems.length === 0}
+                    mcpsGithubSearch={mcpsGithubSearch}
+                    onTrigger={triggerGithubSearch}
+                    onInstall={aiInstallFromGithub}
+                    selectedMcpItemId={selectedMcpItemId}
+                    onSelectItem={handleSelectItem}
+                    isMcpInstalled={isMcpInstalled}
+                  />
 
                   {/* Pagination — bottom of the main list. Only render once
                       we actually have items to paginate. */}
@@ -1239,6 +1332,207 @@ function ViewTabBar({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+// ============================================================================
+// McpGithubFallback — secondary GitHub-Search CTA + results section.
+//
+// State machine (06 §E + 07 plan Phase C2):
+//
+//   isSearchMode=false                 → render nothing (no query to forward)
+//   primaryLoading=true                → render nothing (waiting on Registry)
+//   mcpsGithubSearch === null
+//     ▸ primaryHasResults=true         → CTA below results
+//     ▸ primaryHasResults=false        → CTA only (caller handles EmptyState)
+//   mcpsGithubSearch.loading=true      → inline loading state ("Searching GitHub…")
+//   mcpsGithubSearch.error             → inline error + Retry
+//   mcpsGithubSearch.hasFetched=true && items.length===0
+//                                      → "No additional results" line
+//   mcpsGithubSearch.hasFetched=true && items.length>0
+//                                      → result section (count line + items)
+//
+// Visual rule: align with `paginationControl` rhythm (mt-6 / py-4) so the
+// CTA line and the results section sit at the same vertical cadence as the
+// Anthropic pagination. No border/background on the CTA — design-language
+// forbids inventing chrome for this kind of light affordance.
+// ============================================================================
+
+interface McpGithubFallbackProps {
+  isSearchMode: boolean;
+  primaryQuery: string;
+  primaryHasResults: boolean;
+  primaryLoading: boolean;
+  mcpsGithubSearch: ReturnType<typeof useMarketplaceStore.getState>['mcpsGithubSearch'];
+  onTrigger: (query: string) => Promise<void>;
+  onInstall: (item: MarketplaceMcpItem) => Promise<void>;
+  selectedMcpItemId: string | null;
+  onSelectItem: (id: string) => void;
+  isMcpInstalled: (item: MarketplaceMcpItem) => boolean;
+}
+
+function McpGithubFallback({
+  isSearchMode,
+  primaryQuery,
+  // primaryHasResults: previously used to gate the standalone CTA row when
+  // there were Anthropic results above. CTA + loading are now rendered inline
+  // inside paginationControl, so this prop is no longer consumed here. Kept
+  // on the props interface to avoid churning every call site; underscore
+  // tells TS / ESLint it's intentionally unused.
+  primaryHasResults: _primaryHasResults,
+  primaryLoading,
+  mcpsGithubSearch,
+  onTrigger,
+  onInstall,
+  selectedMcpItemId,
+  onSelectItem,
+  isMcpInstalled,
+}: McpGithubFallbackProps) {
+  if (!isSearchMode) return null;
+  if (primaryLoading) return null;
+  if (primaryQuery.trim().length === 0) return null;
+
+  // Pre-trigger state (mcpsGithubSearch === null) and loading state are now
+  // both rendered inline inside `paginationControl`'s middle slot — see
+  // McpMarketplacePage.paginationControl. This component only renders the
+  // POST-fetch states (error / 0 results / ≥ 1 results). Returning null
+  // here keeps the layout free of the old standalone CTA row.
+  if (mcpsGithubSearch === null) {
+    return null;
+  }
+  if (mcpsGithubSearch.loading) {
+    return null;
+  }
+
+  // Error — 11px red line + Retry. Mirrors the inline-error visual of the
+  // upstreamError banner but compact (single row, no background).
+  if (mcpsGithubSearch.error) {
+    return (
+      <div className="mt-6 flex items-center justify-center gap-3 py-4 text-[11px]">
+        <span className="inline-flex items-center gap-1.5 text-[var(--color-error)]">
+          <AlertTriangle className="h-3 w-3" />
+          <span>GitHub search failed.</span>
+        </span>
+        <button
+          type="button"
+          onClick={() => void onTrigger(primaryQuery)}
+          className="font-medium text-[#18181B] underline cursor-pointer"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  // Post-fetch, 0 results — single greyscale line. No CTA; the user has
+  // already exercised the affordance.
+  if (mcpsGithubSearch.items.length === 0) {
+    return (
+      <div className="mt-6 flex items-center justify-center py-4">
+        <span className="text-[11px] text-[#A1A1AA]">No additional results on GitHub.</span>
+      </div>
+    );
+  }
+
+  // Post-fetch, ≥ 1 result — section heading + rows. Items reuse
+  // `MarketplaceListItem` but with the GitHub-Search-specific overrides:
+  // pass `uncertaintyHint` (from backend fingerprint) + override
+  // `onInstall` to take the AI install path + label loading "AI inferring..."
+  // (30-90s wait — surface it).
+  return (
+    <section className="mt-6 flex flex-col gap-3">
+      <div className="flex items-center gap-1.5 text-[11px] text-[#A1A1AA]">
+        <Github className="h-3 w-3" />
+        <span>
+          From GitHub Search · {mcpsGithubSearch.items.length}{' '}
+          {mcpsGithubSearch.items.length === 1 ? 'result' : 'results'}
+        </span>
+      </div>
+      <div className="flex flex-col gap-3">
+        {mcpsGithubSearch.items.map((item) => (
+          <McpGithubResultRow
+            key={item.id}
+            item={item}
+            selected={item.id === selectedMcpItemId}
+            compact={!!selectedMcpItemId}
+            isInstalled={isMcpInstalled(item)}
+            onSelect={onSelectItem}
+            onInstall={onInstall}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// ============================================================================
+// McpGithubResultRow — wraps `<MarketplaceListItem>` and stacks an inline
+// failure-reason row underneath it when the AI install fails (Phase C6).
+//
+// The failure row layout is dedicated to the AI install path because the
+// regular install error UX surfaces via the row's own Retry button tooltip;
+// the AI install failure is intentionally non-retryable (user request: same
+// prompt would deterministically fail again, the user must instead escalate
+// to interactive fallback — currently disabled, X2). Surfacing a separate
+// inline row makes the difference legible.
+// ============================================================================
+
+interface McpGithubResultRowProps {
+  item: MarketplaceMcpItem;
+  selected: boolean;
+  compact: boolean;
+  isInstalled: boolean;
+  onSelect: (id: string) => void;
+  onInstall: (item: MarketplaceMcpItem) => Promise<void>;
+}
+
+function McpGithubResultRow({
+  item,
+  selected,
+  compact,
+  isInstalled,
+  onSelect,
+  onInstall,
+}: McpGithubResultRowProps) {
+  // The MarketplaceListItem subscribes to its own `installFailedItems[id]`
+  // for the regular `<Retry>` button behaviour. We read the same map here
+  // so we can render the inline error explanation; the row itself will not
+  // show its "Retry" button because we override `onInstall` to the AI path
+  // and the AI path overwrites the same failure slot.
+  const failure = useMarketplaceStore((s) => s.installFailedItems[item.id]);
+  return (
+    <div className="flex flex-col">
+      <MarketplaceListItem
+        item={item}
+        itemType="mcp"
+        selected={selected}
+        compact={compact}
+        isInstalled={isInstalled}
+        onSelect={onSelect}
+        uncertaintyHint={item.uncertaintyHint}
+        onInstall={(it) => void onInstall(it)}
+        installingLabel="AI inferring..."
+        hideRetryOnFailure
+      />
+      {failure && (
+        <div className="px-5 pt-2 flex items-start gap-2 text-[11px]">
+          <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0 text-[var(--color-error)]" />
+          <span className="text-[var(--color-error)] flex-1 min-w-0">{failure.error}</span>
+          {/* Interactive fallback placeholder (X2 — not yet implemented).
+              Disabled button + tooltip-equivalent title attribute makes
+              the future affordance visible without offering an action that
+              would silently no-op. */}
+          <button
+            type="button"
+            disabled
+            title="Interactive fallback coming soon"
+            className="text-[var(--color-accent)] cursor-not-allowed opacity-50"
+          >
+            Open in Claude Code
+          </button>
+        </div>
+      )}
     </div>
   );
 }

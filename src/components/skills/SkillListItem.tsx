@@ -2,6 +2,7 @@ import React, { useRef, useState, useMemo } from 'react';
 import { Sparkles, MoreHorizontal, Trash2, Puzzle } from 'lucide-react';
 import Badge from '../common/Badge';
 import { ICON_MAP, CategoryTreeDropdown } from '@/components/common';
+import { CornerBadge } from '@/components/common/CornerBadge';
 import { TagsWithTooltip } from '@/components/common/TagsWithTooltip';
 import { truncateToFirstSentence } from '@/utils/text';
 import { getCategoryColor as getCategoryColorFromName } from '@/utils/constants';
@@ -214,14 +215,7 @@ export const SkillListItem: React.FC<SkillListItemProps> = ({
               />
             </div>
             {/* Plugin Badge */}
-            {isPluginSource && (
-              <div
-                className="absolute flex items-center justify-center w-4 h-4 bg-[#3B82F6] rounded-lg border-2 border-white"
-                style={{ right: '-4px', top: '-4px' }}
-              >
-                <Puzzle className="w-2 h-2 text-white" />
-              </div>
-            )}
+            {isPluginSource && <CornerBadge icon={Puzzle} tone="accent" tooltip="From plugin" />}
           </div>
 
           {/* Info */}

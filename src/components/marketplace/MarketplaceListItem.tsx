@@ -1,7 +1,8 @@
 import React, { useMemo } from 'react';
-import { Check, BadgeCheck } from 'lucide-react';
+import { Check, BadgeCheck, HelpCircle } from 'lucide-react';
 import Badge from '@/components/common/Badge';
 import Button from '@/components/common/Button';
+import { CornerBadge } from '@/components/common/CornerBadge';
 import { Tooltip } from '@/components/common/Tooltip';
 import { getMarketplaceItemIcon } from '@/utils/marketplaceIcon';
 import { truncateToFirstSentence } from '@/utils/text';
@@ -48,6 +49,39 @@ export interface MarketplaceListItemProps {
   isInstalled: boolean;
   /** Row click handler. Fires `onSelect(item.id)` to open the detail panel. */
   onSelect: (itemId: string) => void;
+  /** Soft "Auto-detected — verify before install" hint. When set, renders a
+   *  warning-tone `<CornerBadge>` on the icon container. Only the GitHub-Search
+   *  results section passes this prop (with `item.uncertaintyHint` straight
+   *  through); the Anthropic Registry section + Skill marketplace never set
+   *  it so the badge stays invisible. The plugin-badge slot is unused on
+   *  marketplace rows (no `isPluginSource` source), so there is no stacking
+   *  concern. */
+  uncertaintyHint?: string;
+  /** Optional override for the Install onClick (per-row). Passed in by the
+   *  GitHub-Search section so the click goes through `aiInstallFromGithub`
+   *  instead of the regular `installMcp` (GitHub-Search items have no
+   *  `stdio_config` / `http_config`; the regular path would fail). When
+   *  omitted, the row falls back to the existing `installSkill` /
+   *  `installMcp` store actions. */
+  onInstall?: (item: MarketplaceMcpItem) => void;
+  /**
+   * Label override for the trailing install button. The GitHub-Search section
+   * uses `"AI inferring..."` while loading to make the longer 30-90s wait obvious;
+   * the regular install path keeps the existing `"Installing..."` / `"Install"`
+   * defaults. When the row is not installing, `installingLabel` is ignored.
+   */
+  installingLabel?: string;
+  /**
+   * Suppress the standard "Retry" button when this row is in the failed
+   * state. Used by the GitHub-Search section: re-running the same AI
+   * inference against the same repo is deterministic, so the user has
+   * nothing to gain from clicking Retry — they should escalate to the
+   * interactive fallback instead (currently disabled, placeholder X2).
+   * When true, the failed-state slot renders nothing; the failure context
+   * is expected to surface elsewhere (e.g. via an inline error row stacked
+   * below this component). Regular install paths keep the Retry button.
+   */
+  hideRetryOnFailure?: boolean;
 }
 
 // ============================================================================
@@ -82,6 +116,10 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
   compact,
   isInstalled,
   onSelect,
+  uncertaintyHint,
+  onInstall,
+  installingLabel,
+  hideRetryOnFailure,
 }) => {
   // Stable key for cross-call lookup. Skills V2 internal-API items don't carry
   // an `id`; we derive `${source}/${skillId}`. MCPs still use their `id`.
@@ -178,6 +216,10 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
     // Stop the click bubbling to the row so installing does not also open
     // the detail panel (the user's intent is to install, not browse).
     e.stopPropagation();
+    if (onInstall && itemType === 'mcp') {
+      onInstall(item as MarketplaceMcpItem);
+      return;
+    }
     if (itemType === 'skill') {
       void installSkill(item as MarketplaceSkillItem);
     } else {
@@ -205,7 +247,7 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
         Installed
       </Badge>
     );
-  } else if (installFailure) {
+  } else if (installFailure && !hideRetryOnFailure) {
     // The failed-state button keeps the primary variant — design-language
     // forbids inventing a new "red button" treatment (R3-P0-3 / PRD §5.5).
     // The error itself surfaces via the hover tooltip on the button.
@@ -224,7 +266,15 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
         </span>
       </Tooltip>
     );
+  } else if (installFailure && hideRetryOnFailure) {
+    // GitHub-Search / AI-install path: the failure context is rendered in
+    // the inline error row stacked below this component (see
+    // `McpGithubResultRow`). Render nothing here so the right-section
+    // alignment stays consistent without offering a Retry that the user
+    // has been told would be meaningless.
+    trailingControl = null;
   } else {
+    const installingText = installingLabel ?? 'Installing...';
     trailingControl = (
       <Button
         variant="primary"
@@ -233,7 +283,7 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
         disabled={isInstalling}
         loading={isInstalling}
       >
-        {isInstalling ? 'Installing...' : 'Install'}
+        {isInstalling ? installingText : 'Install'}
       </Button>
     );
   }
@@ -274,8 +324,12 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
     >
       {/* Left section — icon + name + description */}
       <div className="flex items-center gap-3.5 min-w-0 flex-1">
-        {/* Icon container — mirrors SkillListItem icon container exactly,
-            without the plugin badge corner indicator (D-9 / R-11). */}
+        {/* Icon container — mirrors SkillListItem icon container exactly.
+            The `relative shrink-0` wrapper is the anchor for an optional
+            corner badge (slot is otherwise unused on marketplace rows, see
+            comment block above): the GitHub-Search section sets
+            `uncertaintyHint` to surface "auto-detected — verify before
+            install" without competing with any plugin badge. */}
         <div className="relative shrink-0">
           <div
             className={`
@@ -291,6 +345,9 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
               style={{ transition: `color ${TRANSITION_BASE}` }}
             />
           </div>
+          {uncertaintyHint && (
+            <CornerBadge icon={HelpCircle} tone="warning" tooltip={uncertaintyHint} />
+          )}
         </div>
 
         {/* Info — name + secondary line. Secondary truncates to first sentence
@@ -343,11 +400,14 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
             "info ··· action" lane with only the Install button carrying
             colour — the prior `Badge` chip created a competing grey block
             that fought the Install button for attention. */}
-        {mcpType && (
+        {/* GitHub Search items carry `mcpType: 'unknown'` until AI inference
+            resolves them at install time — render nothing in that case
+            rather than a misleading "HTTP" fallback. */}
+        {mcpType === 'stdio' || mcpType === 'http' ? (
           <span className="text-[11px] font-normal text-[#A1A1AA]">
             {mcpType === 'stdio' ? 'stdio' : 'HTTP'}
           </span>
-        )}
+        ) : null}
 
         {trailingControl}
       </div>

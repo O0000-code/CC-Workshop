@@ -1,0 +1,107 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "success",
+    "mcp_type",
+    "name",
+    "command",
+    "args",
+    "url",
+    "headers",
+    "required_env_vars",
+    "notes",
+    "confidence"
+  ],
+  "properties": {
+    "success": {
+      "type": "boolean",
+      "description": "True if AND only if: README found + install section located + mcp_type ∈ {stdio,http} + corresponding config non-empty + valid name + confidence ∈ {high,medium}. False on any failure mode."
+    },
+    "mcp_type": {
+      "type": "string",
+      "enum": ["stdio", "http", "unknown"],
+      "description": "Transport. 'unknown' only when Step 2 cannot decide; in that case success MUST be false."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$",
+      "maxLength": 64,
+      "description": "Sanitized MCP name. Must match [A-Za-z0-9_.-]+, cannot start with . or -, cannot contain .., max 64 chars. Empty string allowed only when success=false."
+    },
+    "command": {
+      "type": ["string", "null"],
+      "description": "Stdio executable (e.g. 'npx', 'uvx', 'docker', 'python'). MUST be null when mcp_type='http' or 'unknown'."
+    },
+    "args": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Stdio command arguments in order. Empty array when mcp_type='http' or 'unknown'."
+    },
+    "url": {
+      "type": ["string", "null"],
+      "description": "HTTP endpoint URL. May contain {NAME} placeholders for user-supplied values. MUST be null when mcp_type='stdio' or 'unknown'. MUST NOT be empty string when mcp_type='http'."
+    },
+    "headers": {
+      "type": "array",
+      "description": "HTTP headers the user must supply. Empty array when mcp_type='stdio' or 'unknown'.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "description", "is_secret", "default"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "description": { "type": "string", "maxLength": 280 },
+          "is_secret": {
+            "type": "boolean",
+            "description": "TRUE for any header whose name contains Authorization, Token, Api-Key, Secret. Use empty default ('' or 'Bearer ' template) for secrets — never embed a real token."
+          },
+          "default": {
+            "type": "string",
+            "description": "Literal template if present (e.g. 'Bearer '); empty string '' if user must supply. Never a real secret."
+          }
+        }
+      }
+    },
+    "required_env_vars": {
+      "type": "array",
+      "description": "For stdio: required environment variables (from Source A/B/C fallback). For http: URL {NAME} placeholder variables. Empty array if none required.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "description", "is_secret", "format", "default"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$",
+            "description": "UPPER_SNAKE_CASE env var name."
+          },
+          "description": { "type": "string", "maxLength": 280 },
+          "is_secret": {
+            "type": "boolean",
+            "description": "TRUE if name contains KEY, TOKEN, SECRET, PASSWORD, CREDENTIAL, API (case-insensitive), even if README does not explicitly state."
+          },
+          "format": {
+            "type": "string",
+            "enum": ["string", "number", "boolean", "filepath"]
+          },
+          "default": {
+            "type": "string",
+            "description": "Literal default from .env.example RHS if non-secret AND non-placeholder; otherwise empty string ''. NEVER 'your-key-here' or similar."
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 280,
+      "description": "Provenance + caveats (≤ 280 chars). On success: which README section + which env source (A/B/C). On failure: specific blocker. Always required, never empty."
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low"],
+      "description": "high=Step 2 Rule 1/2 + Step 3 Source A. medium=Step 2 Rule 3/4 + Step 3 Source B. low=Step 2 Rule 5 OR placeholders OR guesses. success=true REQUIRES high or medium."
+    }
+  }
+}

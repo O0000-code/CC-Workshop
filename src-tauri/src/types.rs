@@ -134,6 +134,14 @@ pub struct McpServer {
     /// `None` for HTTP MCPs and for MCPs not installed via the marketplace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required_env_vars: Option<Vec<EnvVarSpec>>,
+    /// True iff `required_env_vars` declares at least one var whose value is
+    /// missing or whitespace-only in `env`. DERIVED at scan time (see
+    /// `commands::mcps::parse_mcp_file`). HTTP MCPs (whose env requirements
+    /// live in `headers` / `url_variables`) are out of scope — this flag is
+    /// stdio-only and `false` for HTTP MCPs and for MCPs with no declared
+    /// required-env list.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub needs_config: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1450,8 +1458,10 @@ pub struct TrashedItems {
 #[serde(rename_all = "camelCase")]
 pub struct MarketplaceSource {
     /// Upstream catalog identifier. `"skills_sh"` for the Skill Marketplace
-    /// (skills.sh seed + scrape) and `"mcp_registry"` for the Official MCP
-    /// Registry (`registry.modelcontextprotocol.io`).
+    /// (skills.sh seed + scrape), `"mcp_registry"` for the Official MCP
+    /// Registry (`registry.modelcontextprotocol.io`), and `"github_search"`
+    /// for MCPs installed via the GitHub Search + AI-inference fallback
+    /// (`marketplace_github::ai_install_from_github`).
     pub source: String,
     /// GitHub-style owner. For skills.sh entries this is the repository
     /// owner; for MCP Registry entries this is parsed from `repository.url`
@@ -1634,6 +1644,13 @@ pub struct MarketplaceMcpItem {
     pub mcp_type: String,
     pub stdio_config: Option<StdioMcpConfig>,
     pub http_config: Option<HttpMcpConfig>,
+    /// Free-form caveat displayed as a warning hint next to the catalog
+    /// row. Populated only by the GitHub Search data source for items that
+    /// scored `Uncertain` under the fingerprint heuristic (04 §C). The
+    /// frontend renders this as an `AlertCircle` corner badge with the
+    /// string as its tooltip. `None` for Anthropic Registry and seed items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncertainty_hint: Option<String>,
 }
 
 /// Publisher-provided example snippet. Either `command` (shell one-liner)
@@ -1758,7 +1775,17 @@ pub enum InstallOutcome {
     },
     /// Install failed at network or filesystem layer. The user-facing
     /// retry button reuses this `reason` as the tooltip (R3-P0-3 / D-14).
-    Failed { reason: String },
+    Failed {
+        reason: String,
+        /// Pretty-printed raw AI output JSON when the failure came from
+        /// `marketplace_github::ai_install_from_github` (Phase A). Lets the
+        /// future interactive-fallback UX show the user what the AI saw
+        /// without re-running the (~30–90s / ~$0.5) inference. `None` for
+        /// network / FS / sanitization failures from the standard install
+        /// path. `serde(default)` keeps old-cache deserialisation working.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ai_failure_context: Option<String>,
+    },
 }
 
 /// Trash entry summary returned alongside `InstallOutcome::NameCollision`
@@ -2076,6 +2103,7 @@ mod tests {
             plugin_enabled: None,
             marketplace_source: None,
             required_env_vars: None,
+            needs_config: false,
         };
         let json = serde_json::to_string(&mcp).unwrap();
         assert!(json.contains("\"categoryId\":\"tools-cat-id\""));

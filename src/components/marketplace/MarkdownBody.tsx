@@ -1,7 +1,41 @@
 import { useMemo } from 'react';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
+import rehypeHighlight from 'rehype-highlight';
 import type { Components } from 'react-markdown';
+import 'highlight.js/styles/github.css';
+
+/**
+ * Sanitization schema for the markdown body. Built on top of
+ * `rehype-sanitize`'s `defaultSchema` (the GitHub-flavoured safe subset)
+ * with three additions:
+ *
+ *   1. `<details>` / `<summary>` whitelisted — GitHub README readers use
+ *      these for collapsible sections; default schema drops them.
+ *   2. `<img>` allowed `width` / `height` / `align` / `loading` attributes —
+ *      README authors commonly write `<img width="200" align="right">`.
+ *   3. `code` + `span` allow the className patterns that `rehype-highlight`
+ *      emits (`hljs`, `language-*` on the parent `<code>`; `hljs-*` on the
+ *      inner token `<span>`s). Without these the syntax-highlight CSS has
+ *      nothing to bind to and code blocks would render as plain text.
+ *
+ * Dangerous schemes (`javascript:`, `data:` in scripts), event handlers,
+ * `<script>`/`<style>`/`<iframe>` etc. remain stripped by the default
+ * schema baseline.
+ */
+const sanitizeSchema = {
+  ...defaultSchema,
+  tagNames: [...(defaultSchema.tagNames ?? []), 'details', 'summary'],
+  attributes: {
+    ...defaultSchema.attributes,
+    code: [...(defaultSchema.attributes?.code ?? []), ['className', /^language-/, 'hljs']],
+    span: [...(defaultSchema.attributes?.span ?? []), ['className', /^hljs-/]],
+    img: [...(defaultSchema.attributes?.img ?? []), 'width', 'height', 'align', 'loading'],
+    details: ['open'],
+  },
+};
 
 /**
  * Render markdown text using design-language tokens (zinc palette only,
@@ -129,13 +163,20 @@ const components: Components = {
     </a>
   ),
   code: ({ node: _node, className, children, ...props }) => {
-    // Block-level code blocks get a `language-*` class via remark/rehype;
-    // inline code has no className. Spec source for this distinction:
-    // https://github.com/remarkjs/react-markdown#use-custom-components
-    const isBlock = typeof className === 'string' && className.startsWith('language-');
+    // Block-level code blocks carry a `language-*` class from remark; after
+    // `rehype-highlight` runs the class becomes `hljs language-*`. Inline
+    // code has no className. Use `includes` rather than `startsWith` to
+    // tolerate both shapes.
+    // Spec source: https://github.com/remarkjs/react-markdown#use-custom-components
+    const isBlock =
+      typeof className === 'string' &&
+      (className.includes('language-') || className.includes('hljs'));
     if (isBlock) {
+      // Inherit the hljs theme background from the imported CSS by keeping
+      // the className as-is; only layout/font tokens are applied here so
+      // the highlight colours render correctly inside the <pre> wrapper.
       return (
-        <code className={`font-mono text-[12px] text-[#18181B] ${className ?? ''}`} {...props}>
+        <code className={`font-mono text-[12px] ${className ?? ''}`} {...props}>
           {children}
         </code>
       );
@@ -218,6 +259,15 @@ export function MarkdownBody({ source, className, baseUrl }: MarkdownBodyProps) 
     <div className={className}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        // Plugin order matters:
+        //   1. rehypeRaw turns inline HTML in the markdown source into hast
+        //      nodes (otherwise <details>/<img> are escaped as text).
+        //   2. rehypeHighlight tags <code class="language-X"> with hljs-*
+        //      span classes BEFORE sanitize, so we can whitelist them.
+        //   3. rehypeSanitize is the LAST stop — it enforces the XSS
+        //      whitelist on the entire tree (including the raw HTML and
+        //      hljs spans). Anything not in `sanitizeSchema` is stripped.
+        rehypePlugins={[rehypeRaw, rehypeHighlight, [rehypeSanitize, sanitizeSchema]]}
         urlTransform={urlTransform}
         components={components}
       >

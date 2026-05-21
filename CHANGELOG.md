@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-05-21
+
+### Added
+
+- **MCP Marketplace · GitHub Search fallback + AI install.** When `registry.modelcontextprotocol.io` returns 0 hits for your query, an inline **"Search GitHub"** affordance appears next to "End of catalog" in the pagination row (and as a button in the search-empty action slot). Click to merge `topic:mcp-server` + `topic:mcp` GitHub Search results, fingerprint into Certain / Uncertain / Reject (strong-negative descriptions like "workflow automation platform" without `mcp` in the repo name are rejected before they cost you an AI inference), and mark uncertain hits with an `AlertCircle` corner badge. Install spawns `claude -p` headless (model from `AppSettings.classify_model`, default Opus; `--max-budget-usd 2.0`; neutral cwd at `~/.cc-workshop/_ai-install-workdir/`), reads the repo's README / `pyproject.toml` / `package.json`, and writes `~/.cc-workshop/mcps/<name>.json` exactly as a Registry install would. v3 production prompt achieves 9/10 on a 10-case fingerprint matrix.
+- **Skill Marketplace · GitHub Search fallback + AI install.** Same affordance, but runs three GitHub Search queries in parallel (`topic:claude-skill`, `topic:claude-skills`, `topic:claude-code-skill`) because the Skill ecosystem hasn't consolidated on a single tag. Strong-negative fingerprint additionally rejects any repo carrying `.claude-plugin/marketplace.json` — those belong to the plugin marketplace path. The AI install hands a `(owner, repo, skill_path)` locator to the existing `install_skill_via_codeload` pipeline; Skills are codeload-based directory installs, not runtime configs, so the AI's job is to locate the SKILL.md, not to compose a launch command.
+- **Marketplace README rendering · GitHub parity.** The detail-panel README block now mirrors github.com much more closely:
+  - YAML frontmatter (`^---\n…\n---\n`) is stripped before render (universal in SKILL.md, otherwise the raw `name:` / `description:` keys leak into body text).
+  - Relative `src` / `href` URLs are rewritten through a `baseUrl`-aware `urlTransform`, so `![](logo.png)` resolves to `https://raw.githubusercontent.com/<owner>/<repo>/HEAD/<subpath>/logo.png` instead of the webview origin.
+  - Inline HTML is supported via `rehype-raw` + a security-vetted `rehype-sanitize` schema (`<details>` / `<summary>`, `<img>` width/height/align/loading, plus the className patterns `rehype-highlight` emits). Dangerous schemes (`javascript:`, `<script>`, `<iframe>`) remain stripped by the baseline.
+  - Syntax highlighting via `rehype-highlight` + the github.com light theme.
+- **`McpServer.needsConfig` derived field.** When any `required_env_vars` entry has a missing or whitespace-only value, the local MCP list row shows a warning corner badge (`AlertCircle`). Actionable state takes priority over the static plugin badge per design-language.md L57.
+- **Generic `<CornerBadge>` component.** Extracted from the inline plugin-badge JSX in `SkillListItem` / `McpListItem` so the same primitive can power the new uncertainty marker. Includes `tone` mapping to design tokens (`accent` / `warning` / `success` / `neutral`).
+
+### Fixed
+
+- **Plugin corner badge colour** finally matches the design language token: `#3B82F6` (sky blue, hardcoded across two list-item files) → `var(--color-accent)` `#0063E1` (system macOS controlAccentColor). Flagged by `.claude/rules/design-language.md` L33-35.
+- **Type badge on GitHub-Search marketplace rows** no longer falls back to "HTTP" when `mcpType === 'unknown'` (the AI-install path's pre-inference state). The badge is hidden instead, avoiding a misleading default.
+- **EmptyState layout in the search "0 results" branch** is now correctly multi-mode: pre-trigger centres `EmptyState` + "Search GitHub" action; during loading centres `EmptyState` + disabled "Searching GitHub..." spinner action; with GitHub results the `EmptyState` is removed entirely so it no longer sits above the results misleading users about whether their search worked.
+- **dev-mode `single_instance` plugin** is now `#[cfg(not(debug_assertions))]`-gated, so `npm run tauri dev` no longer silent-exits when an existing `/Applications/CC Workshop.app` instance is running. Production behaviour unchanged.
+- **Skill README fetch** no longer early-returns when `skillId` is empty. GitHub-Search Skill items carry `skillId = ""` by design (the real subpath is inferred at AI install time); the backend already falls back to root `SKILL.md` → root `README.md`, but the frontend was guard-clausing on empty `skillId` and never sending the request.
+
 ## [2.3.1] - 2026-05-18
 
 ### Added

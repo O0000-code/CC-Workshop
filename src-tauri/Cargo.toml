@@ -1,6 +1,6 @@
 [package]
 name = "cc-workshop"
-version = "2.3.1"
+version = "2.4.0"
 description = "Manage Claude Code Skills, MCP Servers, CLAUDE.md, and Rule files"
 authors = ["O0000-code"]
 license = "MIT"

@@ -208,6 +208,24 @@ export interface McpsGithubSearchState {
   hasFetched: boolean;
 }
 
+/** Secondary GitHub-Search results for the Skill marketplace. Mirrors
+ *  `McpsGithubSearchState` exactly — toggled by the user clicking the
+ *  inline "Search GitHub" CTA below the End-of-catalog sentinel (or from
+ *  the 0-result EmptyState's action button) when the skills.sh primary
+ *  catalogue does not surface what they typed. `null` = CTA not yet
+ *  triggered for the current query; non-null = either loading or finished.
+ *  Items reuse `MarketplaceSkillItem` — backend GitHub-Search items carry
+ *  `skill_id=""` + `id="git:{owner}/{repo}"` + optional `uncertaintyHint`
+ *  so the UI can render an attention badge and so `getSkillItemKey` falls
+ *  through to the V1 `item.id` branch consistently. */
+export interface SkillsGithubSearchState {
+  query: string;
+  items: MarketplaceSkillItem[];
+  loading: boolean;
+  error: string | null;
+  hasFetched: boolean;
+}
+
 // ----- UI state shapes -----------------------------------------------------
 
 export interface MarketplaceCollisionModalState {
@@ -322,6 +340,12 @@ export interface MarketplaceState {
    *  GitHub-Search items with `marketplaceSource.source === 'github_search'`
    *  + `mcpType: 'unknown'` + optional `uncertaintyHint`. */
   mcpsGithubSearch: McpsGithubSearchState | null;
+  /** Secondary GitHub-Search results for the Skill marketplace. Same
+   *  semantics as `mcpsGithubSearch`: `null` = CTA never triggered;
+   *  non-null = loading or finished. Cleared automatically when the user
+   *  changes the search query, clears the search, or switches view. Items
+   *  use `MarketplaceSkillItem` with `skill_id=""` + `id="git:{owner}/{repo}"`. */
+  skillsGithubSearch: SkillsGithubSearchState | null;
   /** AI install failure context (raw `claude -p` stdout dump). Keyed by
    *  marketplace item id. Written by `aiInstallFromGithub` when install
    *  fails, read by the (future) interactive fallback X2 patch — currently
@@ -445,6 +469,30 @@ export interface MarketplaceState {
    *  to `aiInstallFailureContexts` for the future interactive-fallback
    *  patch. */
   aiInstallFromGithub: (item: MarketplaceMcpItem) => Promise<void>;
+
+  /** Run a secondary GitHub-Search query for the Skill marketplace when
+   *  the user clicks the inline "Search GitHub" CTA below the sentinel
+   *  (or the 0-result EmptyState's action button). Dispatches to
+   *  `search_marketplace_skills_github`. Items returned are typed as
+   *  `MarketplaceSkillItem` with `skill_id=""` + `id="git:{owner}/{repo}"`
+   *  and an optional `uncertaintyHint`. Mirrors `triggerGithubSearch`. */
+  triggerSkillGithubSearch: (query: string) => Promise<void>;
+  /** Reset `skillsGithubSearch` to `null`. Called automatically from
+   *  `searchSkills` / `clearSkillsSearch` / `setSkillsView` so the GitHub
+   *  section vanishes whenever the user changes their primary search
+   *  context. */
+  clearSkillGithubSearch: () => void;
+  /** Install a Skill that originated from `triggerSkillGithubSearch`.
+   *  Spawns the AI install path (`ai_install_skill_from_github`);
+   *  GitHub-Search items have `skill_id=""` so the regular
+   *  `installSkill` flow's `derive_install_triple` cannot resolve the
+   *  in-repo subpath. Mirrors `installSkill`'s progress / failure UX
+   *  (installingItemIds + installFailedItems keyed by
+   *  `getSkillItemKey(item)` which falls through to `item.id` for
+   *  these items), and records the AI failure dump to
+   *  `aiInstallFailureContexts` for the future interactive-fallback
+   *  patch. */
+  aiInstallSkillFromGithub: (item: MarketplaceSkillItem) => Promise<void>;
   /** Backwards-compat: existing pages call `refreshCatalog('skills')`; the
    *  MCP branch is now a no-op (we just rerun the page-1 fetch). */
   refreshCatalog: (source: 'skills' | 'mcps') => Promise<void>;
@@ -616,6 +664,7 @@ export const useMarketplaceStore = create<MarketplaceState>()(
       mcpsListing: initialMcpsListing,
       mcpsSearch: null,
       mcpsGithubSearch: null,
+      skillsGithubSearch: null,
       aiInstallFailureContexts: {},
 
       installingItemIds: new Set<string>(),
@@ -774,11 +823,17 @@ export const useMarketplaceStore = create<MarketplaceState>()(
       setSkillsView: (view) => {
         const { skillsListing } = get();
         if (skillsListing.view === view && !skillsListing.upstreamError) return;
+        // View switch wipes any GitHub-Search overlay — the user has left
+        // the search context that triggered it.
+        set({ skillsGithubSearch: null });
         void get().loadSkillsPage(view, 0);
       },
 
       searchSkills: async (query) => {
         const trimmed = query.trim();
+        // A new primary search wipes any prior GitHub-Search overlay —
+        // the user is searching for a different keyword now.
+        set({ skillsGithubSearch: null });
         if (trimmed.length < 2) {
           get().clearSkillsSearch();
           return;
@@ -852,7 +907,7 @@ export const useMarketplaceStore = create<MarketplaceState>()(
         }
       },
 
-      clearSkillsSearch: () => set({ skillsSearch: null }),
+      clearSkillsSearch: () => set({ skillsSearch: null, skillsGithubSearch: null }),
 
       loadSkillReadme: async (source, skillId) => {
         const key = `${source}/${skillId}`;
@@ -1632,6 +1687,210 @@ export const useMarketplaceStore = create<MarketplaceState>()(
               installFailedItems: {
                 ...state.installFailedItems,
                 [item.id]: { error: message, attemptedAt: new Date().toISOString() },
+              },
+            };
+          });
+        }
+      },
+
+      triggerSkillGithubSearch: async (query) => {
+        const trimmed = query.trim();
+        if (trimmed.length === 0) {
+          set({ skillsGithubSearch: null });
+          return;
+        }
+        if (!isTauri()) {
+          set({
+            skillsGithubSearch: {
+              query: trimmed,
+              items: [],
+              loading: false,
+              error: 'Browser preview mode — run `npm run tauri dev` to load the marketplace.',
+              hasFetched: true,
+            },
+          });
+          return;
+        }
+        set({
+          skillsGithubSearch: {
+            query: trimmed,
+            items: [],
+            loading: true,
+            error: null,
+            hasFetched: false,
+          },
+        });
+        try {
+          const resp = await safeInvoke<MarketplaceSkillItem[]>(
+            'search_marketplace_skills_github',
+            { query: trimmed },
+          );
+          // Backend returns `Vec<MarketplaceSkillItem>` (never null) but
+          // safeInvoke types it nullable to defend against the browser
+          // preview fallback. Treat null as "no results" rather than throw,
+          // mirroring `triggerGithubSearch`.
+          const items = resp ?? [];
+          set((state) => {
+            // Stale-response guard: a newer primary search may have wiped
+            // skillsGithubSearch to null, or a second
+            // triggerSkillGithubSearch may have queued behind this one. In
+            // either case, the in-flight response no longer applies.
+            if (!state.skillsGithubSearch || state.skillsGithubSearch.query !== trimmed) {
+              return state;
+            }
+            return {
+              skillsGithubSearch: {
+                query: trimmed,
+                items,
+                loading: false,
+                error: null,
+                hasFetched: true,
+              },
+            };
+          });
+        } catch (error) {
+          const message = typeof error === 'string' ? error : String(error);
+          console.error('Failed to GitHub-search skills:', error);
+          set((state) => {
+            if (!state.skillsGithubSearch || state.skillsGithubSearch.query !== trimmed) {
+              return state;
+            }
+            return {
+              skillsGithubSearch: {
+                query: trimmed,
+                items: [],
+                loading: false,
+                error: message,
+                hasFetched: true,
+              },
+            };
+          });
+        }
+      },
+
+      clearSkillGithubSearch: () => set({ skillsGithubSearch: null }),
+
+      aiInstallSkillFromGithub: async (item) => {
+        if (!isTauri()) {
+          console.warn('MarketplaceStore: Cannot AI-install skill in browser mode');
+          return;
+        }
+
+        // Same as installSkill — ensure trashedItems is loaded so the
+        // backend's NameCollision detection can return an accurate brief.
+        if (useTrashStore.getState().trashedItems === null) {
+          await useTrashStore.getState().loadTrashedItems();
+        }
+
+        // GitHub Search Skill items have `skill_id=""` so
+        // `getSkillItemKey` falls through to the V1 `item.id` branch
+        // (= `"git:{owner}/{repo}"`). This is the per-item progress key
+        // mirrored by `MarketplaceListItem`'s internal subscription.
+        const itemKey = getSkillItemKey(item);
+
+        set((state) => ({
+          installingItemIds: new Set([...state.installingItemIds, itemKey]),
+          installFailedItems: (() => {
+            const next = { ...state.installFailedItems };
+            delete next[itemKey];
+            return next;
+          })(),
+          aiInstallFailureContexts: (() => {
+            const next = { ...state.aiInstallFailureContexts };
+            delete next[itemKey];
+            return next;
+          })(),
+        }));
+
+        try {
+          const outcome = await safeInvoke<InstallOutcome>('ai_install_skill_from_github', {
+            item,
+            conflictAction: null,
+          });
+          if (!outcome) {
+            throw new Error('Backend returned no install outcome');
+          }
+          switch (outcome.kind) {
+            case 'installed': {
+              await useSkillsStore.getState().loadSkills();
+              set((state) => {
+                const installing = new Set([...state.installingItemIds]);
+                installing.delete(itemKey);
+                const classifying = new Set([...state.classifyingItemIds, outcome.skillId]);
+                const classifyFailed = new Set([...state.classifyFailedItemIds]);
+                classifyFailed.delete(outcome.skillId);
+                return {
+                  installingItemIds: installing,
+                  classifyingItemIds: classifying,
+                  classifyFailedItemIds: classifyFailed,
+                };
+              });
+              // `outcome.skillId` is the local Skill.id for skill installs.
+              get().showShortcutBanner(outcome.skillId, 'skill');
+              break;
+            }
+            case 'nameCollision': {
+              // Backend cannot currently execute Replace / RestoreFromTrash
+              // through the AI install path (Phase A note, mirrored from
+              // MCP). The user must manually trash or rename the colliding
+              // Skill first, then re-run. Surface as inline error rather
+              // than the regular NameCollision modal (whose Replace button
+              // would fail with a backend "not supported" reason on retry).
+              set((state) => {
+                const installing = new Set([...state.installingItemIds]);
+                installing.delete(itemKey);
+                const localOrTrashSummary = outcome.hasLocal
+                  ? 'a local Skill'
+                  : outcome.hasTrashed
+                    ? 'a trashed Skill'
+                    : 'an existing Skill';
+                return {
+                  installingItemIds: installing,
+                  installFailedItems: {
+                    ...state.installFailedItems,
+                    [itemKey]: {
+                      error: `Name collides with ${localOrTrashSummary}. Resolve the name collision first, then retry.`,
+                      attemptedAt: new Date().toISOString(),
+                    },
+                  },
+                };
+              });
+              break;
+            }
+            case 'failed': {
+              set((state) => {
+                const installing = new Set([...state.installingItemIds]);
+                installing.delete(itemKey);
+                const nextContexts = { ...state.aiInstallFailureContexts };
+                if (outcome.aiFailureContext) {
+                  nextContexts[itemKey] = outcome.aiFailureContext;
+                }
+                return {
+                  installingItemIds: installing,
+                  installFailedItems: {
+                    ...state.installFailedItems,
+                    [itemKey]: {
+                      error: outcome.reason,
+                      attemptedAt: new Date().toISOString(),
+                    },
+                  },
+                  aiInstallFailureContexts: nextContexts,
+                };
+              });
+              break;
+            }
+          }
+        } catch (error) {
+          const message = typeof error === 'string' ? error : String(error);
+          console.error('aiInstallSkillFromGithub failed:', error);
+          set((state) => {
+            const installing = new Set([...state.installingItemIds]);
+            installing.delete(itemKey);
+            return {
+              installingItemIds: installing,
+              installFailedItems: {
+                ...state.installFailedItems,
+                [itemKey]: { error: message, attemptedAt: new Date().toISOString() },
               },
             };
           });

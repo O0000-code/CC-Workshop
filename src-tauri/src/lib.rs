@@ -338,6 +338,11 @@ pub fn run() {
             // MCPs not in the Anthropic Registry.
             marketplace_github::search_marketplace_mcps_github,
             marketplace_github::ai_install_from_github,
+            // Phase A (`skill-marketplace/05_implementation_plan.md`):
+            // same fallback model for Skills — GitHub Search 3-topic merge
+            // + AI-inferred install via codeload + finalize_skill_install_with_source.
+            marketplace_github::search_marketplace_skills_github,
+            marketplace_github::ai_install_skill_from_github,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

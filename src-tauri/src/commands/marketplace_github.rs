@@ -25,11 +25,12 @@
 //!   normalize patch (applied post-AI in this module).
 
 use crate::commands::marketplace::{
-    self, finalize_mcp_install_with_source, find_mcp_trash_brief, marketplace_http,
+    self, finalize_mcp_install_with_source, finalize_skill_install_with_source,
+    find_mcp_trash_brief, find_skill_trash_brief, install_skill_via_codeload, marketplace_http,
 };
 use crate::types::{
     ConflictAction, EnvVarSpec, HttpMcpConfig, InstallOutcome, MarketplaceMcpItem,
-    MarketplaceSource, McpConfigFile, StdioMcpConfig,
+    MarketplaceSkillItem, MarketplaceSource, McpConfigFile, StdioMcpConfig,
 };
 use crate::utils::get_app_data_dir;
 use serde::Deserialize;
@@ -86,6 +87,18 @@ const AI_INSTALL_PROMPT_V3: &str = include_str!("../../resources/ai_install_prom
 /// string so the binary is self-contained — no run-time file dependency,
 /// no version-skew between prompt and schema.
 const AI_INSTALL_SCHEMA: &str = include_str!("../../resources/ai_install_schema.json");
+
+/// Skill v0 prompt template — see `.dev/skill-marketplace/03_skill_prompt_draft.md` §B.
+/// `{REPO_URL}` is the only substitution slot. The prompt is conceptually
+/// simpler than the MCP variant because Skills have a hard signal (SKILL.md
+/// file presence) and no runtime config to extract.
+const AI_INSTALL_SKILL_PROMPT: &str =
+    include_str!("../../resources/ai_install_skill_prompt.txt");
+
+/// Skill v0 JSON schema (`.dev/skill-marketplace/03_skill_prompt_draft.md` §C).
+/// Same self-contained-binary discipline as the MCP schema.
+const AI_INSTALL_SKILL_SCHEMA: &str =
+    include_str!("../../resources/ai_install_skill_schema.json");
 
 // ============================================================================
 // GitHub Search response types
@@ -1103,4 +1116,716 @@ fn marketplace_sanitize(name: &str) -> Result<String, String> {
     // Re-use the canonical implementation by going through a `pub(crate)`
     // shim added to `marketplace.rs`.
     marketplace::sanitize_marketplace_name(name)
+}
+
+// ============================================================================
+// ============================================================================
+// SKILL GitHub Search + AI install
+//
+// Mirrors the MCP path above but adapts to the five Skill-vs-MCP differences
+// documented in `.dev/skill-marketplace/01_skill_current_state.md` §G:
+//   - Three topics (`claude-skill`, `claude-skills`, `claude-code-skill`)
+//     instead of two (`mcp-server`, `mcp`) — see `02_github_skill_realtest.md`
+//     §A for the empirical justification.
+//   - Three fingerprint signals — `SKILL.md` at repo root, `agentic-skill`
+//     topic, `anthropics` ownership — instead of MCP's four-signal mix.
+//   - HEAD probe to detect `.claude-plugin/marketplace.json` (Skill marker
+//     for "this is actually a Plugin, route elsewhere"). Plugin Reject is
+//     a Skill-only concern; MCP doesn't have an equivalent overlap.
+//   - AI install outputs `(owner, repo, skill_path)` instead of a runtime
+//     config; the existing `install_skill_via_codeload` does the rest.
+//   - No `needsConfig` / no env vars / no URL / no stdio-http branch.
+// ============================================================================
+// ============================================================================
+
+/// Three-state fingerprint verdict for Skill candidates. Same shape as
+/// [`McpLikelihood`] but different rules. The heuristic combines GitHub
+/// Search response data (topics, owner, name, description) with two
+/// `raw.githubusercontent.com` HEAD probes — those don't consume any
+/// `api.github.com` quota and surface the two strongest Skill signals
+/// (root `SKILL.md` exists → Certain; `.claude-plugin/marketplace.json`
+/// exists → Reject Plugin).
+enum SkillLikelihood {
+    Certain,
+    Uncertain,
+    Reject,
+}
+
+/// Probe a URL via GET and consider it present iff the response is HTTP 200.
+/// Used exclusively against `raw.githubusercontent.com` paths, which are
+/// rate-limited separately from `api.github.com` and respond very quickly
+/// to absent files with a 404. Errors are coerced to "absent" — we never
+/// want a transient network blip to flip a Skill from Uncertain to Reject.
+async fn head_probe(url: &str) -> bool {
+    match marketplace_http().get(url).send().await {
+        Ok(resp) => resp.status().as_u16() == 200,
+        Err(e) => {
+            eprintln!("[skill_search] head_probe({}) network err: {}", url, e);
+            false
+        }
+    }
+}
+
+/// Decide Certain / Uncertain / Reject for a Skill candidate. The order
+/// matters — Reject takes priority so a `.claude-plugin/marketplace.json`
+/// plugin can never be promoted to Certain even if it also has
+/// `topic:agentic-skill` or owner `anthropics`. See
+/// `02_github_skill_realtest.md` §D for the empirical rationale.
+fn assess_skill_likelihood(
+    hit: &GhRepoSearchResult,
+    has_skill_md_root: bool,
+    has_plugin_marker: bool,
+) -> SkillLikelihood {
+    let topics_lower: Vec<String> = hit.topics.iter().map(|t| t.to_lowercase()).collect();
+    let owner_lower = hit
+        .owner
+        .as_ref()
+        .map(|o| o.login.to_lowercase())
+        .unwrap_or_default();
+    let name_lower = hit.name.to_lowercase();
+    let desc_lower = hit
+        .description
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase();
+
+    // -- Reject (evaluated first; takes priority) --
+
+    // 1. Plugin marker — `.claude-plugin/marketplace.json` exists. This is
+    //    a CC Workshop plugin marketplace concern, not a Skill marketplace
+    //    concern; users install plugins via `/plugin marketplace add`,
+    //    not via CC Workshop Skills. Hard-Reject regardless of any
+    //    positive signal.
+    if has_plugin_marker {
+        return SkillLikelihood::Reject;
+    }
+
+    // 2. Awesome-list / meta-list trap — `awesome` in name AND
+    //    `awesome-list` topic. Same anti-pattern as the MCP fingerprint
+    //    (`marketplace_seed.rs` legacy validation rule).
+    let name_has_awesome = name_lower.contains("awesome");
+    let topic_has_awesome_list = topics_lower.iter().any(|t| t == "awesome-list");
+    if name_has_awesome && topic_has_awesome_list {
+        return SkillLikelihood::Reject;
+    }
+
+    // 3. Strong negative description without `skill` token in name —
+    //    e.g. browser library, workflow platform, framework. These trip
+    //    `claude-skill(s)` topic in their READMEs (because they mention
+    //    skill integrations) but are not themselves Skills.
+    let strong_negative_phrases = ["framework", "library", "platform"];
+    let name_has_skill = name_lower.contains("skill");
+    if !name_has_skill
+        && strong_negative_phrases
+            .iter()
+            .any(|p| desc_lower.contains(p))
+    {
+        return SkillLikelihood::Reject;
+    }
+
+    // -- Certain (strong positive signals) --
+
+    let topic_agentic = topics_lower.iter().any(|t| t == "agentic-skill");
+    let official_owner = matches!(owner_lower.as_str(), "anthropics" | "anthropic-experimental");
+
+    if has_skill_md_root || topic_agentic || official_owner {
+        return SkillLikelihood::Certain;
+    }
+
+    // -- Uncertain (default for everything else that survived Reject) --
+    // The 3-topic search already restricts candidates to repos that
+    // self-declare as Claude Skills, so an Uncertain bucket here means
+    // "real-looking Skill, but no Certain-tier confirmation signal".
+    SkillLikelihood::Uncertain
+}
+
+// ============================================================================
+// IPC: search_marketplace_skills_github
+// ============================================================================
+
+/// Query GitHub's repository search for likely-Skill repos and return them as
+/// `MarketplaceSkillItem`s with `skill_id=""` (the AI install path fills the
+/// in-repo subpath later). Runs three queries (`topic:claude-skill`,
+/// `topic:claude-skills`, `topic:claude-code-skill`) and merges by
+/// full_name. Each surviving candidate is then probed twice via
+/// `raw.githubusercontent.com` (root `SKILL.md` + `.claude-plugin/marketplace.json`)
+/// to refine the fingerprint — those probes don't consume `api.github.com`
+/// quota. See `02_github_skill_realtest.md` §D for the budget rationale.
+#[tauri::command]
+pub async fn search_marketplace_skills_github(
+    query: String,
+) -> Result<Vec<MarketplaceSkillItem>, String> {
+    let trimmed = query.trim();
+    eprintln!("[search_marketplace_skills_github] query={:?}", trimmed);
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 3-topic merge — GitHub's parser still doesn't support `OR` across
+    // `topic:` qualifiers (see `fetch_github_search_page` doc). We pay
+    // 3 calls / search; well under the 30/min anonymous Search budget.
+    // The set is empirically justified in `02_github_skill_realtest.md` §A:
+    // `claude-skill` (1723 hits) + `claude-skills` (3307) +
+    // `claude-code-skill` (1256). `claude-code-skills` overlaps `claude-skills`
+    // ~90% and is omitted to keep the budget at 3 calls.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut all_hits: Vec<GhRepoSearchResult> = Vec::new();
+    for topic in &["claude-skill", "claude-skills", "claude-code-skill"] {
+        match fetch_github_search_page(trimmed, topic).await {
+            Ok(hits) => {
+                for hit in hits {
+                    let owner = hit
+                        .owner
+                        .as_ref()
+                        .map(|o| o.login.as_str())
+                        .unwrap_or("");
+                    let full = format!("{}/{}", owner, hit.name);
+                    if seen.insert(full) {
+                        all_hits.push(hit);
+                    }
+                }
+            }
+            Err(e) => {
+                // Any single topic failing is non-fatal — return whatever
+                // the earlier calls produced. Matches MCP-side resilience.
+                eprintln!(
+                    "[search_marketplace_skills_github] topic:{} failed: {} (continuing)",
+                    topic, e
+                );
+            }
+        }
+    }
+    eprintln!(
+        "[search_marketplace_skills_github] merged {} unique hits across topics",
+        all_hits.len()
+    );
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut out: Vec<MarketplaceSkillItem> = Vec::with_capacity(all_hits.len());
+    let (mut n_certain, mut n_uncertain, mut n_reject, mut n_drop_name) =
+        (0usize, 0usize, 0usize, 0usize);
+
+    for hit in all_hits {
+        let owner_login = hit
+            .owner
+            .as_ref()
+            .map(|o| o.login.clone())
+            .unwrap_or_default();
+        let repo_seg = hit.name.clone();
+        if owner_login.is_empty() || repo_seg.is_empty() {
+            // Defensive: GitHub Search should always populate these but
+            // guarding keeps the rest of the loop simple.
+            continue;
+        }
+
+        // raw.githubusercontent.com probes — both off-quota for api.github.com.
+        // We deliberately probe `HEAD` (the codeload symbolic ref) since
+        // most repos default to either `main` or `master` and `HEAD` is
+        // GitHub's canonical "default branch" alias for raw paths.
+        //
+        // Sequential awaits (rather than `tokio::join!`) because the
+        // `tokio` crate is built here without the `macros` feature and
+        // adding it just for this probe pair is overkill — two HEAD
+        // requests against raw.githubusercontent.com complete in well
+        // under 200 ms total.
+        let skill_md_url = format!(
+            "https://raw.githubusercontent.com/{}/{}/HEAD/SKILL.md",
+            owner_login, repo_seg
+        );
+        let plugin_url = format!(
+            "https://raw.githubusercontent.com/{}/{}/HEAD/.claude-plugin/marketplace.json",
+            owner_login, repo_seg
+        );
+        let has_skill_md_root = head_probe(&skill_md_url).await;
+        let has_plugin_marker = head_probe(&plugin_url).await;
+
+        let likelihood = assess_skill_likelihood(&hit, has_skill_md_root, has_plugin_marker);
+        match likelihood {
+            SkillLikelihood::Certain => n_certain += 1,
+            SkillLikelihood::Uncertain => n_uncertain += 1,
+            SkillLikelihood::Reject => {
+                eprintln!(
+                    "[search_marketplace_skills_github]   REJECT {} (topics={:?}, plugin_marker={}, root_skill_md={}, desc={:?})",
+                    hit.full_name,
+                    hit.topics,
+                    has_plugin_marker,
+                    has_skill_md_root,
+                    hit.description
+                        .as_deref()
+                        .unwrap_or("")
+                        .chars()
+                        .take(80)
+                        .collect::<String>()
+                );
+                n_reject += 1;
+                continue;
+            }
+        }
+
+        let name = match name_from_owner_repo(&owner_login, &repo_seg) {
+            Some(n) => n,
+            None => {
+                eprintln!(
+                    "[search_marketplace_skills_github]   DROP {}/{}: unsanitisable name",
+                    owner_login, repo_seg
+                );
+                n_drop_name += 1;
+                continue;
+            }
+        };
+
+        let id = format!("git:{}/{}", owner_login, repo_seg);
+
+        let uncertainty_hint = match likelihood {
+            SkillLikelihood::Uncertain => {
+                Some("Auto-detected from GitHub Search — verify before install".to_string())
+            }
+            _ => None,
+        };
+
+        // V2 wire shape for Skill: `source = "owner/repo"`, `skill_id`
+        // left empty (the AI install path will derive the real subpath
+        // and finalize will persist it into MarketplaceSource.repo_subpath).
+        let item = MarketplaceSkillItem {
+            id,
+            name,
+            description: hit.description.clone().unwrap_or_default(),
+            source: format!("{}/{}", owner_login, repo_seg),
+            skill_id: String::new(),
+            installs: 0,
+            is_official: None,
+            installs_yesterday: None,
+            change: None,
+            readme_markdown: String::new(),
+            author: owner_login.clone(),
+            owner: owner_login.clone(),
+            repo: repo_seg.clone(),
+            skill_path: String::new(),
+            homepage_url: String::new(),
+            last_updated_at: hit.updated_at.clone().unwrap_or_else(|| now.clone()),
+            stars: hit.stargazers_count,
+            categories: Vec::new(),
+            tags: Vec::new(),
+            license: hit.license.as_ref().and_then(|l| l.spdx_id.clone()),
+            uncertainty_hint,
+        };
+        out.push(item);
+    }
+    eprintln!(
+        "[search_marketplace_skills_github] FINAL: certain={} uncertain={} reject={} drop_name={} → returning {} items",
+        n_certain, n_uncertain, n_reject, n_drop_name, out.len()
+    );
+    Ok(out)
+}
+
+// ============================================================================
+// AI install — Skill output schema (only the fields we consume)
+// ============================================================================
+
+/// Mirror of the Skill v0 schema in
+/// `src-tauri/resources/ai_install_skill_schema.json`. Field-for-field
+/// match; `serde(default)` everywhere so a missing field gracefully
+/// becomes an empty value rather than crashing the install.
+#[derive(Debug, Deserialize)]
+struct SkillAiOutput {
+    #[serde(default)]
+    success: bool,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    owner: String,
+    #[serde(default)]
+    repo: String,
+    #[serde(default)]
+    skill_path: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    skill_md_filename: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    description: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    summary: String,
+    #[serde(default)]
+    notes: String,
+    #[serde(default)]
+    confidence: String,
+}
+
+/// Validate that `skill_path` does not contain path-traversal segments. The
+/// codeload extractor sanitizes per-component on its side, but rejecting
+/// dubious values here keeps the failure mode loud (clear AI-failure
+/// context) instead of silent (codeload runs and emits an empty target dir).
+fn skill_path_is_safe(p: &str) -> bool {
+    if p.is_empty() {
+        return true; // explicit "Skill at repo root"
+    }
+    if p.contains("..") {
+        return false;
+    }
+    if p.starts_with('/') || p.starts_with('.') {
+        return false;
+    }
+    true
+}
+
+// ============================================================================
+// IPC: ai_install_skill_from_github
+// ============================================================================
+
+/// Install a Skill whose location must be inferred from its README (i.e.
+/// items returned by `search_marketplace_skills_github`). Spawns `claude -p`
+/// with the Skill v0 prompt, validates the structured output, pulls the
+/// repo subdirectory via `install_skill_via_codeload`, and runs the same
+/// finalize step the standard install path uses — only the source string
+/// changes (`"github_search"` vs `"skills_sh"`). Returns
+/// `InstallOutcome::NameCollision` for live / trash conflicts before any
+/// AI cost is paid.
+#[tauri::command]
+pub async fn ai_install_skill_from_github(
+    app: AppHandle,
+    item: MarketplaceSkillItem,
+    conflict_action: Option<ConflictAction>,
+) -> Result<InstallOutcome, String> {
+    // 1. sanitize_resource_name + target dir. Mirrors install_marketplace_skill.
+    let safe_name = match marketplace_sanitize(&item.name) {
+        Ok(n) => n,
+        Err(e) => {
+            return Ok(InstallOutcome::Failed {
+                reason: format!("Invalid resource name: {}", e),
+                ai_failure_context: None,
+            });
+        }
+    };
+    let skills_dir = get_app_data_dir().join("skills");
+    fs::create_dir_all(&skills_dir).map_err(|e| format!("create skills dir: {}", e))?;
+    let target_dir = skills_dir.join(&safe_name);
+    // Defence in depth: parent canonicalise + starts_with guard. Mirrors
+    // install_marketplace_skill:2919-2926.
+    if let Ok(canonical_parent) = skills_dir.canonicalize() {
+        if !target_dir.starts_with(&canonical_parent) {
+            return Ok(InstallOutcome::Failed {
+                reason: format!("Refused: target outside skills_dir: {}", target_dir.display()),
+                ai_failure_context: None,
+            });
+        }
+    }
+
+    // 2. Conflict detection — same shape as install_marketplace_skill:2930-2938.
+    //    Caller resolves NameCollision via the existing modal (Replace /
+    //    RestoreFromTrash), then retries with `conflict_action` set.
+    let has_local = target_dir.exists();
+    let trash_brief = find_skill_trash_brief(&safe_name);
+    let has_trashed = trash_brief.is_some();
+    if conflict_action.is_none() && (has_local || has_trashed) {
+        return Ok(InstallOutcome::NameCollision {
+            has_local,
+            has_trashed: trash_brief,
+        });
+    }
+    // Same Phase A limitation as the MCP AI install: full Replace /
+    // RestoreFromTrash branching is owned by `install_marketplace_skill`.
+    // We refuse a non-None conflict_action so the user explicitly trashes
+    // or restores first. Phase 2 upgrade can extend this if needed.
+    if conflict_action.is_some() {
+        return Ok(InstallOutcome::Failed {
+            reason: "AI install does not currently support Replace / RestoreFromTrash. \
+                     Resolve the name collision first, then retry."
+                .to_string(),
+            ai_failure_context: None,
+        });
+    }
+
+    // 3. Spawn claude -p with the Skill v0 prompt.
+    let workdir = ai_install_workdir()?;
+    let model = resolve_classify_model();
+    // The catalog item carries source="owner/repo" — derive the REPO_URL
+    // the prompt expects. This is the GitHub Search hit's html_url shape;
+    // we reconstruct it from `source` so V2 wire-format items (which don't
+    // carry a homepage_url) still work.
+    let repo_url = if !item.source.is_empty() && item.source.contains('/') {
+        format!("https://github.com/{}", item.source)
+    } else if !item.owner.is_empty() && !item.repo.is_empty() {
+        format!("https://github.com/{}/{}", item.owner, item.repo)
+    } else {
+        return Ok(InstallOutcome::Failed {
+            reason: format!(
+                "Cannot derive repo URL from item: source={:?}, owner={:?}, repo={:?}",
+                item.source, item.owner, item.repo
+            ),
+            ai_failure_context: None,
+        });
+    };
+    let final_prompt = AI_INSTALL_SKILL_PROMPT.replace("{REPO_URL}", &repo_url);
+
+    let spawn_result = tokio::time::timeout(
+        Duration::from_secs(AI_INSTALL_TIMEOUT_SECS),
+        TokioCommand::new("claude")
+            .current_dir(&workdir)
+            .arg("-p")
+            .arg(&final_prompt)
+            .arg("--output-format")
+            .arg("json")
+            .arg("--json-schema")
+            .arg(AI_INSTALL_SKILL_SCHEMA)
+            .arg("--tools")
+            .arg("WebFetch,Read,Write")
+            .arg("--dangerously-skip-permissions")
+            .arg("--max-budget-usd")
+            .arg(AI_INSTALL_BUDGET_USD)
+            .arg("--model")
+            .arg(&model)
+            .output(),
+    )
+    .await;
+
+    let output = match spawn_result {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            return Ok(InstallOutcome::Failed {
+                reason: format!(
+                    "Failed to execute Claude CLI: {}. Make sure `claude` is installed and in PATH.",
+                    e
+                ),
+                ai_failure_context: None,
+            });
+        }
+        Err(_) => {
+            return Ok(InstallOutcome::Failed {
+                reason: format!(
+                    "AI install timed out after {}s. The Claude CLI did not return a result.",
+                    AI_INSTALL_TIMEOUT_SECS
+                ),
+                ai_failure_context: None,
+            });
+        }
+    };
+
+    // 4. Parse top-level CLI envelope. Same is_error / structured_output
+    //    discipline as the MCP path (08 §F.1).
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let cli_result: ClaudeCliResult = match serde_json::from_str(&stdout) {
+        Ok(r) => r,
+        Err(e) => {
+            return Ok(InstallOutcome::Failed {
+                reason: format!(
+                    "Could not parse Claude CLI output as JSON: {}. \
+                     Check that the `claude` CLI is up to date.",
+                    e
+                ),
+                ai_failure_context: Some(stdout),
+            });
+        }
+    };
+
+    if cli_result.is_error {
+        let api_status = cli_result
+            .api_error_status
+            .as_ref()
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        let result_text = cli_result.result.clone().unwrap_or_default();
+        return Ok(InstallOutcome::Failed {
+            reason: if !api_status.is_empty() {
+                format!(
+                    "Claude CLI reported an API error (status {}). {}",
+                    api_status, result_text
+                )
+            } else if !result_text.is_empty() {
+                format!("Claude CLI reported an error: {}", result_text)
+            } else {
+                "Claude CLI reported an error with no detail.".to_string()
+            },
+            ai_failure_context: Some(stdout),
+        });
+    }
+
+    let structured = match cli_result.structured_output {
+        Some(v) => v,
+        None => {
+            return Ok(InstallOutcome::Failed {
+                reason: "Claude CLI returned no structured_output. The model may have refused \
+                         or returned only a free-form `result` string."
+                    .to_string(),
+                ai_failure_context: Some(stdout),
+            });
+        }
+    };
+
+    let raw_structured_pretty = serde_json::to_string_pretty(&structured)
+        .unwrap_or_else(|_| structured.to_string());
+
+    let ai: SkillAiOutput = match serde_json::from_value(structured) {
+        Ok(o) => o,
+        Err(e) => {
+            return Ok(InstallOutcome::Failed {
+                reason: format!("AI structured_output did not match schema: {}", e),
+                ai_failure_context: Some(raw_structured_pretty),
+            });
+        }
+    };
+
+    // 5. Validate AI output before we trust any of it. The Skill prompt's
+    //    Step 4d ties success=true to: README found + Step 1d evidence
+    //    matched + skill_path determinate + valid name + non-empty
+    //    owner/repo + confidence ∈ {high, medium}. We treat
+    //    `success == true` as the unified "this is actually a Skill"
+    //    confirmation (the schema does not surface a separate
+    //    `has_skill_md` boolean — that signal is folded into Step 1d
+    //    evidence and `confidence`).
+    if !ai.success {
+        return Ok(InstallOutcome::Failed {
+            reason: if ai.notes.is_empty() {
+                format!(
+                    "AI install declined this repo (success=false, confidence={}).",
+                    ai.confidence
+                )
+            } else {
+                ai.notes.clone()
+            },
+            ai_failure_context: Some(raw_structured_pretty),
+        });
+    }
+
+    // The AI returns its own derived `name` (Step 4a). As with MCP install,
+    // we treat that as a sanity check only — the canonical filename must
+    // match `item.name` so the GitHub Search id (`git:owner/repo`) keeps
+    // pointing at a deterministic install target. An invalid AI-derived
+    // name is a hard fail because it indicates the model violated its own
+    // schema pattern check.
+    if try_sanitize(&ai.name).is_none() && !ai.name.is_empty() {
+        return Ok(InstallOutcome::Failed {
+            reason: format!(
+                "AI returned an invalid `name`: {:?}. Must match [A-Za-z0-9_.-]+, ≤ 64 chars, \
+                 not start with '.' / '-', not contain '..'.",
+                ai.name
+            ),
+            ai_failure_context: Some(raw_structured_pretty),
+        });
+    }
+    // owner / repo must also be non-empty for the codeload pull below.
+    if ai.owner.is_empty() || ai.repo.is_empty() {
+        return Ok(InstallOutcome::Failed {
+            reason: "AI returned empty owner or repo while success=true.".to_string(),
+            ai_failure_context: Some(raw_structured_pretty),
+        });
+    }
+    // skill_path safety check — codeload also sanitizes per-component, but
+    // an explicit guard here surfaces the AI failure case loudly.
+    if !skill_path_is_safe(&ai.skill_path) {
+        return Ok(InstallOutcome::Failed {
+            reason: format!(
+                "AI returned an unsafe skill_path: {:?}. Must not contain '..' or start with '/' or '.'.",
+                ai.skill_path
+            ),
+            ai_failure_context: Some(raw_structured_pretty),
+        });
+    }
+
+    // 6. Codeload + extract. The owner / repo strings still go through the
+    //    canonical `sanitize_resource_name` inside `install_skill_via_codeload`
+    //    callers (defence in depth) but we sanitise here too to keep the
+    //    failure mode contained.
+    let owner_safe = match marketplace_sanitize(&ai.owner) {
+        Ok(o) => o,
+        Err(e) => {
+            return Ok(InstallOutcome::Failed {
+                reason: format!("AI owner failed sanitisation: {}", e),
+                ai_failure_context: Some(raw_structured_pretty),
+            });
+        }
+    };
+    let repo_safe = match marketplace_sanitize(&ai.repo) {
+        Ok(r) => r,
+        Err(e) => {
+            return Ok(InstallOutcome::Failed {
+                reason: format!("AI repo failed sanitisation: {}", e),
+                ai_failure_context: Some(raw_structured_pretty),
+            });
+        }
+    };
+
+    // The codeload helper takes a vec of candidate sub-paths; the AI's
+    // single `skill_path` produces a one-element vec. Empty string is the
+    // canonical "repo root" sentinel value (see install_marketplace_skill
+    // §3035-3041).
+    let candidate_paths: Vec<String> = vec![ai.skill_path.clone()];
+
+    // Clean any stale dir from a prior failed attempt before extracting.
+    let _ = fs::remove_dir_all(&target_dir);
+    let repo_subpath = match install_skill_via_codeload(
+        &owner_safe,
+        &repo_safe,
+        &candidate_paths,
+        // Pass an empty `skill_id` because the codeload helper's secondary
+        // tree-search lookup (which would search for `/<skill_id>/SKILL.md`)
+        // is irrelevant here — the AI has already given us the precise
+        // subpath via candidate_paths. If the precise probe fails,
+        // failing the install is the right behaviour.
+        "",
+        &target_dir,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = fs::remove_dir_all(&target_dir);
+            return Ok(InstallOutcome::Failed {
+                reason: format!("Could not install skill: {}", e),
+                ai_failure_context: Some(raw_structured_pretty),
+            });
+        }
+    };
+
+    // Defence: the codeload extractor checks for SKILL.md / README.md in
+    // its candidate-prefix selection, but per-component sanitization could
+    // theoretically drop the manifest after selection. Re-verify.
+    if !target_dir.join("SKILL.md").exists() && !target_dir.join("README.md").exists() {
+        let _ = fs::remove_dir_all(&target_dir);
+        return Ok(InstallOutcome::Failed {
+            reason: "Install completed but no SKILL.md / README.md in target dir".to_string(),
+            ai_failure_context: Some(raw_structured_pretty),
+        });
+    }
+
+    // 7. Build a synthesized item for finalize so MarketplaceSource carries
+    //    the real (owner, repo, name) triple. We preserve the original
+    //    item.id (= `git:owner/repo`) so the GitHub Search "Installed?"
+    //    SSoT join keeps working across re-searches.
+    let finalize_item = MarketplaceSkillItem {
+        id: item.id.clone(),
+        name: item.name.clone(),
+        description: item.description.clone(),
+        // Keep `source` in the wire form `"owner/repo"` so
+        // `derive_install_triple` inside finalize parses the same triple
+        // we just sanitized above.
+        source: format!("{}/{}", owner_safe, repo_safe),
+        // skill_id stays empty: this Skill came from the GitHub Search
+        // path, not from a skills.sh catalog. The real in-repo path is
+        // captured in `repo_subpath` below and persisted into
+        // `MarketplaceSource.repo_subpath` by finalize.
+        skill_id: String::new(),
+        installs: 0,
+        is_official: None,
+        installs_yesterday: None,
+        change: None,
+        readme_markdown: String::new(),
+        author: owner_safe.clone(),
+        owner: owner_safe.clone(),
+        repo: repo_safe.clone(),
+        skill_path: ai.skill_path.clone(),
+        homepage_url: String::new(),
+        last_updated_at: item.last_updated_at.clone(),
+        stars: item.stars,
+        categories: Vec::new(),
+        tags: Vec::new(),
+        license: item.license.clone(),
+        uncertainty_hint: None,
+    };
+
+    // 8. finalize — writes data.json::skill_metadata with
+    //    `source = "github_search"`, runs spawn_auto_classify.
+    finalize_skill_install_with_source(app, &finalize_item, target_dir, Some(repo_subpath), "github_search")
+        .await
 }

@@ -58,12 +58,14 @@ export interface MarketplaceListItemProps {
    *  concern. */
   uncertaintyHint?: string;
   /** Optional override for the Install onClick (per-row). Passed in by the
-   *  GitHub-Search section so the click goes through `aiInstallFromGithub`
-   *  instead of the regular `installMcp` (GitHub-Search items have no
-   *  `stdio_config` / `http_config`; the regular path would fail). When
-   *  omitted, the row falls back to the existing `installSkill` /
-   *  `installMcp` store actions. */
-  onInstall?: (item: MarketplaceMcpItem) => void;
+   *  GitHub-Search section so the click goes through
+   *  `aiInstallFromGithub` (MCP) or `aiInstallSkillFromGithub` (Skill)
+   *  instead of the regular `installMcp` / `installSkill` paths
+   *  (GitHub-Search MCPs lack `stdio_config`/`http_config`; GitHub-Search
+   *  Skills have `skill_id=""`, so neither regular install path can
+   *  resolve them). When omitted, the row falls back to the existing
+   *  `installSkill` / `installMcp` store actions. */
+  onInstall?: (item: MarketplaceSkillItem | MarketplaceMcpItem) => void;
   /**
    * Label override for the trailing install button. The GitHub-Search section
    * uses `"AI inferring..."` while loading to make the longer 30-90s wait obvious;
@@ -216,8 +218,11 @@ export const MarketplaceListItem: React.FC<MarketplaceListItemProps> = ({
     // Stop the click bubbling to the row so installing does not also open
     // the detail panel (the user's intent is to install, not browse).
     e.stopPropagation();
-    if (onInstall && itemType === 'mcp') {
-      onInstall(item as MarketplaceMcpItem);
+    // Per-row override (GitHub-Search section) wins over the default
+    // store actions. Skill + MCP both honoured — the caller types the
+    // handler against its own item type.
+    if (onInstall) {
+      onInstall(item);
       return;
     }
     if (itemType === 'skill') {

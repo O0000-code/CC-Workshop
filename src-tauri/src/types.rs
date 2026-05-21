@@ -1460,8 +1460,9 @@ pub struct MarketplaceSource {
     /// Upstream catalog identifier. `"skills_sh"` for the Skill Marketplace
     /// (skills.sh seed + scrape), `"mcp_registry"` for the Official MCP
     /// Registry (`registry.modelcontextprotocol.io`), and `"github_search"`
-    /// for MCPs installed via the GitHub Search + AI-inference fallback
-    /// (`marketplace_github::ai_install_from_github`).
+    /// for both MCPs and Skills installed via the GitHub Search + AI-inference
+    /// fallback (`marketplace_github::ai_install_from_github` /
+    /// `marketplace_github::ai_install_skill_from_github`).
     pub source: String,
     /// GitHub-style owner. For skills.sh entries this is the repository
     /// owner; for MCP Registry entries this is parsed from `repository.url`
@@ -1584,6 +1585,14 @@ pub struct MarketplaceSkillItem {
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
+    /// Free-form caveat displayed as a warning hint next to the catalog
+    /// row. Populated only by the GitHub Search data source for items that
+    /// scored `Uncertain` under the Skill fingerprint heuristic
+    /// (`02_github_skill_realtest.md` §D). The frontend renders this as a
+    /// `HelpCircle` corner badge with the string as its tooltip. `None`
+    /// for skills.sh-sourced items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncertainty_hint: Option<String>,
 }
 
 /// Catalog item returned by `list_marketplace_mcps`. The `mcp_type` field

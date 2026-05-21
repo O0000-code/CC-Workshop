@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "success",
+    "name",
+    "owner",
+    "repo",
+    "skill_path",
+    "skill_md_filename",
+    "description",
+    "summary",
+    "notes",
+    "confidence"
+  ],
+  "properties": {
+    "success": {
+      "type": "boolean",
+      "description": "True if AND only if: README found + SKILL.md (or strong Skill signal) confirmed + skill_path determinate + valid name + non-empty owner/repo + confidence ∈ {high,medium}. False on any failure mode."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$",
+      "maxLength": 64,
+      "description": "Sanitized Skill name. Must match [A-Za-z0-9_.-]+, cannot start with . or -, cannot contain .., max 64 chars. Empty string allowed only when success=false."
+    },
+    "owner": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "GitHub owner segment. Required for install; empty only when success=false AND REPO_URL was unreachable."
+    },
+    "repo": {
+      "type": "string",
+      "maxLength": 100,
+      "description": "GitHub repo segment. Required for install; empty only when success=false AND REPO_URL was unreachable."
+    },
+    "skill_path": {
+      "type": "string",
+      "maxLength": 256,
+      "description": "In-repo directory path containing SKILL.md (relative to repo root, no leading/trailing slash). Empty string ('') means Skill is at repo root. Must be determinate when success=true."
+    },
+    "skill_md_filename": {
+      "type": "string",
+      "enum": ["SKILL.md", "skill.md", "Skill.md"],
+      "description": "Exact-case filename of the Skill manifest. Defaults to 'SKILL.md' — only set otherwise when the repo unconventionally uses lowercase."
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "Short one-line description for marketplace card preview. Source: SKILL.md frontmatter description > SKILL.md body first paragraph > GitHub repo description. Empty string allowed (UI degrades gracefully)."
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 280,
+      "description": "Longer 'what this Skill teaches Claude to do' blurb. Source: SKILL.md body first ~200 chars > README first paragraph. Empty string allowed."
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 280,
+      "description": "Provenance + caveats (≤ 280 chars). On success: which Step 1d evidence + which Step 2 rule + description source. On failure: specific blocker. Always required, never empty."
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low"],
+      "description": "high = SKILL.md confirmed + frontmatter description used. medium = Skill confirmed via keyword or install command but not direct SKILL.md fetch. low = Step 2 Rule 4/5 OR last-resort description OR repo type ambiguous. success=true REQUIRES high or medium."
+    }
+  }
+}

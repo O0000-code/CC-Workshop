@@ -1004,14 +1004,18 @@ export function McpMarketplacePage() {
                 line above; this section just holds the list + pagination. */}
             <section>
               {showFilterEmpty ? (
-                // Two-mode layout:
-                //   • Before user clicks "Search GitHub" (`mcpsGithubSearch === null`)
-                //     → centered EmptyState with action button.
-                //   • After click → top-anchored EmptyState (title + description
-                //     stay above) followed by the GitHub section. Keeps the
-                //     EmptyState's failure-context visible while results scroll
-                //     in below; matches the spec rule "GitHub section takes
-                //     over original position".
+                // Four-mode layout for the "primary search → 0 results" branch:
+                //   1. Pre-trigger (`mcpsGithubSearch === null`)
+                //      → centered EmptyState + "Search GitHub" action.
+                //   2. GitHub loading
+                //      → centered EmptyState + disabled "Searching GitHub..."
+                //        spinner action. Layout stays put so the click does
+                //        not flash an empty-action page.
+                //   3. GitHub fetched with ≥ 1 result
+                //      → EmptyState removed; GithubFallback section takes over.
+                //   4. GitHub fetched with 0 results
+                //      → top-anchored EmptyState + McpGithubFallback's
+                //        "No additional results on GitHub." line.
                 mcpsGithubSearch === null ? (
                   <div className="flex h-full items-center justify-center py-12">
                     <EmptyState
@@ -1029,6 +1033,35 @@ export function McpMarketplacePage() {
                       }
                     />
                   </div>
+                ) : mcpsGithubSearch.loading ? (
+                  <div className="flex h-full items-center justify-center py-12">
+                    <EmptyState
+                      icon={<Search className="h-12 w-12" />}
+                      title={`No results for "${mcpsSearch.query}"`}
+                      description="Search matches MCP server names exactly. Try a different keyword."
+                      action={
+                        <Button variant="secondary" size="small" disabled>
+                          <span className="inline-flex items-center gap-1.5">
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                            Searching GitHub...
+                          </span>
+                        </Button>
+                      }
+                    />
+                  </div>
+                ) : mcpsGithubSearch.hasFetched && mcpsGithubSearch.items.length > 0 ? (
+                  <McpGithubFallback
+                    isSearchMode={isSearchMode}
+                    primaryQuery={mcpsSearch?.query ?? ''}
+                    primaryHasResults={visibleItems.length > 0}
+                    primaryLoading={isLoadingPage && visibleItems.length === 0}
+                    mcpsGithubSearch={mcpsGithubSearch}
+                    onTrigger={triggerGithubSearch}
+                    onInstall={aiInstallFromGithub}
+                    selectedMcpItemId={selectedMcpItemId}
+                    onSelectItem={handleSelectItem}
+                    isMcpInstalled={isMcpInstalled}
+                  />
                 ) : (
                   <div className="flex flex-col">
                     <EmptyState
@@ -1191,7 +1224,18 @@ function McpReadmeBlock({ item }: { item: MarketplaceMcpItem }) {
             </button>
           </div>
         ) : hasContent ? (
-          <MarkdownBody source={cached!.content} />
+          <MarkdownBody
+            source={cached!.content}
+            baseUrl={(() => {
+              // `repositoryUrl` is typically `https://github.com/<owner>/<repo>`
+              // (sometimes with `.git` or a `/tree/HEAD/...` suffix). Rewrite to
+              // raw.githubusercontent.com so relative `![](logo.png)` images
+              // and `[link](docs/setup.md)` references resolve against the
+              // repo root.
+              const m = key?.match(/github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:\/.*)?$/);
+              return m ? `https://raw.githubusercontent.com/${m[1]}/${m[2]}/HEAD/` : undefined;
+            })()}
+          />
         ) : (
           <p className="text-xs text-[#A1A1AA]">No README provided.</p>
         )}
@@ -1511,7 +1555,7 @@ function McpGithubResultRow({
         isInstalled={isInstalled}
         onSelect={onSelect}
         uncertaintyHint={item.uncertaintyHint}
-        onInstall={(it) => void onInstall(it)}
+        onInstall={(it) => void onInstall(it as MarketplaceMcpItem)}
         installingLabel="AI inferring..."
         hideRetryOnFailure
       />

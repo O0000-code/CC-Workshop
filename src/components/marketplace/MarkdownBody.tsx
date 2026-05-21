@@ -1,4 +1,5 @@
-import ReactMarkdown from 'react-markdown';
+import { useMemo } from 'react';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
 
@@ -14,12 +15,62 @@ import type { Components } from 'react-markdown';
  * Prism / Shiki dep is not justified at this stage, and our monospace
  * code-block style already reads clearly.
  *
+ * GitHub-flavoured normalisations applied on the source before rendering:
+ *   - YAML frontmatter (`^---\n…\n---\n`) is stripped — GitHub hides it,
+ *     and otherwise react-markdown renders the raw `--- name: …` lines as
+ *     visible body text. SKILL.md files always carry frontmatter so this
+ *     is critical for the Skill marketplace path.
+ *   - Relative URLs in img / link / etc. are rewritten to absolute against
+ *     `baseUrl` (typically the repo's raw URL), so `![](logo.png)` resolves
+ *     to `https://raw.githubusercontent.com/<owner>/<repo>/HEAD/logo.png`
+ *     instead of the Tauri webview origin. Absolute / protocol-relative /
+ *     anchor / mailto / data URLs pass through unchanged.
+ *
  * Renders nothing when `source` is empty or whitespace.
  */
 export interface MarkdownBodyProps {
   source: string;
   /** Extra className appended to the outer wrapper. */
   className?: string;
+  /** Base URL used to resolve relative `src` / `href` references inside
+   *  the rendered markdown. Typically
+   *  `https://raw.githubusercontent.com/<owner>/<repo>/HEAD/` plus an
+   *  optional subpath. If omitted, relative URLs are passed through
+   *  unchanged (will fail to load — caller should always provide this
+   *  when rendering README content from an external repo). */
+  baseUrl?: string;
+}
+
+/** Strip a single leading YAML frontmatter block. Matches `---\n…\n---\n`
+ *  at byte 0. Non-greedy on the body so multi-document YAML is not eaten
+ *  by accident. Returns the source unchanged if no frontmatter is present. */
+function stripFrontmatter(source: string): string {
+  const match = source.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n+/);
+  return match ? source.slice(match[0].length) : source;
+}
+
+/** Build a urlTransform function for react-markdown v10. Falls back to the
+ *  library's `defaultUrlTransform` (which strips dangerous schemes like
+ *  `javascript:`) for absolute URLs; rewrites relative paths against
+ *  `baseUrl`. */
+function makeUrlTransform(baseUrl: string | undefined) {
+  return (url: string): string => {
+    const defaulted = defaultUrlTransform(url);
+    if (!baseUrl || !defaulted) return defaulted;
+    // absolute (scheme:…) / protocol-relative (//…) / anchor (#…) / data
+    // URLs pass through. defaultUrlTransform already returns empty for
+    // disallowed schemes.
+    if (
+      /^[a-z][a-z0-9+\-.]*:/i.test(defaulted) ||
+      defaulted.startsWith('//') ||
+      defaulted.startsWith('#')
+    ) {
+      return defaulted;
+    }
+    const cleaned = defaulted.replace(/^\.\//, '').replace(/^\//, '');
+    const base = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+    return `${base}${cleaned}`;
+  };
 }
 
 const components: Components = {
@@ -159,12 +210,18 @@ const components: Components = {
   ),
 };
 
-export function MarkdownBody({ source, className }: MarkdownBodyProps) {
-  if (!source || source.trim().length === 0) return null;
+export function MarkdownBody({ source, className, baseUrl }: MarkdownBodyProps) {
+  const normalised = useMemo(() => stripFrontmatter(source ?? ''), [source]);
+  const urlTransform = useMemo(() => makeUrlTransform(baseUrl), [baseUrl]);
+  if (!normalised || normalised.trim().length === 0) return null;
   return (
     <div className={className}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-        {source}
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        urlTransform={urlTransform}
+        components={components}
+      >
+        {normalised}
       </ReactMarkdown>
     </div>
   );

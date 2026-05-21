@@ -5,8 +5,11 @@
 
 // ----- Upstream provenance -------------------------------------------------
 
-/** Source kind. Mirrors Rust `MarketplaceSource.source` discriminator. */
-export type MarketplaceSourceKind = 'skills_sh' | 'mcp_registry';
+/** Source kind. Mirrors Rust `MarketplaceSource.source` discriminator.
+ *  `github_search` is set by the AI-inference fallback for both MCPs
+ *  (`marketplace_github::ai_install_from_github`) and Skills
+ *  (`marketplace_github::ai_install_skill_from_github`). */
+export type MarketplaceSourceKind = 'skills_sh' | 'mcp_registry' | 'github_search';
 
 /**
  * Provenance triple `(owner, repo, name)` plus sync timestamp recorded in
@@ -85,6 +88,15 @@ export interface MarketplaceSkillItem {
   categories?: string[];
   tags?: string[];
   license?: string;
+  /**
+   * Soft "Auto-detected — verify before install" hint surfaced as a corner
+   * badge by `<MarketplaceListItem>` when the item came from the GitHub
+   * Search secondary path (`marketplaceSource.source === 'github_search'`)
+   * and the fingerprint filter marked it as `Uncertain` rather than
+   * `Certain`. Mirror of Rust `MarketplaceSkillItem.uncertainty_hint`.
+   * Absent for skills.sh-sourced items.
+   */
+  uncertaintyHint?: string;
 }
 
 // ----- Skills.sh listing / search response envelopes -----------------------

@@ -416,7 +416,7 @@ pub fn is_mcp_in_trash(mcp_name: &str) -> bool {
 /// Used when surfacing an `InstallOutcome::NameCollision` so the modal
 /// can show "deleted N days ago" and pass `trash_path` back unchanged for
 /// the eventual `ConflictAction::RestoreFromTrash`.
-fn find_skill_trash_brief(skill_name: &str) -> Option<TrashedItemBrief> {
+pub(crate) fn find_skill_trash_brief(skill_name: &str) -> Option<TrashedItemBrief> {
     let trash_dir = get_app_data_dir().join("trash").join("skills");
     if !trash_dir.exists() {
         return None;
@@ -2651,7 +2651,7 @@ fn describe_reqwest_error(err: &reqwest::Error) -> String {
 /// stripped of the `<repo>-HEAD/` archive prefix and the trailing slash.
 /// The caller persists this into `MarketplaceSource.repo_subpath` so the
 /// detail-panel "From GitHub" link points at the real folder.
-async fn install_skill_via_codeload(
+pub(crate) async fn install_skill_via_codeload(
     owner: &str,
     repo: &str,
     candidate_paths: &[String],
@@ -3080,6 +3080,23 @@ async fn finalize_skill_install(
     target_dir: std::path::PathBuf,
     repo_subpath: Option<String>,
 ) -> Result<InstallOutcome, String> {
+    finalize_skill_install_with_source(app, item, target_dir, repo_subpath, "skills_sh").await
+}
+
+/// Variant of [`finalize_skill_install`] that lets the caller stamp a custom
+/// `MarketplaceSource.source` discriminator on the persisted metadata. The
+/// default path (`install_marketplace_skill`) hardcodes `"skills_sh"`; AI
+/// install (`commands::marketplace_github::ai_install_skill_from_github`)
+/// passes `"github_search"` so future "refresh-by-source" code paths can
+/// tell the two channels apart. All other behaviour (snapshot recovery,
+/// imported-list tracking, auto-classify) is identical.
+pub(crate) async fn finalize_skill_install_with_source(
+    app: AppHandle,
+    item: &MarketplaceSkillItem,
+    target_dir: std::path::PathBuf,
+    repo_subpath: Option<String>,
+    source: &str,
+) -> Result<InstallOutcome, String> {
     let skill_id = target_dir.to_string_lossy().to_string();
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -3123,7 +3140,7 @@ async fn finalize_skill_install(
         }
         entry.install_source = Some("marketplace".to_string());
         entry.marketplace_source = Some(MarketplaceSource {
-            source: "skills_sh".to_string(),
+            source: source.to_string(),
             owner,
             repo,
             name: item.name.clone(),

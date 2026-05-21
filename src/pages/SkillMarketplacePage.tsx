@@ -1,5 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { BadgeCheck, Check, Loader2, Search, Sparkles, WifiOff } from 'lucide-react';
+import {
+  AlertTriangle,
+  BadgeCheck,
+  Check,
+  Github,
+  Loader2,
+  Search,
+  Sparkles,
+  WifiOff,
+} from 'lucide-react';
 import { PageHeader, SlidePanel } from '@/components/layout';
 import Badge from '@/components/common/Badge';
 import Button from '@/components/common/Button';
@@ -123,6 +132,7 @@ export function SkillMarketplacePage() {
   // ── Subscribe to marketplaceStore slices.
   const skillsListing = useMarketplaceStore((s) => s.skillsListing);
   const skillsSearch = useMarketplaceStore((s) => s.skillsSearch);
+  const skillsGithubSearch = useMarketplaceStore((s) => s.skillsGithubSearch);
   const selectedItemId = useMarketplaceStore((s) => s.selectedSkillItemId);
   const onboardingDismissed = useMarketplaceStore((s) => s.onboardingDismissedSkills);
 
@@ -135,6 +145,9 @@ export function SkillMarketplacePage() {
   const selectSkillItem = useMarketplaceStore((s) => s.selectSkillItem);
   const dismissOnboarding = useMarketplaceStore((s) => s.dismissOnboarding);
   const loadSkillsTopicMap = useMarketplaceStore((s) => s.loadSkillsTopicMap);
+  const triggerSkillGithubSearch = useMarketplaceStore((s) => s.triggerSkillGithubSearch);
+  const aiInstallSkillFromGithub = useMarketplaceStore((s) => s.aiInstallSkillFromGithub);
+  const isSkillInstalled = useMarketplaceStore((s) => s.isSkillInstalled);
 
   // Subscribe to the local Skills SSoT so the `isInstalled` derivation
   // refreshes when the underlying skill list changes.
@@ -185,11 +198,16 @@ export function SkillMarketplacePage() {
   // ── Selected item — look up by `${source}/${skillId}` key (V2) inside the
   // currently-visible source. If the user toggled mode (search ↔ listing)
   // and the selection's item is no longer visible, close the panel so the
-  // user doesn't see an empty SlidePanel.
+  // user doesn't see an empty SlidePanel. When in search mode we also
+  // consult the GitHub-Search overlay so clicking a GitHub row opens its
+  // detail panel rather than triggering the "missing → auto-close" effect.
   const selectedItem = useMemo(() => {
     if (!selectedItemId) return null;
-    return visibleItems.find((i) => getSkillItemKey(i) === selectedItemId) ?? null;
-  }, [visibleItems, selectedItemId]);
+    const fromVisible = visibleItems.find((i) => getSkillItemKey(i) === selectedItemId);
+    if (fromVisible) return fromVisible;
+    const fromGithub = skillsGithubSearch?.items.find((i) => getSkillItemKey(i) === selectedItemId);
+    return fromGithub ?? null;
+  }, [visibleItems, skillsGithubSearch, selectedItemId]);
   useEffect(() => {
     if (selectedItemId && !selectedItem) {
       // The selected item disappeared from the visible source. Close the
@@ -419,13 +437,78 @@ export function SkillMarketplacePage() {
             />
           </div>
         ) : isSearchMode && skillsSearch.results.length === 0 && !skillsSearch.isSearching ? (
-          <div className="flex h-full items-center justify-center">
-            <EmptyState
-              icon={<Search className="h-12 w-12" />}
-              title={`No results for "${skillsSearch.query}"`}
-              description="Try different keywords or switch to All Time."
+          // Three-mode layout (mirrors MCP page):
+          //   1. Pre-trigger (`skillsGithubSearch === null`)
+          //      → centered EmptyState with "Search GitHub" action.
+          //   2. GitHub loading or fetched-but-0-results
+          //      → top-anchored EmptyState + SkillGithubFallback below.
+          //   3. GitHub fetched with ≥ 1 result
+          //      → EmptyState removed entirely; SkillGithubFallback section
+          //        takes over (user found what they wanted, keeping the big
+          //        "No results" message visible would be misleading).
+          skillsGithubSearch === null ? (
+            <div className="flex h-full items-center justify-center">
+              <EmptyState
+                icon={<Search className="h-12 w-12" />}
+                title={`No results for "${skillsSearch.query}"`}
+                description="Try different keywords or switch to All Time."
+                action={
+                  <Button
+                    variant="secondary"
+                    size="small"
+                    onClick={() => void triggerSkillGithubSearch(skillsSearch.query)}
+                  >
+                    Search GitHub
+                  </Button>
+                }
+              />
+            </div>
+          ) : skillsGithubSearch.loading ? (
+            <div className="flex h-full items-center justify-center">
+              <EmptyState
+                icon={<Search className="h-12 w-12" />}
+                title={`No results for "${skillsSearch.query}"`}
+                description="Try different keywords or switch to All Time."
+                action={
+                  <Button variant="secondary" size="small" disabled>
+                    <span className="inline-flex items-center gap-1.5">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Searching GitHub...
+                    </span>
+                  </Button>
+                }
+              />
+            </div>
+          ) : skillsGithubSearch.hasFetched && skillsGithubSearch.items.length > 0 ? (
+            <SkillGithubFallback
+              isSearchMode={isSearchMode}
+              primaryQuery={skillsSearch?.query ?? ''}
+              skillsGithubSearch={skillsGithubSearch}
+              onTrigger={triggerSkillGithubSearch}
+              onInstall={aiInstallSkillFromGithub}
+              selectedSkillItemKey={selectedItemId}
+              onSelectItem={handleSelectItem}
+              isSkillInstalled={isSkillInstalled}
             />
-          </div>
+          ) : (
+            <div className="flex flex-col">
+              <EmptyState
+                icon={<Search className="h-12 w-12" />}
+                title={`No results for "${skillsSearch.query}"`}
+                description="Try different keywords or switch to All Time."
+              />
+              <SkillGithubFallback
+                isSearchMode={isSearchMode}
+                primaryQuery={skillsSearch?.query ?? ''}
+                skillsGithubSearch={skillsGithubSearch}
+                onTrigger={triggerSkillGithubSearch}
+                onInstall={aiInstallSkillFromGithub}
+                selectedSkillItemKey={selectedItemId}
+                onSelectItem={handleSelectItem}
+                isSkillInstalled={isSkillInstalled}
+              />
+            </div>
+          )
         ) : (
           <div className="flex flex-col gap-3">
             {visibleItems.map((item) => {
@@ -443,6 +526,20 @@ export function SkillMarketplacePage() {
               );
             })}
 
+            {/* GitHub fallback section — renders post-trigger results below
+                the primary list, before the sentinel. Pre-trigger CTA +
+                loading state live inline inside the sentinel (see below). */}
+            <SkillGithubFallback
+              isSearchMode={isSearchMode}
+              primaryQuery={skillsSearch?.query ?? ''}
+              skillsGithubSearch={skillsGithubSearch}
+              onTrigger={triggerSkillGithubSearch}
+              onInstall={aiInstallSkillFromGithub}
+              selectedSkillItemKey={selectedItemId}
+              onSelectItem={handleSelectItem}
+              isSkillInstalled={isSkillInstalled}
+            />
+
             {/* Infinite-scroll sentinel + load-more / end-of-catalogue feedback.
                 Only rendered in listing mode. */}
             {!isSearchMode && visibleItems.length > 0 && (
@@ -455,12 +552,47 @@ export function SkillMarketplacePage() {
                   </div>
                 )}
                 {!skillsListing.hasMore && !skillsListing.isLoadingMore && (
-                  <span className="text-[11px] text-[#A1A1AA]">
-                    End of catalog ({formatCompactNumber(skillsListing.total)} total)
+                  <span className="text-[11px] text-[#A1A1AA] inline-flex items-center gap-1.5">
+                    <span>End of catalog ({formatCompactNumber(skillsListing.total)} total)</span>
                   </span>
                 )}
               </div>
             )}
+
+            {/* Search-mode end-of-list affordance — skills search is a single
+                non-paginated query, so we surface the GitHub-Search CTA here
+                instead of inside the (listing-only) infinite-scroll sentinel.
+                Renders inline at the bottom of the results list, mirroring the
+                MCP page's paginationControl middle slot. */}
+            {isSearchMode &&
+              visibleItems.length > 0 &&
+              (skillsGithubSearch === null ? (
+                <div className="flex flex-col items-center gap-2 py-6">
+                  <span className="text-[11px] text-[#A1A1AA] inline-flex items-center gap-1.5">
+                    <span>End of results</span>
+                    <span className="text-[#D4D4D8]">·</span>
+                    <button
+                      type="button"
+                      onClick={() => void triggerSkillGithubSearch(skillsSearch.query)}
+                      className="inline-flex items-center gap-1 text-[#52525B] hover:text-[#18181B] transition-colors cursor-pointer"
+                    >
+                      <Search className="h-3 w-3" />
+                      Search GitHub
+                    </button>
+                  </span>
+                </div>
+              ) : skillsGithubSearch.loading ? (
+                <div className="flex flex-col items-center gap-2 py-6">
+                  <span className="text-[11px] text-[#A1A1AA] inline-flex items-center gap-1.5">
+                    <span>End of results</span>
+                    <span className="text-[#D4D4D8]">·</span>
+                    <span className="inline-flex items-center gap-1 text-[#A1A1AA]">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Searching GitHub...
+                    </span>
+                  </span>
+                </div>
+              ) : null)}
           </div>
         )}
       </div>
@@ -571,6 +703,7 @@ const SkillRowWrapper = React.memo(function SkillRowWrapper({
       compact={compact}
       isInstalled={isInstalled}
       onSelect={onSelect}
+      uncertaintyHint={item.uncertaintyHint}
     />
   );
 });
@@ -716,9 +849,16 @@ function SkillDetailContent({ item }: { item: MarketplaceSkillItem }) {
 
   // Trigger README fetch on detail open / item change. The store memoises
   // by key + 5-min TTL so this is idempotent for repeat opens.
+  //
+  // GitHub-Search items carry `skillId = ""` (Phase A sentinel — the real
+  // subpath is inferred at AI install time). Empty skillId is still a valid
+  // input to `get_marketplace_skill_readme` — the backend's URL fallback
+  // chain (`marketplace.rs::fetch_skill_readme_github`) skips the subpath
+  // attempts and goes straight to root `SKILL.md` → root `README.md`,
+  // which covers most repos. Only `source` is hard-required.
   useEffect(() => {
-    if (!item.source || !item.skillId) return;
-    void loadSkillReadme(item.source, item.skillId);
+    if (!item.source) return;
+    void loadSkillReadme(item.source, item.skillId ?? '');
   }, [item.source, item.skillId, loadSkillReadme]);
 
   // Trigger Stars fetch alongside README. Backend dedupes per (owner, repo)
@@ -884,7 +1024,14 @@ function SkillDetailContent({ item }: { item: MarketplaceSkillItem }) {
                   </button>
                 </div>
               ) : hasReadmeContent ? (
-                <MarkdownBody source={cached!.content} />
+                <MarkdownBody
+                  source={cached!.content}
+                  baseUrl={
+                    item.source
+                      ? `https://raw.githubusercontent.com/${item.source}/HEAD/${item.skillId ?? ''}`
+                      : undefined
+                  }
+                />
               ) : (
                 <p className="text-xs text-[#A1A1AA]">No README available.</p>
               )}
@@ -951,6 +1098,207 @@ function InfoItem({ label, value }: InfoItemProps) {
     <div className="flex flex-1 flex-col gap-1 min-w-0">
       <span className="text-[11px] font-medium text-[#71717A]">{label}</span>
       <span className="text-[13px] font-medium text-[#18181B] truncate">{value}</span>
+    </div>
+  );
+}
+
+// ============================================================================
+// SkillGithubFallback — secondary GitHub-Search CTA + results section.
+//
+// State machine (mirror of McpGithubFallback in McpMarketplacePage):
+//
+//   isSearchMode=false                  → render nothing (no query to forward)
+//   primaryQuery is empty               → render nothing
+//   skillsGithubSearch === null         → render nothing (CTA is inlined inside
+//                                          the page's end-of-results affordance)
+//   skillsGithubSearch.loading=true     → render nothing (loading is also
+//                                          inlined inside that affordance)
+//   skillsGithubSearch.error            → inline error + Retry
+//   skillsGithubSearch.hasFetched=true &&
+//     items.length===0                  → single greyscale "No additional
+//                                          results" line
+//   skillsGithubSearch.hasFetched=true &&
+//     items.length>0                    → section heading (Github icon + count)
+//                                          + items list using SkillGithubResultRow
+//
+// Visual rule: align with the main list's vertical rhythm (mt-6 / py-4) so
+// the results section sits at the same cadence as the rest of the catalogue.
+// No border or background on the CTA — design-language forbids inventing
+// chrome for this kind of light affordance.
+// ============================================================================
+
+interface SkillGithubFallbackProps {
+  isSearchMode: boolean;
+  primaryQuery: string;
+  skillsGithubSearch: ReturnType<typeof useMarketplaceStore.getState>['skillsGithubSearch'];
+  onTrigger: (query: string) => Promise<void>;
+  onInstall: (item: MarketplaceSkillItem) => Promise<void>;
+  selectedSkillItemKey: string | null;
+  onSelectItem: (id: string) => void;
+  isSkillInstalled: (item: MarketplaceSkillItem) => boolean;
+}
+
+function SkillGithubFallback({
+  isSearchMode,
+  primaryQuery,
+  skillsGithubSearch,
+  onTrigger,
+  onInstall,
+  selectedSkillItemKey,
+  onSelectItem,
+  isSkillInstalled,
+}: SkillGithubFallbackProps) {
+  if (!isSearchMode) return null;
+  if (primaryQuery.trim().length === 0) return null;
+
+  // Pre-trigger state (skillsGithubSearch === null) and loading state are
+  // both rendered inline inside the page's end-of-results affordance — see
+  // SkillMarketplacePage's main render path. This component only renders the
+  // POST-fetch states (error / 0 results / ≥ 1 results).
+  if (skillsGithubSearch === null) {
+    return null;
+  }
+  if (skillsGithubSearch.loading) {
+    return null;
+  }
+
+  // Error — 11px red line + Retry. Mirrors the inline-error visual of the
+  // upstreamError banner but compact (single row, no background).
+  if (skillsGithubSearch.error) {
+    return (
+      <div className="mt-6 flex items-center justify-center gap-3 py-4 text-[11px]">
+        <span className="inline-flex items-center gap-1.5 text-[var(--color-error)]">
+          <AlertTriangle className="h-3 w-3" />
+          <span>GitHub search failed.</span>
+        </span>
+        <button
+          type="button"
+          onClick={() => void onTrigger(primaryQuery)}
+          className="font-medium text-[#18181B] underline cursor-pointer"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  // Post-fetch, 0 results — single greyscale line. No CTA; the user has
+  // already exercised the affordance.
+  if (skillsGithubSearch.items.length === 0) {
+    return (
+      <div className="mt-6 flex items-center justify-center py-4">
+        <span className="text-[11px] text-[#A1A1AA]">No additional results on GitHub.</span>
+      </div>
+    );
+  }
+
+  // Post-fetch, ≥ 1 result — section heading + rows. Items reuse
+  // `MarketplaceListItem` (via SkillGithubResultRow) with the GitHub-Search-
+  // specific overrides: pass `uncertaintyHint` (from backend fingerprint) +
+  // override `onInstall` to take the AI install path + label loading
+  // "AI inferring..." (30-90s wait — surface it).
+  return (
+    <section className="mt-6 flex flex-col gap-3">
+      <div className="flex items-center gap-1.5 text-[11px] text-[#A1A1AA]">
+        <Github className="h-3 w-3" />
+        <span>
+          From GitHub Search · {skillsGithubSearch.items.length}{' '}
+          {skillsGithubSearch.items.length === 1 ? 'result' : 'results'}
+        </span>
+      </div>
+      <div className="flex flex-col gap-3">
+        {skillsGithubSearch.items.map((item) => {
+          const itemKey = getSkillItemKey(item);
+          return (
+            <SkillGithubResultRow
+              key={itemKey}
+              item={item}
+              itemKey={itemKey}
+              selected={selectedSkillItemKey === itemKey}
+              compact={!!selectedSkillItemKey}
+              isInstalled={isSkillInstalled(item)}
+              onSelect={onSelectItem}
+              onInstall={onInstall}
+            />
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+// ============================================================================
+// SkillGithubResultRow — wraps `<MarketplaceListItem>` and stacks an inline
+// failure-reason row underneath it when the AI install fails (mirror of
+// McpGithubResultRow).
+//
+// The failure row layout is dedicated to the AI install path because the
+// regular install error UX surfaces via the row's own Retry button tooltip;
+// the AI install failure is intentionally non-retryable (running the same
+// prompt against the same repo would deterministically fail again — the user
+// must instead escalate to the interactive fallback, currently disabled).
+// Surfacing a separate inline row makes the difference legible.
+// ============================================================================
+
+interface SkillGithubResultRowProps {
+  item: MarketplaceSkillItem;
+  itemKey: string;
+  selected: boolean;
+  compact: boolean;
+  isInstalled: boolean;
+  onSelect: (id: string) => void;
+  onInstall: (item: MarketplaceSkillItem) => Promise<void>;
+}
+
+function SkillGithubResultRow({
+  item,
+  itemKey,
+  selected,
+  compact,
+  isInstalled,
+  onSelect,
+  onInstall,
+}: SkillGithubResultRowProps) {
+  // The MarketplaceListItem subscribes to its own `installFailedItems[key]`
+  // for the regular `<Retry>` button behaviour. We read the same map here
+  // so we can render the inline error explanation; the row itself will not
+  // show its "Retry" button because we override `onInstall` to the AI path
+  // and the AI path overwrites the same failure slot. `hideRetryOnFailure`
+  // makes the right-section trailing control render nothing in the failed
+  // state so the inline error below is the sole surface.
+  const failure = useMarketplaceStore((s) => s.installFailedItems[itemKey]);
+  return (
+    <div className="flex flex-col">
+      <MarketplaceListItem
+        item={item}
+        itemType="skill"
+        selected={selected}
+        compact={compact}
+        isInstalled={isInstalled}
+        onSelect={onSelect}
+        uncertaintyHint={item.uncertaintyHint}
+        onInstall={(it) => void onInstall(it as MarketplaceSkillItem)}
+        installingLabel="AI inferring..."
+        hideRetryOnFailure
+      />
+      {failure && (
+        <div className="px-5 pt-2 flex items-start gap-2 text-[11px]">
+          <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0 text-[var(--color-error)]" />
+          <span className="text-[var(--color-error)] flex-1 min-w-0">{failure.error}</span>
+          {/* Interactive fallback placeholder (not yet implemented).
+              Disabled button + tooltip-equivalent title attribute makes
+              the future affordance visible without offering an action
+              that would silently no-op. */}
+          <button
+            type="button"
+            disabled
+            title="Interactive fallback coming soon"
+            className="text-[var(--color-accent)] cursor-not-allowed opacity-50"
+          >
+            Open in Claude Code
+          </button>
+        </div>
+      )}
     </div>
   );
 }
